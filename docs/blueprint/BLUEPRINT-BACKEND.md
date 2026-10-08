@@ -5,6 +5,8 @@
 > **Versión 2.0 — 2026-10-07.** Esta versión reemplaza a la v1 (la transcripción del backend original). La v1 queda en el historial de git como referencia, pero **no debe usarse para implementar**. Cuando la v1 y la v2 no coinciden, manda la v2. La sección 0.6 resume qué cambió y la sección 27 explica cada decisión.
 >
 > **Todo el código núcleo de esta versión fue compilado y probado** antes de escribirse aquí: un proyecto de verificación con estos mismos archivos pasó lint con reglas tipadas, typecheck estricto, 10 tests unitarios y 44 tests e2e contra PostgreSQL 17 real, el empaquetado de las Lambdas con una invocación simulada de API Gateway, `cdk synth` de los tres stages con cdk-nag como gate, y `actionlint` sobre los workflows. Lo que **no** se pudo probar sin una cuenta AWS (el primer despliegue real) está marcado como tal y tiene su comando de verificación en el plan (sección 20).
+>
+> **Versión 2.1 — 2026-10-08.** Añade los controles de prioridad 0, todos sin coste o dentro de una capa gratuita: idempotencia de los `POST` (9.6), contrato OpenAPI versionado con detección de cambios incompatibles (17.4), Actions fijadas por SHA, auditoría de workflows, SBOM y procedencia firmada del artefacto (17.1, 17.2), y la CSP con `script-src` que el frontend genera en su build (16.8). Ese código **no se ejecutó** al escribirlo: va marcado 🆕 **V2.1** y su verificación está en el checklist (21).
 
 ---
 
@@ -35,6 +37,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 |---|---|---|
 | 🟩 **NÚCLEO** | Infraestructura reutilizable, independiente del dominio | **Copiar literalmente**, sustituyendo marcadores |
 | 🆕 **V2** | Núcleo nuevo o reescrito en la v2 (no existía así en el original) | **Copiar literalmente**, igual que el núcleo. La etiqueta solo indica procedencia |
+| 🆕 **V2.1** | Añadido en la 2.1, escrito contra el código verificado pero sin ejecutar | Copiar igual. La primera implementación corre el checklist de la sección 21 antes de darlo por bueno |
 | 🟦 **EJEMPLO DE DOMINIO** | Código del dominio original, incluido solo como referencia de patrón | **No copiar**. Leer, entender la forma, aplicarla al dominio nuevo |
 | 🟥 **DEUDA — NO REPLICAR** | El original lo hace así y está mal | **No copiar**. La sección 19 explica la corrección obligatoria |
 
@@ -418,6 +421,7 @@ Archivo: `package.json`
     "migration:run": "pnpm build && typeorm migration:run -d dist/config/typeorm.config.js",
     "migration:revert": "pnpm build && typeorm migration:revert -d dist/config/typeorm.config.js",
     "db:seed": "pnpm build && node dist/database/seed.js",
+    "openapi": "pnpm build && OPENAPI_OUT=openapi/openapi.json node dist/main.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
@@ -541,6 +545,7 @@ allowBuilds:
 | `migration:generate` | Compila y genera una migración por diff entre entidades y esquema real. Recibe la ruta destino: `pnpm migration:generate src/migrations/AddX` | Al cambiar una entidad |
 | `migration:run` / `migration:revert` | Aplica / revierte contra la base del `.env` | Solo en local. En AWS lo hace la Lambda `migrator` |
 | `db:seed` | Inserta las claves de `settings` que falten (idempotente) | Tras migrar en local |
+| `openapi` | 🆕 **V2.1.** Compila y reescribe `openapi/openapi.json`, el contrato que se commitea (17.4). Lee el `.env` local; no conecta a la base | En el mismo commit que cambia un controlador o un DTO |
 | `test` | Unitarios (`src/**/*.spec.ts`) | Desarrollo, CI |
 | `test:e2e` / `test:e2e:cov` | E2E contra PostgreSQL real; la variante `:cov` aplica el umbral de cobertura | CI |
 
@@ -569,6 +574,7 @@ allowBuilds:
 │   ├── lib/                       # Un archivo por stack + config, nombres, nag
 │   ├── cdk.json
 │   └── package.json
+├── openapi/openapi.json           # Contrato versionado; lo regenera `pnpm openapi` (17.4)
 ├── scripts/
 │   ├── bundle.mjs                 # esbuild: dist/*.js → .lambda/<función>/index.js
 │   ├── lambda-smoke.mjs           # Invoca el bundle con un evento de API Gateway v2
@@ -597,6 +603,7 @@ allowBuilds:
 │   │   ├── database/pg-errors.ts
 │   │   ├── filters/
 │   │   ├── http/                  # requestId, IP real, filtros de origen y CSRF
+│   │   ├── idempotency/           # Idempotency-Key de los POST (9.6)
 │   │   ├── observability/         # Logger (pino) y Sentry
 │   │   ├── pagination/
 │   │   └── utils/decimal.util.ts
@@ -1611,14 +1618,16 @@ async function bootstrap() {
     app,
     new DocumentBuilder()
       .setTitle('<app-short> API')
-      .setVersion(process.env.RELEASE ?? 'local')
+      // Versión del contrato, no del despliegue: el archivo commiteado tiene que salir igual en
+      // local y en CI. El SHA desplegado está en /api/health.
+      .setVersion('1')
       .addCookieAuth('<app-short>_at')
       .build(),
   );
   SwaggerModule.setup('docs', app, document);
-  // El contrato OpenAPI se versiona: el frontend genera sus tipos a partir de él (17.3).
+  // El contrato OpenAPI se versiona: el frontend genera sus tipos a partir de él (17.4).
   if (process.env.OPENAPI_OUT) {
-    writeFileSync(process.env.OPENAPI_OUT, JSON.stringify(document, null, 2));
+    writeFileSync(process.env.OPENAPI_OUT, `${JSON.stringify(document, null, 2)}\n`);
     await app.close();
     return;
   }
@@ -1631,7 +1640,7 @@ void bootstrap();
 
 Dos modos:
 
-- **`OPENAPI_OUT` definido:** arranca la app, escribe el OpenAPI 3 y termina. No escucha. Es el paso de CI que publica `openapi.json` como artefacto (el contrato que consume el frontend). No requiere base de datos alcanzable: TypeORM no conecta hasta la primera query.
+- **`OPENAPI_OUT` definido:** arranca la app, escribe el OpenAPI 3 y termina. No escucha. `pnpm openapi` lo usa para reescribir `openapi/openapi.json`, que se commitea, y CI comprueba que el archivo commiteado es el que sale del código (17.4). No requiere base de datos alcanzable: TypeORM no conecta hasta la primera query.
 - **Sin esa variable:** escucha en `127.0.0.1` (no en `0.0.0.0`) y monta Swagger en `/docs`. Swagger es una herramienta de desarrollo; CloudFront no enruta `/docs`.
 
 `addCookieAuth` documenta que la sesión viaja en cookie, no en `Authorization`.
@@ -1728,12 +1737,14 @@ El humo medido sobre este bundle (07/10/2026, PostgreSQL local, stage simulado `
 // src/app.module.ts
 import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { LoggerModule } from 'nestjs-pino';
 import { JwtAuthGuard } from './common/auth/jwt-auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
 import { EdgeGuardsMiddleware } from './common/http/edge-guards.middleware';
+import { IdempotencyInterceptor } from './common/idempotency/idempotency.interceptor';
+import { IdempotencyService } from './common/idempotency/idempotency.service';
 import { loggerParams } from './common/observability/logger.config';
 import { buildDataSourceOptions } from './config/database.config';
 import { type EnvConfig, validateEnv } from './config/env.validation';
@@ -1799,6 +1810,9 @@ import { UsersModule } from './modules/users/users.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // 2. Autorización por grupo de Cognito: solo actúa si hay @Roles(...).
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Corre después de los guards: la clave se ata al usuario ya autenticado (9.6).
+    IdempotencyService,
+    { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
   ],
 })
 export class AppModule implements NestModule {
@@ -1809,6 +1823,8 @@ export class AppModule implements NestModule {
 ```
 
 `JwtAuthGuard` y `RolesGuard` son globales. Toda ruta nueva nace autenticada y, si declara roles, autorizada. Hacerla pública es una decisión explícita: `@Public()`.
+
+`IdempotencyInterceptor` también es global, pero no hace nada en las rutas que no llevan `@Idempotent()` (9.6).
 
 `ignoreEnvFile` en Lambda y en tests. En Lambda un `.env` dentro del zip sería un secreto empaquetado; en tests el entorno lo fija `test/support/test-app.ts` y un `.env` del desarrollador no debe colarse.
 
@@ -2522,13 +2538,320 @@ export const AUDIT_ACTIONS = {
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
 ```
 
-`PageQueryDto` limita `limit` a 100. `toPage` calcula `pageCount` sin devolver de más. `ApiPageResponse` es el decorador de Swagger para que el OpenAPI describa la envoltura `{ data, meta }`.
+`PageQueryDto` limita `limit` a 100. La envoltura de toda lista es `{ items, total, limit, offset }`, sin más campos. `ApiPageResponse` es el decorador de Swagger para que el OpenAPI describa esa envoltura con el tipo concreto de `items`.
 
 `decimal.js` es la única forma de operar importes. La columna es `numeric`, el driver entrega `string`, y un `Number("0.10") + Number("0.20")` no es `0.30`.
 
 `isUniqueViolation` reconoce el código `23505`. Los servicios lo traducen a 409. No se captura con `error.message.includes('duplicate')`: el texto cambia con el idioma del servidor.
 
 Las acciones de auditoría son constantes. Una cadena libre en cada servicio produce diez grafías del mismo hecho y los informes dejan de cuadrar.
+
+### 9.6 Idempotencia de los `POST`
+
+🆕 **V2.1.** Un `POST` que crea algo puede llegar dos veces: doble clic, un reintento del navegador tras un corte, o el reintento de `useApi` después de refrescar la sesión. Sin una clave, el segundo crea un duplicado o, si hay una clave natural única, devuelve un 409 que el usuario no entiende ("ya existe" lo que acaba de crear él).
+
+El cliente manda `Idempotency-Key: <uuid>` en cada `POST` y reutiliza la misma clave en sus reintentos. El backend guarda la clave, atada al usuario, durante 24 horas:
+
+| Situación | Respuesta |
+|---|---|
+| Clave nueva | Se ejecuta el handler. Si responde bien, se guarda el cuerpo |
+| Misma clave, misma petición, ya terminada | El cuerpo guardado, con el mismo status y `Idempotent-Replayed: true`. El handler no corre |
+| Misma clave, misma petición, todavía en curso | 409. El cliente espera y reintenta |
+| Misma clave, otra petición (otra ruta u otro body) | 422. Es un bug del cliente |
+| Sin clave o con una que no es UUID, en una ruta `@Idempotent()` | 400 |
+| El handler lanza | La clave se libera. Un reintento vuelve a ejecutar, y un error de validación vuelve a dar el mismo error |
+
+```ts
+// src/common/idempotency/idempotent.decorator.ts
+import { applyDecorators, SetMetadata } from '@nestjs/common';
+import { ApiHeader } from '@nestjs/swagger';
+
+export const IDEMPOTENT = 'idempotent';
+export const IDEMPOTENCY_HEADER = 'idempotency-key';
+
+/** La ruta exige Idempotency-Key. Solo en rutas autenticadas: la clave se ata al usuario. */
+export const Idempotent = () =>
+  applyDecorators(
+    SetMetadata(IDEMPOTENT, true),
+    ApiHeader({
+      name: 'Idempotency-Key',
+      required: true,
+      description: 'UUID generado por el cliente. El reintento lleva el mismo valor',
+      schema: { type: 'string', format: 'uuid' },
+    }),
+  );
+```
+
+```ts
+// src/common/idempotency/idempotency-key.entity.ts
+import { Check, Column, CreateDateColumn, Entity, Index, PrimaryColumn } from 'typeorm';
+
+export const IDEMPOTENCY_STATE = { IN_PROGRESS: 'in_progress', COMPLETED: 'completed' } as const;
+export type IdempotencyState = (typeof IDEMPOTENCY_STATE)[keyof typeof IDEMPOTENCY_STATE];
+
+/**
+ * Sin FK a users: la fila caduca en 24 h y no debe bloquear nada del usuario.
+ * Los nombres de las restricciones son fijos para que migration:generate no proponga renombrarlas.
+ */
+@Entity('idempotency_keys')
+@Check('CHK_idempotency_keys_state', `"state" IN ('in_progress','completed')`)
+export class IdempotencyKey {
+  @PrimaryColumn({ type: 'uuid', primaryKeyConstraintName: 'PK_idempotency_keys' })
+  actorSub: string;
+
+  @PrimaryColumn({ type: 'uuid', primaryKeyConstraintName: 'PK_idempotency_keys' })
+  key: string;
+
+  /** sha256 de método, ruta y body. Distingue "el mismo reintento" de "otra petición con la misma clave". */
+  @Column({ type: 'char', length: 64 })
+  fingerprint: string;
+
+  @Column({ type: 'varchar', length: 20, default: IDEMPOTENCY_STATE.IN_PROGRESS })
+  state: IdempotencyState;
+
+  @Column({ type: 'jsonb', nullable: true })
+  responseBody: unknown;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt: Date;
+
+  @Index('IDX_idempotency_keys_expires_at')
+  @Column({ type: 'timestamptz' })
+  expiresAt: Date;
+}
+```
+
+```ts
+// src/common/idempotency/idempotency.service.ts
+import { ConflictException, Injectable, UnprocessableEntityException } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import type { DataSource } from 'typeorm';
+
+const TTL = '24 hours';
+const PURGE_PROBABILITY = 0.02;
+const PURGE_BATCH = 500;
+
+export type Claim = { kind: 'new' } | { kind: 'replay'; body: unknown };
+
+@Injectable()
+export class IdempotencyService {
+  constructor(@InjectDataSource() private readonly db: DataSource) {}
+
+  /**
+   * Reserva la clave en una sola sentencia. Dos peticiones simultáneas con la misma
+   * clave no pueden ganar las dos: la clave primaria decide. Una clave caducada se
+   * reutiliza como nueva.
+   */
+  async claim(actorSub: string, key: string, fingerprint: string): Promise<Claim> {
+    const claimed: unknown[] = await this.db.query(
+      `INSERT INTO idempotency_keys (actor_sub, key, fingerprint, expires_at)
+       VALUES ($1, $2, $3, now() + $4::interval)
+       ON CONFLICT (actor_sub, key) DO UPDATE
+         SET fingerprint = EXCLUDED.fingerprint, state = 'in_progress', response_body = NULL,
+             created_at = now(), expires_at = EXCLUDED.expires_at
+         WHERE idempotency_keys.expires_at < now()
+       RETURNING key`,
+      [actorSub, key, fingerprint, TTL],
+    );
+    if (claimed.length > 0) return { kind: 'new' };
+
+    const rows: Array<{ fingerprint: string; state: string; response_body: unknown }> =
+      await this.db.query(
+        `SELECT fingerprint, state, response_body FROM idempotency_keys
+         WHERE actor_sub = $1 AND key = $2`,
+        [actorSub, key],
+      );
+    const row = rows[0];
+    if (!row || row.state !== 'completed') {
+      throw new ConflictException(
+        'La petición original con esta Idempotency-Key sigue en curso. Reintenta en unos segundos.',
+      );
+    }
+    if (row.fingerprint !== fingerprint) {
+      throw new UnprocessableEntityException('Esta Idempotency-Key ya se usó con otra petición.');
+    }
+    return { kind: 'replay', body: row.response_body };
+  }
+
+  async complete(actorSub: string, key: string, body: unknown): Promise<void> {
+    // pg convierte un array de JS en un array de Postgres, no en JSON: se serializa a mano.
+    await this.db.query(
+      `UPDATE idempotency_keys SET state = 'completed', response_body = $3::jsonb
+       WHERE actor_sub = $1 AND key = $2`,
+      [actorSub, key, JSON.stringify(body ?? null)],
+    );
+    if (Math.random() < PURGE_PROBABILITY) await this.purgeExpired();
+  }
+
+  async release(actorSub: string, key: string): Promise<void> {
+    await this.db.query(
+      `DELETE FROM idempotency_keys WHERE actor_sub = $1 AND key = $2 AND state = 'in_progress'`,
+      [actorSub, key],
+    );
+  }
+
+  /** Lote acotado que viaja con el tráfico: no hace falta un cron para una tabla de 24 h. */
+  private async purgeExpired(): Promise<void> {
+    await this.db.query(
+      `DELETE FROM idempotency_keys WHERE ctid = ANY(ARRAY(
+         SELECT ctid FROM idempotency_keys WHERE expires_at < now() LIMIT $1))`,
+      [PURGE_BATCH],
+    );
+  }
+}
+```
+
+```ts
+// src/common/idempotency/idempotency.interceptor.ts
+import { createHash } from 'node:crypto';
+import {
+  BadRequestException,
+  type CallHandler,
+  type ExecutionContext,
+  Injectable,
+  type NestInterceptor,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { Request, Response } from 'express';
+import { from, type Observable, of, throwError } from 'rxjs';
+import { catchError, mergeMap } from 'rxjs/operators';
+import { IDEMPOTENCY_HEADER, IDEMPOTENT } from './idempotent.decorator';
+import { IdempotencyService } from './idempotency.service';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+@Injectable()
+export class IdempotencyInterceptor implements NestInterceptor {
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly keys: IdempotencyService,
+  ) {}
+
+  async intercept(ctx: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
+    const enabled = this.reflector.getAllAndOverride<boolean | undefined>(IDEMPOTENT, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]);
+    if (!enabled || ctx.getType() !== 'http') return next.handle();
+
+    const req = ctx.switchToHttp().getRequest<Request & { user?: { sub?: string } }>();
+    const res = ctx.switchToHttp().getResponse<Response>();
+    const raw = req.header(IDEMPOTENCY_HEADER);
+    if (!raw || !UUID.test(raw)) {
+      throw new BadRequestException('La cabecera Idempotency-Key es obligatoria y debe ser un UUID.');
+    }
+    const sub = req.user?.sub;
+    if (!sub) return next.handle();
+
+    const key = raw.toLowerCase();
+    const fingerprint = createHash('sha256')
+      .update(`${req.method} ${req.originalUrl}\n${JSON.stringify(req.body ?? null)}`)
+      .digest('hex');
+
+    const claim = await this.keys.claim(sub, key, fingerprint);
+    if (claim.kind === 'replay') {
+      // El status lo vuelve a poner Nest (201 en un POST): es el mismo del handler original.
+      res.setHeader('Idempotent-Replayed', 'true');
+      return of(claim.body);
+    }
+
+    return next.handle().pipe(
+      // Solo los errores del handler liberan la clave. Si falla `complete`, el cambio ya está
+      // confirmado: liberar la clave permitiría ejecutarlo dos veces.
+      catchError((err: unknown) =>
+        from(this.keys.release(sub, key).catch(() => undefined)).pipe(
+          mergeMap(() => throwError(() => err)),
+        ),
+      ),
+      mergeMap((body: unknown) => from(this.keys.complete(sub, key, body).then(() => body))),
+    );
+  }
+}
+```
+
+Uso: `@Idempotent()` en el `POST` del controlador, encima de `@Post()` (12.2). No va en `/api/auth/*` (son públicas y no hay usuario al que atar la clave) ni en `PATCH`, que ya tiene el bloqueo optimista por `version`.
+
+Lo que no cubre:
+
+- Si la Lambda muere entre el `COMMIT` del handler y el `complete`, la fila se queda `in_progress` hasta que caduca. El reintento recibe 409 durante ese tiempo en lugar de duplicar. Es el lado seguro del fallo: un duplicado no se deshace, y un 409 se explica.
+- No hay caché de errores. Stripe guarda también las respuestas 4xx. Aquí un 400 vuelve a ejecutar la validación, que da el mismo 400, y la tabla no se llena de errores.
+- `x-request-id` y `Idempotency-Key` son cosas distintas. El primero identifica un intento y el segundo identifica la operación. El cliente reutiliza los dos en el reintento tras el refresh, así que esas dos líneas de log comparten `requestId`.
+
+La cabecera tiene que llegar a la Lambda: está en la lista de `ApiOriginRequest` de CloudFront (16.8). Si se quita de ahí, toda ruta `@Idempotent()` responde 400 en AWS y funciona en local.
+
+```ts
+// test/idempotency.e2e-spec.ts
+import { randomUUID } from 'node:crypto';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTestApp, insertUser, signAccessToken, type TestContext } from './support/test-app';
+
+const AT = '<app-short>_at';
+
+describe('Idempotency-Key en POST /api/projects', () => {
+  let ctx: TestContext;
+  let cookie: string;
+
+  beforeAll(async () => {
+    ctx = await createTestApp();
+    const sub = await insertUser(ctx.db);
+    cookie = `${AT}=${signAccessToken({ sub, groups: ['<ROL_A>'] })}`;
+  });
+
+  afterAll(async () => {
+    await ctx.app.close();
+    await ctx.db.destroy();
+  });
+
+  const post = (body: object, key?: string) => {
+    const req = request(ctx.app.getHttpServer()).post('/api/projects').set('Cookie', cookie);
+    return (key ? req.set('Idempotency-Key', key) : req).send(body);
+  };
+  const projectsWithCode = async (code: string) => {
+    const rows: Array<{ n: number }> = await ctx.db.query(
+      `SELECT count(*)::int AS n FROM projects WHERE code = $1`,
+      [code],
+    );
+    return rows[0].n;
+  };
+
+  it('sin clave responde 400 y no crea nada', async () => {
+    await post({ code: 'IDM-00001', name: 'Sin clave' }).expect(400);
+    expect(await projectsWithCode('IDM-00001')).toBe(0);
+  });
+
+  it('una clave que no es UUID responde 400', async () => {
+    await post({ code: 'IDM-00002', name: 'Clave mala' }, 'no-es-un-uuid').expect(400);
+  });
+
+  it('el reintento con la misma clave devuelve la misma respuesta y crea una sola fila', async () => {
+    const key = randomUUID();
+    const body = { code: 'IDM-00003', name: 'Reintento' };
+    const first = await post(body, key).expect(201);
+    const second = await post(body, key).expect(201);
+    expect(second.headers['idempotent-replayed']).toBe('true');
+    expect(second.body.id).toBe(first.body.id);
+    expect(await projectsWithCode('IDM-00003')).toBe(1);
+  });
+
+  it('la misma clave con otro body responde 422', async () => {
+    const key = randomUUID();
+    await post({ code: 'IDM-00004', name: 'Uno' }, key).expect(201);
+    await post({ code: 'IDM-00005', name: 'Otro' }, key).expect(422);
+    expect(await projectsWithCode('IDM-00005')).toBe(0);
+  });
+
+  it('un 400 del handler libera la clave', async () => {
+    const key = randomUUID();
+    await post({ code: 'mal', name: 'Formato' }, key).expect(400);
+    await post({ code: 'mal', name: 'Formato' }, key).expect(400);
+    const rows = await ctx.db.query(`SELECT 1 FROM idempotency_keys WHERE key = $1`, [key]);
+    expect(rows).toHaveLength(0);
+  });
+});
+```
+
+El último caso depende del orden de Nest: los pipes de validación corren **después** de los interceptores, así que un 400 de class-validator pasa por el `catchError` y libera la clave.
 
 ---
 ## 10. Autenticación y RBAC con Cognito, end to end
@@ -4355,6 +4678,7 @@ export class Document {
 
 ```ts
 // src/database/entities.ts
+import { IdempotencyKey } from '../common/idempotency/idempotency-key.entity';
 import { AuditLog } from '../modules/audit/audit-log.entity';
 import { Project } from '../modules/projects/project.entity';
 import { Document } from '../modules/documents/document.entity';
@@ -4368,7 +4692,15 @@ import { User } from '../modules/users/user.entity';
  * entidad olvidada produce migraciones que borran su tabla: el test
  * `entities.spec.ts` falla si algún *.entity.ts no está aquí.
  */
-export const ENTITIES = [User, Setting, UserTermsAcceptance, AuditLog, Document, Project];
+export const ENTITIES = [
+  User,
+  Setting,
+  UserTermsAcceptance,
+  AuditLog,
+  Document,
+  IdempotencyKey,
+  Project,
+];
 ```
 
 `Project` está en la lista porque es el módulo de ejemplo (12). Al sustituirlo por el dominio nuevo, se quita de esta lista y se añaden las entidades reales. Olvidar la lista es un fallo silencioso: TypeORM no mapea la tabla y el primer `getRepository` revienta en runtime, no al compilar.
@@ -4445,6 +4777,7 @@ La API no puede conectarse como `postgres`. El proxy solo tiene el secreto de IA
 
 ```ts
 // src/migrations/index.ts
+import { AddIdempotencyKeys1791480000000 } from './1791480000000-AddIdempotencyKeys';
 import { AddProjects1791414493019 } from './1791414493019-AddProjects';
 import { Init1791412463667 } from './1791412463667-Init';
 
@@ -4452,7 +4785,11 @@ import { Init1791412463667 } from './1791412463667-Init';
  * Lista explícita y ordenada de migraciones (misma razón que database/entities.ts).
  * Al generar una migración nueva, añadirla AL FINAL de este array en el mismo commit.
  */
-export const MIGRATIONS: Function[] = [Init1791412463667, AddProjects1791414493019];
+export const MIGRATIONS: Function[] = [
+  Init1791412463667,
+  AddProjects1791414493019,
+  AddIdempotencyKeys1791480000000,
+];
 ```
 
 ```ts
@@ -4574,6 +4911,32 @@ export class AddProjects1791414493019 implements MigrationInterface {
   }
 }
 ```
+
+```ts
+// src/migrations/1791480000000-AddIdempotencyKeys.ts
+import { MigrationInterface, QueryRunner } from 'typeorm';
+
+/** 🆕 V2.1. Escrita a mano con los nombres que fija la entidad (9.6). */
+export class AddIdempotencyKeys1791480000000 implements MigrationInterface {
+  name = 'AddIdempotencyKeys1791480000000';
+
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(
+      `CREATE TABLE "idempotency_keys" ("actor_sub" uuid NOT NULL, "key" uuid NOT NULL, "fingerprint" character(64) NOT NULL, "state" character varying(20) NOT NULL DEFAULT 'in_progress', "response_body" jsonb, "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL, CONSTRAINT "CHK_idempotency_keys_state" CHECK ("state" IN ('in_progress','completed')), CONSTRAINT "PK_idempotency_keys" PRIMARY KEY ("actor_sub", "key"))`,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_idempotency_keys_expires_at" ON "idempotency_keys" ("expires_at")`,
+    );
+  }
+
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`DROP INDEX "public"."IDX_idempotency_keys_expires_at"`);
+    await queryRunner.query(`DROP TABLE "idempotency_keys"`);
+  }
+}
+```
+
+`AddIdempotencyKeys` es del núcleo y se queda aunque `AddProjects` se sustituya. Como se escribió a mano, la primera implementación corre `pnpm migration:generate src/migrations/Check` contra una base ya migrada: el resultado tiene que ser "No changes in database schema were found". Si propone algo, la entidad y el SQL no coinciden y se corrige la migración antes de aplicarla en ningún stage. `app_user` recibe permisos sobre la tabla por los privilegios por defecto (11.3).
 
 `MIGRATIONS` es un array escrito a mano, en orden. **No hay glob.** esbuild no puede resolver `migrations/*.ts` en tiempo de ejecución, y un glob que funciona con el CLI en local y no dentro de la Lambda es exactamente el fallo que esta lista evita. Cada migración nueva se importa aquí. El nombre de la clase tiene que sobrevivir a la minificación (`keepNames`, 6.11): TypeORM decide cuál está aplicada comparando el nombre de la clase con la tabla `migrations`.
 
@@ -5193,6 +5556,7 @@ import { ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestj
 import { CurrentUser, type CurrentUserPayload } from '../../common/auth/current-user';
 import { ADMIN_ROLE, Roles } from '../../common/auth/roles';
 import { ReqCtx, type RequestContext } from '../../common/http/request-context';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { ApiPageResponse } from '../../common/pagination/page';
 import {
   CreateProjectDto,
@@ -5224,6 +5588,7 @@ export class ProjectsController {
   }
 
   @Post()
+  @Idempotent()
   @ApiOperation({ summary: 'Crear un proyecto' })
   @ApiCreatedResponse({ type: ProjectDto })
   create(
@@ -5274,6 +5639,7 @@ export class ProjectsModule {}
 Puntos que se copian aunque el recurso se llame de otra forma:
 
 - **`insert` contra `save`.** Aquí el id lo genera la base, así que `save()` es correcto: no hay una clave que pueda coincidir con otra fila. Cuando el id lo pone el cliente (como `users.id` = sub), se usa `insert()` (10.6).
+- **Todo `POST` que crea lleva `@Idempotent()`** (9.6). Sin él, el doble clic de un usuario sobre "Crear" le devuelve un 409 por su propio proyecto.
 - **La violación de unicidad se traduce.** `UQ_projects_code` → 409 con un mensaje de negocio. El resto de los errores de base se propagan y el filtro los convierte en 500 sin SQL en el cuerpo.
 - **La búsqueda escapa `%`, `_` y `\`** antes de armar el `ILIKE`. Si no, un usuario que escribe `%` lista toda la tabla.
 - **El `UPDATE` optimista** es `WHERE id = :id AND version = :version`. Cero filas afectadas es 409, no un reintento silencioso. El cliente relee y reintenta si quiere.
@@ -5656,6 +6022,7 @@ import type { Request } from 'express';
 import { CurrentUser, type CurrentUserPayload } from '../../common/auth/current-user';
 import { ADMIN_ROLE, Roles } from '../../common/auth/roles';
 import { ReqCtx, type RequestContext } from '../../common/http/request-context';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { ApiPageResponse } from '../../common/pagination/page';
 import { DocumentsService } from './documents.service';
 import {
@@ -5672,6 +6039,9 @@ export class DocumentsController {
   constructor(private readonly documents: DocumentsService) {}
 
   @Post('uploads')
+  // El reintento devuelve la misma URL. Si ya caducó, S3 responde 403 al PUT y el cliente
+  // empieza otra subida con otra clave.
+  @Idempotent()
   @ApiOperation({ summary: 'Registrar una subida y obtener la URL presignada (PUT directo a S3)' })
   @ApiCreatedResponse({ type: UploadIntentDto })
   createUpload(
@@ -8416,8 +8786,10 @@ export class WebStack extends Stack {
           referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
           override: true,
         },
-        // Directivas que solo funcionan por cabecera. El resto de la CSP (script-src con
-        // los hashes de los scripts en línea) la inyecta el build del frontend como <meta>.
+        // Directivas que solo funcionan por cabecera. El resto de la CSP (script-src con los
+        // hashes de los scripts en línea) la escribe `scripts/csp.mjs` del frontend como <meta>
+        // en cada HTML del build: los hashes cambian en cada release y este stack no se
+        // redespliega con el frontend. El navegador aplica las dos políticas a la vez.
         contentSecurityPolicy: {
           contentSecurityPolicy:
             "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests",
@@ -8439,13 +8811,15 @@ export class WebStack extends Stack {
       originRequestPolicyName: name(cfg, 'api-origin-request'),
       cookieBehavior: cloudfront.OriginRequestCookieBehavior.all(),
       queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
-      // Máximo 10 cabeceras por política. Nunca reenviar Host (API Gateway necesita el suyo).
+      // Máximo 10 cabeceras por política, y aquí están las 10. Una cabecera nueva obliga a
+      // quitar otra. Nunca reenviar Host (API Gateway necesita el suyo).
       headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(
         'Accept',
         'Content-Type',
         'Origin',
         'User-Agent',
         'X-Request-Id',
+        'Idempotency-Key',
         'Sec-Fetch-Site',
         'Sec-Fetch-Mode',
         'CloudFront-Viewer-Address',
@@ -8538,7 +8912,7 @@ El certificado ACM y el WAF están en `us-east-1` aunque el resto del stack viva
 
 WAF, scope `CLOUDFRONT`:
 
-- AWS Managed Rules: Common, Known Bad Inputs, IP Reputation, Anonymous IP.
+- AWS Managed Rules: Common, Known Bad Inputs, IP Reputation y SQLi. Anonymous IP no está: bloquearía a usuarios legítimos detrás de VPN corporativas.
 - `SizeRestrictions_BODY` de Common se pasa a `count`. El cuerpo de la API es JSON pequeño, pero la regla también inspecciona lo que no debe bloquear un upload legítimo que se cuela por el mismo origen, y un falso positivo aquí tira el login sin un mensaje útil. El tamaño de verdad lo limita API Gateway y el DTO (20 MiB en documentos, y ese PUT va a S3, no a la API).
 - Rate limit: 100 peticiones / 5 min por IP sobre el path `/api/auth/`, y 3000 / 5 min global.
 - Si `geoAllowList` tiene países, una regla permite solo esos y bloquea el resto.
@@ -8546,10 +8920,11 @@ WAF, scope `CLOUDFRONT`:
 CloudFront:
 
 - Origen del bucket del sitio (OAC, el bucket no es público) para el behavior por defecto.
-- Origen del HTTP API para `/api/*`, con la cabecera `x-origin-verify` inyectada por CloudFront y **no** reenviada desde el visor. `AllViewerExceptHostHeader` más esa cabecera.
+- Origen del HTTP API para `/api/*`, con la cabecera `x-origin-verify` inyectada por CloudFront y **no** reenviada desde el visor. Solo pasan las cookies, el query string y las 10 cabeceras de `ApiOriginRequest`. Lo que el navegador mande fuera de esa lista no llega a la Lambda: por eso `Idempotency-Key` está ahí (9.6).
 - HTTP/2 y HTTP/3.
 - CloudFront Function en viewer-request: si la URI no tiene extensión, la reescribe a `/index.html`. Es la forma de que el SPA enrute. **No** se usan custom error responses 403/404 → `/index.html`: esa regla también reescribiría un 404 de la API y el frontend no podría distinguir "no existe" de "aquí tienes el HTML".
 - Response headers policy: HSTS, `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`, `Permissions-Policy` vacía de sensores, y no se cachea `/api/*`.
+- CSP en dos mitades. La cabecera lleva lo que una `<meta>` no puede expresar (`frame-ancestors`, y `object-src`, `base-uri`, `form-action` para que valgan aunque falte la meta). La `<meta>` que escribe el build del frontend lleva `default-src`, `script-src` con los hashes de sus scripts en línea, `connect-src` y el resto. Sin esa meta no hay `script-src` y un XSS ejecuta lo que quiera: el smoke lo comprueba (17.2).
 - Registros A y AAAA en la zona `<HOSTED_ZONE_ID>` hacia la distribución. El nombre es el `domainName` del stage.
 
 Salidas SSM, todas bajo `/<org>/<app-short>/<stage>/`:
@@ -8809,6 +9184,8 @@ En el repositorio ya sustituido no hace falta: `pnpm --dir infra cdk synth -c st
 
 ### 17.1 Verificación
 
+🆕 **V2.1** en los pasos de contrato, SBOM, procedencia y auditoría de workflows, y en el formato de los `uses:`. Toda acción va fijada por el SHA del commit, con la versión en un comentario. Un tag (`@v5`) lo puede mover quien controle el repositorio de la acción, y el job lo ejecutaría con permisos de OIDC sobre la cuenta. Dependabot (`github-actions`) actualiza el SHA y el comentario juntos. Los SHA son los de la última versión de cada major el 2026-10-08. Las majors siguientes (checkout 7, setup-node 7, upload-artifact 7…) las propone Dependabot en su propio PR.
+
 ```yaml
 # .github/workflows/ci.yml
 name: CI/CD
@@ -8816,6 +9193,8 @@ name: CI/CD
 on:
   pull_request:
     branches: [main]
+    # labeled/unlabeled: la etiqueta contract-breaking cambia el resultado del job.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -8833,6 +9212,11 @@ jobs:
     name: Verificar y construir
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      # Firma de la procedencia del artefacto. El paso solo corre en push a main.
+      id-token: write
+      attestations: write
     services:
       postgres:
         image: postgres:17
@@ -8849,9 +9233,11 @@ jobs:
       DB_PASSWORD: postgres
       DB_NAME_TEST: app_test
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -8862,7 +9248,7 @@ jobs:
       - run: pnpm test
       - run: pnpm test:e2e:cov
       - run: pnpm build && pnpm bundle
-      - name: Contrato OpenAPI
+      - name: Contrato OpenAPI al día
         env:
           NODE_ENV: test
           STAGE: test
@@ -8872,23 +9258,83 @@ jobs:
           COGNITO_CLIENT_ID: ci
           COGNITO_CLIENT_SECRET: ci
           DB_NAME: app_test
-          OPENAPI_OUT: openapi.json
-        run: node dist/main.js
+          OPENAPI_OUT: openapi/openapi.json
+        run: |
+          node dist/main.js
+          # status y no diff: también falla si el archivo nunca se commiteó.
+          if [ -n "$(git status --porcelain -- openapi/openapi.json)" ]; then
+            git diff -- openapi/openapi.json | head -50
+            echo "::error file=openapi/openapi.json::El contrato commiteado no es el que sale del código. Corre pnpm openapi y commitea el archivo."
+            exit 1
+          fi
+      - name: Contrato de la rama base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+          if ! git show "origin/${BASE_REF}:openapi/openapi.json" > openapi-base.json 2>/dev/null; then
+            echo '{"openapi":"3.0.0","info":{"title":"sin contrato previo","version":"0"},"paths":{}}' > openapi-base.json
+          fi
+      - name: Sin cambios incompatibles en el contrato
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'contract-breaking')
+        uses: oasdiff/oasdiff-action/breaking@b9325c9e0a27ab65b0da3b766522cedec6be81dc # v0.1.18
+        with:
+          # Rutas dentro del workspace: es una acción Docker y no ve el /tmp del runner.
+          base: openapi-base.json
+          revision: openapi/openapi.json
+          fail-on: ERR
+          # El contrato no sale de CI y el job no necesita permiso para comentar el PR.
+          review: 'false'
+          github-token: ''
       - name: cdk synth + cdk-nag (los 3 stages)
         working-directory: infra
         run: for s in dev qa prod; do pnpm cdk synth --quiet -c stage=$s -o cdk.out.$s; done
-      - uses: actions/upload-artifact@v4
+      - name: Manifiesto del release
+        run: find .lambda openapi -type f -print0 | sort -z | xargs -0 sha256sum > release.sha256
+      - name: SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - name: Procedencia firmada del manifiesto
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-${{ github.sha }}
           path: |
             .lambda/
-            openapi.json
+            openapi/openapi.json
+            release.sha256
+            sbom.spdx.json
+          # Desde la v4.4, todo lo que cuelga de una carpeta con punto (.lambda/) se excluye
+          # salvo que se pida. Sin esto el artefacto sale sin las Lambdas.
+          include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
 
+  workflows:
+    name: Auditar workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: '1.30.1'
+          # Sin subir SARIF: un hallazgo falla el job en lugar de quedarse en la pestaña Security.
+          advanced-security: false
+
   deploy-dev:
     if: github.event_name == 'push'
-    needs: verify
+    needs: [verify, workflows]
     uses: ./.github/workflows/deploy.yml
     with:
       stage: dev
@@ -8896,6 +9342,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: read
 
   deploy-qa:
     needs: deploy-dev
@@ -8906,6 +9353,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: read
 
   deploy-prod:
     needs: deploy-qa
@@ -8916,6 +9364,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      attestations: read
 ```
 
 El job `verify` corre en cada pull request y en cada push a `main`:
@@ -8925,9 +9374,15 @@ El job `verify` corre en cada pull request y en cada push a `main`:
 3. lint, typecheck, unitarios
 4. e2e con cobertura, contra el servicio `postgres:17`
 5. `pnpm build && pnpm bundle`
-6. `node dist/main.js` con `OPENAPI_OUT=openapi.json`, que escribe el contrato y sale
-7. `cdk synth` de dev, qa y prod dentro de `infra/` (el código de CI ya no tiene marcadores)
-8. Sube `.lambda/` y `openapi.json` como artefacto `release-<sha>`, retención 30 días
+6. `node dist/main.js` con `OPENAPI_OUT=openapi/openapi.json`, y falla si el archivo commiteado no coincide (17.4)
+7. En un PR, `oasdiff breaking` contra el contrato de la rama base. Falla con un cambio incompatible salvo que el PR lleve la etiqueta `contract-breaking`
+8. `cdk synth` de dev, qa y prod dentro de `infra/` (el código de CI ya no tiene marcadores)
+9. `release.sha256`: el sha256 de cada archivo de `.lambda/` y `openapi/`. Es lo que se firma
+10. SBOM SPDX del repositorio (`sbom.spdx.json`), con Syft
+11. En push a `main`, la attestation de procedencia de `release.sha256` (Sigstore, firmada con el OIDC del job). Gratis en repositorios públicos; en uno privado exige GitHub Enterprise Cloud
+12. Sube `.lambda/`, `openapi/openapi.json`, el manifiesto y el SBOM como artefacto `release-<sha>`, retención 30 días. `include-hidden-files: true` es obligatorio: `.lambda/` empieza por punto y `upload-artifact` 4.4+ lo excluiría entero (la v2.0 de este documento no lo llevaba)
+
+El job `workflows` corre [zizmor](https://docs.zizmor.sh) sobre `.github/`: inyección de plantillas en `run:`, credenciales persistidas por `actions/checkout`, permisos de más, acciones sin fijar. Por eso todos los checkouts llevan `persist-credentials: false`, y las expresiones `${{ }}` que vienen del evento (`github.base_ref`) entran al shell por `env:` y no interpoladas en el script. Si zizmor marca algo que es así a propósito, se justifica en `.github/zizmor.yml` en el mismo PR. No se baja `min-severity` para que pase. Los deploys esperan a este job.
 
 `cdk synth` en este job exige que los marcadores de `infra/` estén sustituidos. Si se commitea un `<ACCOUNT_NONPROD>` literal, el synth falla aquí, que es lo que se quiere.
 
@@ -8951,13 +9406,17 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           languages: javascript-typescript
           queries: security-extended
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
 ```
+
+CodeQL va en la v4: GitHub retira la v3 en diciembre de 2026.
 
 Dependabot, semanal, agrupado para que no abra un PR por cada paquete de `@aws-sdk`:
 
@@ -8984,7 +9443,11 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
+    groups:
+      actions: { patterns: ['*'] }
 ```
+
+Con los `uses:` fijados por SHA, Dependabot reescribe el SHA y el comentario `# vX.Y.Z` en el mismo PR. El comentario es lo único que le dice a quien revisa qué versión hay detrás del SHA: no se omite.
 
 `pnpm-workspace.yaml` aprueba los scripts de instalación de `@swc/core` y `esbuild`, y niega el de `@scarf/scarf`. pnpm 12 aborta el install si un paquete quiere correr un script que no está en esa lista (`ERR_PNPM_IGNORED_BUILDS`). Cuando entre una dependencia nueva que necesite compilar, se añade aquí en el mismo PR, no se usa `--ignore-scripts` a ciegas.
 
@@ -9007,6 +9470,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  attestations: read
 
 jobs:
   deploy:
@@ -9026,18 +9490,27 @@ jobs:
       RELEASE: ${{ github.sha }}
       CDK_DISABLE_VERSION_CHECK: '1'
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile --filter infra
       # El MISMO bundle que se verificó en el job `verify`: no se recompila por stage.
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: release-${{ github.sha }}
-      - uses: aws-actions/configure-aws-credentials@v5
+      - name: El artefacto es el que firmó CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify release.sha256 --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          sha256sum --check --quiet release.sha256
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
         with:
           role-to-assume: arn:aws:iam::${{ inputs.account }}:role/<app-short>-github-backend-deploy
           aws-region: <REGION>
@@ -9061,6 +9534,7 @@ jobs:
 
 Dentro de un stage, el orden es fijo:
 
+0. `gh attestation verify` sobre `release.sha256` y `sha256sum --check`. El zip que va a la cuenta es el que construyó `ci.yml` en este repositorio, y ningún archivo cambió desde la firma. Si alguien sube a mano un artefacto con el mismo nombre, el deploy se detiene aquí.
 1. `cdk deploy` de `alerts`, `storage` y `migrator`. La alarma existe antes de que haya algo que pueda fallar. El bucket y la cola existen antes de que la API reciba tráfico. El migrator existe antes de que se le invoque.
 2. `scripts/ci/invoke-migrator.sh <stage> migrate`. Si la migración falla, el workflow se detiene y el alias `live` sigue apuntando al código viejo, compatible con el esquema viejo.
 3. `cdk deploy --all`, que mueve el alias. En prod lo mueve CodeDeploy en canary.
@@ -9132,6 +9606,10 @@ HEADERS=$(curl -sI "${URL}/")
 echo "$HEADERS" | grep -qi '^strict-transport-security:' || fail "Falta HSTS"
 echo "$HEADERS" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" || fail "Falta la CSP de CloudFront"
 
+# 6. La otra mitad de la CSP: la meta con script-src que escribe el build del frontend (16.8).
+curl -s "${URL}/" | grep -qi "http-equiv=\"Content-Security-Policy\"[^>]*script-src" \
+  || fail "El index.html no lleva la meta CSP con script-src: el build del frontend no pasó por scripts/csp.mjs"
+
 echo "Smoke test OK en ${URL} (release ${RELEASE})"
 ```
 
@@ -9150,6 +9628,24 @@ pnpm cdk deploy -c ci=prod
 ```
 
 A partir de ese momento el pipeline asume el rol y no vuelve a hacer falta una clave de larga duración.
+
+🆕 **V2.1.** También a mano, una vez por repositorio: la etiqueta `contract-breaking` (17.4) y la protección de `main` que exige los checks `Verificar y construir` y `Auditar workflows` antes de fusionar.
+
+### 17.4 Contrato OpenAPI
+
+🆕 **V2.1.** `openapi/openapi.json` se commitea. Es la frontera entre los dos repositorios: el frontend genera sus tipos desde ese archivo en `main` (sección 11.9 del blueprint del frontend), así que un cambio de contrato se ve en el diff del PR que lo provoca.
+
+| Quién | Qué hace | Qué rompe |
+|---|---|---|
+| Quien cambia un controlador o un DTO | `pnpm openapi` y commitea `openapi/openapi.json` en el mismo PR | Si lo olvida, el paso "Contrato OpenAPI al día" falla |
+| CI del backend, en el PR | `oasdiff breaking` entre el contrato de la rama base y el del PR | Quitar una ruta o un campo de respuesta, volver obligatorio un campo de entrada, estrechar un enum de entrada |
+| CI del frontend, en cada PR | Regenera `types/api.gen.ts` desde `main` del backend y falla si cambió | El frontend se entera del cambio en su siguiente PR, y `pnpm typecheck` señala cada llamada afectada |
+
+Un cambio incompatible a propósito lleva la etiqueta `contract-breaking` en el PR. Es la señal de que hay que coordinar el despliegue: primero el frontend que tolera las dos formas, después el backend. Es el mismo expandir y contraer de las migraciones (11.4).
+
+El `info.version` del documento es `'1'` fijo (8.2). Si saliera del SHA, el archivo cambiaría en cada commit y el paso de "al día" no podría pasar nunca. El SHA desplegado se lee en `/api/health`.
+
+La paginación es la primera víctima conocida de no tener este control: la v2.0 de los dos blueprints describía envolturas distintas (`{ items, total, limit, offset }` aquí, `{ data, meta }` en el frontend). Con el contrato generado, ese desajuste es un error de `pnpm typecheck` en el frontend y no un `undefined` en producción.
 
 ---
 ## 18. Entorno de desarrollo local y Cursor Cloud
@@ -9177,7 +9673,7 @@ pnpm start:dev
 
 La API escucha en `127.0.0.1:3000`. El navegador no llama a ese puerto: llama a `http://127.0.0.1:4200/api/...` y Nuxt hace de proxy (blueprint del frontend). Las cookies salen sin el prefijo `__Host-` porque el origen es HTTP.
 
-Swagger queda en `http://127.0.0.1:3000/docs`. El OpenAPI se regenera con `OPENAPI_OUT=openapi.json node dist/main.js` después de `pnpm build`.
+Swagger queda en `http://127.0.0.1:3000/docs`. El contrato se regenera con `pnpm openapi`, que reescribe `openapi/openapi.json` (17.4).
 
 ### 18.2 Cursor Cloud
 
@@ -9346,7 +9842,7 @@ El primer push a `main` despliega `dev`. Si no hay cuenta todavía, esta fase se
 
 ### Fase 9 — Frontera con el frontend
 
-Publicar `openapi.json` (el job ya lo hace) y confirmar que las 21 rutas del núcleo siguen presentes antes de añadir las del dominio. El frontend se implementa contra ese archivo, no contra esta prosa.
+`pnpm openapi`, commitear `openapi/openapi.json` y confirmar que las 21 rutas del núcleo siguen presentes antes de añadir las del dominio. El frontend genera sus tipos desde ese archivo en `main` (17.4), no desde esta prosa. Crear la etiqueta `contract-breaking` en el repositorio.
 
 ---
 ## 21. Checklist de aceptación final
@@ -9363,13 +9859,24 @@ Publicar `openapi.json` (el job ya lo hace) y confirmar que las 21 rutas del nú
 
 ### Contrato
 
-- [ ] `openapi.json` se genera sin levantar la base y contiene `/api/health`, las rutas de `/api/auth/*`, `/api/users/{id}/status` y `/api/documents/*`.
+- [ ] `openapi/openapi.json` se genera sin levantar la base y contiene `/api/health`, las rutas de `/api/auth/*`, `/api/users/{id}/status` y `/api/documents/*`.
 - [ ] Ninguna operación declara seguridad `bearer`. La seguridad del documento es la cookie.
+- [ ] 🆕 V2.1. `pnpm openapi` dos veces seguidas no deja diff: el archivo es determinista.
+- [ ] 🆕 V2.1. Un PR que quita un campo de `ProjectDto` falla en "Sin cambios incompatibles en el contrato", y pasa al ponerle la etiqueta `contract-breaking`.
+- [ ] 🆕 V2.1. `POST /api/projects` y `POST /api/documents/uploads` declaran la cabecera `Idempotency-Key` obligatoria en el OpenAPI.
+
+### Idempotencia (🆕 V2.1)
+
+- [ ] `test/idempotency.e2e-spec.ts` pasa, y `pnpm migration:generate src/migrations/Check` no encuentra cambios después de aplicar `AddIdempotencyKeys`.
+- [ ] En `dev`, dos `POST /api/projects` con la misma `Idempotency-Key` a través de CloudFront devuelven el mismo `id`, y el segundo trae `idempotent-replayed: true`. Si responde 400 "obligatoria", CloudFront no está reenviando la cabecera (16.8).
 
 ### Infra y pipeline
 
 - [ ] `cdk synth` de dev, qa y prod termina con cdk-nag en silencio (solo las aceptaciones de `nag.ts`).
 - [ ] `actionlint` sobre `.github/workflows/` y `shellcheck` sobre `scripts/**/*.sh` pasan.
+- [ ] 🆕 V2.1. El job `Auditar workflows` (zizmor 1.30.1) pasa, y `rg -n 'uses: [^ ]+@v[0-9]' .github/` no devuelve nada: toda acción va por SHA.
+- [ ] 🆕 V2.1. El primer push a `main` crea una attestation (pestaña Actions → Attestations) y el deploy de `dev` pasa el paso "El artefacto es el que firmó CI".
+- [ ] 🆕 V2.1. El smoke pasa el punto 6 (meta CSP con `script-src`) después del primer deploy del frontend.
 - [ ] Los Environments `qa` y `prod` tienen revisores.
 - [ ] El stack `ci` está desplegado en cada cuenta antes del primer stage.
 - [ ] Un push a `main` despliega `dev`, migra **antes** de mover el alias, y el smoke contra CloudFront pasa.
@@ -9505,6 +10012,8 @@ Leer el secreto una vez y guardarlo en una variable de módulo hace que, el día
 - CSRF: además de SameSite, el middleware exige `Sec-Fetch-Site: same-origin` u `Origin` igual a `APP_ORIGIN` en los métodos que cambian estado (9.2).
 - Un solo origen. No hay CORS. El día que alguien proponga servir el front en otro dominio, la conversación correcta es por qué, no cómo relajar la CSP.
 - Helmet en la API con `default-src 'none'` y `frame-ancestors 'none'`. HSTS y el resto de cabeceras de documento los pone CloudFront sobre el HTML (16.8).
+- 🆕 V2.1. CSP del documento con `script-src 'self'` más los hashes de los scripts en línea del build. Un `<script>` inyectado por un XSS no tiene hash y no corre. La mitad de la cabecera la pone CloudFront y la mitad de la meta el build del frontend; el smoke exige las dos (16.8, 17.2).
+- 🆕 V2.1. `Idempotency-Key` obligatoria en los `POST` que crean (9.6). No es un control de seguridad, pero cierra la puerta a duplicados por reintentos, que es el incidente más común de una API con usuarios reales.
 
 ### 23.3 Borde
 
@@ -9528,6 +10037,8 @@ Leer el secreto una vez y guardarlo en una variable de módulo hace que, el día
 - Dependabot semanal y CodeQL `security-extended` (17.1).
 - Los scripts de postinstall están en lista blanca (17.1). Un paquete nuevo que necesite compilar se ve en el diff de `pnpm-workspace.yaml`.
 - cdk-nag es gate de synth, no un informe que alguien lee si se acuerda (16.10).
+- 🆕 V2.1. Toda GitHub Action va fijada por SHA, y zizmor audita los workflows en cada PR (17.1).
+- 🆕 V2.1. Cada release lleva SBOM SPDX y una attestation de procedencia firmada con Sigstore. El deploy verifica la firma y los hashes antes de asumir el rol de la cuenta (17.2). Es SLSA Build L2 sin coste: el repositorio es público y la firma la emite GitHub.
 
 ### 23.6 Lo que esta versión deja apagado a propósito
 
@@ -9580,6 +10091,8 @@ El dashboard del stack de API junta peticiones, errores, latencia y conexiones d
 ### 24.4 Lo que se correlaciona
 
 `release` (SHA) va en el health y en Sentry. Cuando una alarma salta, se sabe qué commit está detrás del alias `live` sin entrar a la consola de Lambda. El pipeline no promueve un SHA distinto del que pasó `verify`: el artefacto `release-<sha>` es el mismo zip.
+
+🆕 **V2.1. Del navegador a la línea de log.** El frontend genera el `x-request-id` de cada llamada (un UUID, que `genRequestId` acepta) y lo deja como breadcrumb de Sentry cuando la llamada falla. Un error del navegador en Sentry lleva, en sus breadcrumbs, los `requestId` de las últimas llamadas a la API. Ese id se pega en Logs Insights (24.1) y lleva a la línea de pino, a la fila de `audit_logs` y, si fue un 5xx, al evento de Sentry del backend. No se usa tracing distribuido de Sentry: cuesta cuota del plan gratuito y aquí X-Ray ya traza el lado del servidor (24.2).
 
 ---
 ## 25. Rendimiento
@@ -9767,7 +10280,7 @@ El núcleo se puede implementar y desplegar en `dev` sin estos datos, usando los
 | Marcador | Quién lo da | Dónde se usa |
 |---|---|---|
 | `<ALERT_EMAIL>` | Operaciones | Suscripción del topic de alarmas |
-| `<SENTRY_DSN_BACKEND>` | Quien cree el proyecto de Sentry | Variable de la Lambda. Vacío = Sentry no se inicializa, y todo lo demás funciona |
+| `<SENTRY_DSN_BACKEND>` | Quien cree el proyecto de Sentry | Variable de la Lambda. Vacío = Sentry no se inicializa, y todo lo demás funciona. El plan Developer de Sentry es gratis (1 usuario, 5.000 errores al mes compartidos con el proyecto del frontend). Solo se mandan 5xx, así que la cuota alcanza mientras la app esté sana |
 | `<ENTITY_ID>` | El dominio | Columna `entityId` de documentos: el identificador natural del dueño del archivo |
 | `<DOC_TIPO_1..3>` | El dominio | El DTO de documentos rechaza cualquier tipo que no esté en la lista |
 | `<TERMS_URL>` | Legal | `GET /api/auth/terms-link` lo devuelve para que el signup lo muestre |
