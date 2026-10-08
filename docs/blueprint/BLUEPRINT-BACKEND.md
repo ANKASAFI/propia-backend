@@ -7,6 +7,8 @@
 > **Todo el código núcleo de esta versión fue compilado y probado** antes de escribirse aquí: un proyecto de verificación con estos mismos archivos pasó lint con reglas tipadas, typecheck estricto, 10 tests unitarios y 44 tests e2e contra PostgreSQL 17 real, el empaquetado de las Lambdas con una invocación simulada de API Gateway, `cdk synth` de los tres stages con cdk-nag como gate, y `actionlint` sobre los workflows. Lo que **no** se pudo probar sin una cuenta AWS (el primer despliegue real) está marcado como tal y tiene su comando de verificación en el plan (sección 20).
 >
 > **Versión 2.1 — 2026-10-08.** Añade los controles de prioridad 0, todos sin coste o dentro de una capa gratuita: idempotencia de los `POST` (9.6), contrato OpenAPI versionado con detección de cambios incompatibles (17.4), Actions fijadas por SHA, auditoría de workflows, SBOM y procedencia firmada del artefacto (17.1, 17.2), y la CSP con `script-src` que el frontend genera en su build (16.8). Ese código **no se ejecutó** al escribirlo: va marcado 🆕 **V2.1** y su verificación está en el checklist (21).
+>
+> **Versión 2.2 — 2026-10-08.** Cierra las decisiones de producto que cambian el núcleo antes de escribir el dominio: región `sa-east-1`, rol `Usuario`, audiencias `interno`/`externo`, papelera, datos sensibles, avisos y reportes (ADR-13). El código tocado va marcado 🆕 **V2.2** y no se ejecutó.
 
 ---
 
@@ -38,6 +40,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | 🟩 **NÚCLEO** | Infraestructura reutilizable, independiente del dominio | **Copiar literalmente**, sustituyendo marcadores |
 | 🆕 **V2** | Núcleo nuevo o reescrito en la v2 (no existía así en el original) | **Copiar literalmente**, igual que el núcleo. La etiqueta solo indica procedencia |
 | 🆕 **V2.1** | Añadido en la 2.1, escrito contra el código verificado pero sin ejecutar | Copiar igual. La primera implementación corre el checklist de la sección 21 antes de darlo por bueno |
+| 🆕 **V2.2** | Decisión de producto del 2026-10-08, escrita en el núcleo | Copiar igual. Si choca con un bloque V2, manda V2.2 |
 | 🟦 **EJEMPLO DE DOMINIO** | Código del dominio original, incluido solo como referencia de patrón | **No copiar**. Leer, entender la forma, aplicarla al dominio nuevo |
 | 🟥 **DEUDA — NO REPLICAR** | El original lo hace así y está mal | **No copiar**. La sección 19 explica la corrección obligatoria |
 
@@ -137,11 +140,11 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | `<stage>` | Entorno de despliegue | `dev` \| `qa` \| `prod` | — |
 | `<ACCOUNT_NONPROD>` | Cuenta AWS que aloja `dev` y `qa` | 12 dígitos | *pendiente* |
 | `<ACCOUNT_PROD>` | Cuenta AWS que aloja `prod` | 12 dígitos | *pendiente* |
-| `<REGION>` | Región AWS principal de todo el stack | `us-east-1`, `sa-east-1`, … | `us-east-1` |
+| `<REGION>` | Región AWS principal de todo el stack | `sa-east-1` | `sa-east-1` |
 | `<DOMINIO_BASE>` | Dominio registrado en Route 53 | dominio | *pendiente* |
 | `<HOSTED_ZONE_ID>` | Id de la zona alojada de `<DOMINIO_BASE>` en Route 53 | `Z...` | *pendiente* |
 | `<DOMINIO_APP>` | Dominio público del stage (front **y** API, mismo origen) | `app-<stage>.<DOMINIO_BASE>`; en prod `app.<DOMINIO_BASE>` | derivado |
-| `<ROL_A>` | Grupo de Cognito con acceso operativo al dominio | nombre de grupo | *pendiente* (depende del dominio) |
+| `<ROL_A>` | Grupo de Cognito de quien usa la app sin administrar usuarios | nombre de grupo | `Usuario` |
 | `<ROL_B>` | Grupo de Cognito administrador | nombre de grupo | `Admin` |
 | `<ALERT_EMAIL>` | Buzón que recibe alarmas y avisos de presupuesto | email | *pendiente* |
 | `<SENTRY_DSN_BACKEND>` | DSN del proyecto de Sentry del backend (no es secreto) | URL | *pendiente* |
@@ -4316,7 +4319,7 @@ export class UsersModule {}
 | Dinero | `numeric(p, s)` en SQL, `string` en TypeScript, `decimal.js` para operar |
 | Enumeraciones | `varchar` + `@Check` + unión de constantes en TS. No `ENUM` de PostgreSQL: añadir un valor es un `ALTER TYPE` que no cabe en una transacción usable y rompe el despliegue (22.20) |
 | Concurrencia | `@VersionColumn()` en toda entidad que se edita. El `UPDATE` lleva `WHERE id = ? AND version = ?`; 0 filas es 409 |
-| Borrado | No hay borrado físico de negocio. Estado (`active`/`disabled`) o, en documentos, `quarantined` |
+| Borrado | 🆕 V2.2. Papelera: `deletedAt` nulo significa viva. Listar y obtener filtran `deletedAt IS NULL`. Restaurar pone `deletedAt` en null y se audita. El índice único de la clave natural es parcial (`WHERE deleted_at IS NULL`) para poder reutilizar el código de una fila en la papelera. `users` no entra en la papelera: se bloquea. `audit_logs` no se borra |
 | `synchronize` | `false` siempre. El cambio de esquema es una migración |
 | Lista de entidades | Explícita en `src/database/entities.ts`. Un glob no sobrevive al bundle de esbuild |
 
@@ -4346,9 +4349,14 @@ export type UserStatus = (typeof USER_STATUS)[keyof typeof USER_STATUS];
 export const COGNITO_STATUS = { UNCONFIRMED: 'unconfirmed', CONFIRMED: 'confirmed' } as const;
 export type CognitoStatus = (typeof COGNITO_STATUS)[keyof typeof COGNITO_STATUS];
 
+/** 🆕 V2.2. Dos audiencias, las mismas dos roles. El admin solo puede ser interno. */
+export const USER_KIND = { INTERNO: 'interno', EXTERNO: 'externo' } as const;
+export type UserKind = (typeof USER_KIND)[keyof typeof USER_KIND];
+
 @Entity('users')
 @Check(`"user_status" IN ('active','blocked','observed','rejected')`)
 @Check(`"cognito_status" IN ('unconfirmed','confirmed')`)
+@Check(`"kind" IN ('interno','externo')`)
 @Check(`"email" = lower("email")`)
 export class User {
   /** `sub` de Cognito. No se genera: lo asigna Cognito al crear la identidad. */
@@ -4365,6 +4373,10 @@ export class User {
 
   @Column({ type: 'varchar', length: 100 })
   lastName: string;
+
+  /** 🆕 V2.2. Lo elige en el alta y solo un Admin lo cambia. */
+  @Column({ type: 'varchar', length: 20 })
+  kind: UserKind;
 
   @Column({ type: 'varchar', length: 20, nullable: true })
   phoneNumber: string | null;
@@ -5229,6 +5241,7 @@ import {
   Check,
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   Entity,
   Index,
   JoinColumn,
@@ -5245,7 +5258,7 @@ export type ProjectStatus = (typeof PROJECT_STATUS)[keyof typeof PROJECT_STATUS]
 
 @Entity('projects')
 @Check(`"status" IN ('draft','active','closed')`)
-@Index('UQ_projects_code', ['code'], { unique: true })
+@Index('UQ_projects_code', ['code'], { unique: true, where: '"deleted_at" IS NULL' })
 export class Project {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -5284,6 +5297,10 @@ export class Project {
 
   @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
+
+  /** 🆕 V2.2. Null = en uso. Con fecha = en la papelera (11.1). */
+  @DeleteDateColumn({ type: 'timestamptz' })
+  deletedAt: Date | null;
 
   @VersionColumn({ default: 1 })
   version: number;
@@ -5648,7 +5665,7 @@ Puntos que se copian aunque el recurso se llame de otra forma:
 
 ### 12.3 Qué no se copia de un CRUD genérico
 
-- No hay `DELETE`. Desactivar es un cambio de estado auditado.
+- 🆕 V2.2. `DELETE` no borra la fila: pone `deletedAt` y audita `*_DELETED`. Restaurar es otro endpoint de `<ROL_B>` que limpia `deletedAt`. Un `find` que no filtre la papelera es un bug.
 - No hay `findOneById` ni `Connection`: no existen en TypeORM 1.1. La búsqueda es `findOneBy({ id })` y las transacciones son `dataSource.transaction`.
 - No se pasa `null` o `undefined` dentro de un `where` "para ignorar el filtro": TypeORM 1.1 lanza. El filtro opcional se omite del objeto.
 
@@ -7634,32 +7651,32 @@ export const CONFIG: Record<Stage, StageConfig> = {
     account: '<ACCOUNT_PROD>',
     domainName: 'app.<DOMINIO_BASE>',
     auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'REQUIRED' },
-    network: { maxAzs: 2, natGateways: 2 },
+    network: { maxAzs: 2, natGateways: 1 },
     db: {
-      instanceClass: 'm7g.large',
-      multiAz: true,
-      allocatedStorageGb: 50,
-      maxAllocatedStorageGb: 500,
+      instanceClass: 't4g.small',
+      multiAz: false,
+      allocatedStorageGb: 20,
+      maxAllocatedStorageGb: 100,
       backupRetentionDays: 35,
       deletionProtection: true,
     },
     api: {
       memoryMb: 1769,
-      provisionedConcurrency: 2,
-      throttleRatePerSecond: 500,
-      throttleBurst: 1000,
+      provisionedConcurrency: 1,
+      throttleRatePerSecond: 50,
+      throttleBurst: 100,
       canary: true,
     },
-    geoAllowList: [],
+    geoAllowList: ['PE'],
     logRetentionDays: RetentionDays.THIRTEEN_MONTHS,
-    monthlyBudgetUsd: 1500,
+    monthlyBudgetUsd: 400,
   },
 };
 ```
 
-Los tres stages están en el mismo archivo para que un cambio de tamaño de instancia o de memoria sea un diff revisable, no un clic en la consola. Prod se separa de los otros en: cuenta, Multi-AZ, deletion protection, backup de 35 días, dos NAT, memoria 1769 MB, dos instancias provisionadas, canary, presupuesto, retención de logs de 13 meses.
+Los tres stages están en el mismo archivo para que un cambio de tamaño de instancia o de memoria sea un diff revisable, no un clic en la consola. 🆕 V2.2. Prod se separa en: otra cuenta, deletion protection, backup de 35 días, una instancia provisionada (para que el primer clic no espere un arranque en frío), canary, filtro geográfico `PE` y retención de logs de 13 meses. No hay Multi-AZ ni un segundo NAT: la caída tolerable es de horas y el primer año son menos de 100 usuarios (ADR-13). `dev` y `qa` dejan `geoAllowList` vacío para poder entrar desde fuera de Perú.
 
-`auth.featurePlan` queda en `ESSENTIALS`. Pasarlo a `PLUS` enciende la protección contra amenazas de Cognito (credenciales comprometidas, inicio de sesión adaptativo) y cambia el precio por usuario activo. Es una línea; la decisión de negocio está en el Anexo A. `geoAllowList` vacío significa sin filtro geográfico. Llenarlo con códigos ISO activa la regla de WAF.
+`auth.featurePlan` queda en `ESSENTIALS` (ADR-13): con menos de 100 usuarios no se paga Cognito Plus. `geoAllowList` de prod es `['PE']`. Vacío, como en dev y qa, deja el WAF sin filtro geográfico.
 
 `selfSignup: true` y `mfa: 'REQUIRED'` acompañan al user pool. Cerrar el alta es poner `selfSignup: false` y dar de alta a la gente con `create-admin` o con `AdminCreateUser`.
 
@@ -9147,7 +9164,7 @@ Cada aceptación lleva el id del hallazgo y la razón. Las que hay, y por qué n
 | `RDS11` | Puerto 5432 por defecto | Cambiarlo no aporta con el security group cerrado a dos orígenes, y rompe todos los ejemplos y el health check |
 | `APIG4` | La ruta no tiene autorizador de API Gateway | La autorización es el JWT de la cookie, validado en la app, porque el autorizador de API Gateway no lee esa cookie con la misma semántica |
 | `COG8` | Plan Essentials en lugar de Plus | Decisión de coste (Anexo A). El switch está en `config.ts` |
-| `CFR1` | CloudFront sin restricción geográfica | `geoAllowList` vacío hasta que negocio diga los países |
+| `CFR1` | CloudFront sin restricción geográfica | Solo dev y qa. Prod lleva `geoAllowList: ['PE']` y no acepta `CFR1` |
 | `RDS3`, `RDS10` | Sin Multi-AZ y sin deletion protection | Solo se aceptan en dev y qa. En prod el synth no los acepta: la config los enciende |
 
 `AwsSolutionsChecks` se registra con `Validations.of(app).addPlugins(...)`. En cdk-nag 3 **ya no es un Aspect** (`visit` no existe); añadirlo con `Aspects.of` falla al sintetizar.
@@ -9855,6 +9872,7 @@ El primer push a `main` despliega `dev`. Si no hay cuenta todavía, esta fase se
 - [ ] No queda `synchronize: true`, ni `enableCors`, ni un token leído de `Authorization`, ni `runMigrations()` fuera del migrator.
 - [ ] `rg -n "process\.env" src/modules` no devuelve nada.
 - [ ] Toda entidad editable tiene `@VersionColumn()`. Todo importe es `numeric` / `string`.
+- [ ] 🆕 V2.2. Toda entidad de negocio tiene `deletedAt` y sus lecturas lo filtran. `users` tiene `kind`. Un campo sensible no aparece en logs ni en `before`/`after` (sale `"[redactado]"`).
 - [ ] `MIGRATIONS` lista todas las clases de `src/migrations/`, en orden, y el trigger `audit_logs_immutable` sigue en la migración inicial.
 
 ### Contrato
@@ -10144,7 +10162,7 @@ Dev está dimensionado para ser el sitio donde se prueba, no un clon de prod: `t
 | Backups automáticos de RDS, dev y qa | 7 días | `db.backupRetentionDays` |
 | Backups automáticos de RDS, prod | 35 días | igual |
 | Point-in-time recovery | Dentro de esa ventana | lo enciende el mismo backup |
-| Multi-AZ | Solo prod | `db.multiAz` |
+| Multi-AZ | Apagado en los tres stages. Una caída de zona se recupera con el PITR; el tiempo aceptado es de horas | `db.multiAz` |
 | Versionado del bucket de documentos | Activo | `storage-stack` |
 | Logs de aplicación | 30 días (dev/qa), 13 meses (prod) | `logRetentionDays` |
 
@@ -10166,11 +10184,18 @@ No hay borrado físico de usuarios ni de auditoría. Desactivar es el mecanismo.
 
 ### 26.4 Datos personales
 
-El email, el nombre y el sub viven en `users` y, como `sub`, en `audit_logs` y en `uploaded_by_sub`. Los logs de aplicación no llevan email: el filtro y la redacción de pino están para eso (9.3). Un export de "todo lo que tenemos de esta persona" es una consulta por `sub` a esas tres tablas; no está implementada como endpoint porque el dominio todavía no ha dicho quién puede pedirla (Anexo A). Cuando se añada, es un `GET` de `<ROL_B>` que lee esas tablas y nada más.
+🆕 **V2.2.** El producto guarda datos sensibles (salud, financieros o biométricos; cuáles, en el Anexo A). El email, el nombre y el sub viven en `users` y, como `sub`, en `audit_logs` y en `uploaded_by_sub`.
+
+Reglas que valen desde la primera entidad de dominio:
+
+- Los logs de aplicación no llevan email ni valores de columnas sensibles. El filtro de pino (9.3) quita el email; cada entidad declara sus campos sensibles y el servicio no los pasa a `logger`.
+- `before`/`after` de `audit_logs` registran que el campo cambió, con el valor `"[redactado]"`. La bitácora dice quién y cuándo, no el dato.
+- Antes de prod existen dos lecturas: `GET /api/me/export` (la persona pide lo suyo) y `GET /api/users/{id}/export` (solo `<ROL_B>`). La cancelación no borra la fila de auditoría: anonimiza los campos personales de `users` y de las tablas de dominio, y deja el `sub` en la bitácora.
+- No hay cifrado de columna hasta que se sepa el campo concreto (26.5). El disco de RDS y el bucket ya van cifrados.
 
 ### 26.5 Lo que no cubre este núcleo
 
-- Un segundo región activa (activo-activo). El coste y la complejidad no se justifican hasta tener un objetivo de RTO escrito por negocio. Multi-AZ cubre la caída de una zona, que es el fallo que realmente ocurre.
+- Una segunda región activa. El RTO aceptado es de horas (ADR-13), así que una caída de zona se cubre restaurando el PITR, no con Multi-AZ ni con activo-activo.
 - Cifrado a nivel de columna. El disco de RDS y el bucket ya están cifrados. Cifrar columnas sueltas se añade el día que un dato concreto lo exija, no por adelantado: TypeORM y las búsquedas se complican y es fácil dejar de poder consultar.
 - Copias fuera de la cuenta (backup cross-account). Es el siguiente paso razonable de prod y requiere la cuenta de prod, que todavía es un marcador. Se hace con una copia del snapshot a `<ACCOUNT_PROD>` de seguridad, no reescribiendo el stack.
 
@@ -10227,55 +10252,56 @@ Los mensajes de error y de validación están en español, que es el idioma de q
 
 No hay `tenant_id` en las tablas. El producto, hoy, es una organización por despliegue (una cuenta, un stage, un pool). Meter la columna "por si acaso" obliga a no olvidarla en cada query y a testear el aislamiento desde el primer día, para un requisito que nadie ha pedido. Si aparece, es una migración de expandir (columna nullable, luego obligatoria) y un filtro en el guard, no un rediseño de la infraestructura.
 
+### ADR-13. Decisiones de producto del 2026-10-08
+
+🆕 **V2.2.** Cerradas antes de escribir el dominio. Cambiar una fila es un PR que actualiza esta tabla y el sitio que nombra.
+
+| # | Decisión | Qué queda escrito |
+|---|---|---|
+| 1 | Una organización por instalación | ADR-12. No hay `tenant_id` |
+| 2 | La usan empleados y externos, con pantallas distintas | `users.kind`: `interno` o `externo`. El grupo `Admin` solo se asigna a un interno. `<ROL_A>` es `Usuario` |
+| 3 | El alta es abierta | `selfSignup: true`. Cómo se distingue el `kind` en el formulario, y si un alta ve datos el mismo día, siguen en el Anexo A |
+| 4 | Email, contraseña y MFA. Sin SSO | `mfa: 'REQUIRED'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes |
+| 5 | Los usuarios están en Perú | `<REGION>` = `sa-east-1` (São Paulo: no hay región de AWS en Perú). `geoAllowList: ['PE']` solo en prod. El certificado y el WAF de CloudFront siguen en `us-east-1` y no guardan datos. Guardar datos personales peruanos en Brasil es una transferencia internacional (Ley 29733): el texto legal que la cubre sigue en el Anexo A |
+| 6 | Datos sensibles | 26.4. No se loguean, se redactan en la auditoría, y el export de los datos de una persona existe antes de prod |
+| 7 | Español, preparado para traducir | Los mensajes de la API siguen en español y en un solo sitio (ADR-11). El cliente no hardcodea textos (blueprint del frontend) |
+| 8 | Auditoría de todo cambio | `audit_logs` append-only, dentro de la transacción, con antes/después (9.5, 12.2) |
+| 9 | Papelera, no borrado físico | `deletedAt` en las entidades de negocio (11.1). Sin purga automática |
+| 10 | Escritorio, usable en el móvil. Con internet | El cliente es responsive. No hay modo offline ni app nativa |
+| 11 | Documentos PDF, Office e imágenes | El flujo de S3 de la sección 13. Sin captura de cámara como camino principal |
+| 12 | Aviso por email y dentro de la app. Sin tiempo real | Tabla `notifications` (destinatario, título, cuerpo, `readAt`). Al crearla se manda el mismo texto por SES. El cliente la consulta al entrar y cada 60 s con la pestaña visible. No hay WebSocket |
+| 13 | Reportes: Excel, CSV, PDF y tableros | CSV y `.xlsx` (exceljs) los genera la API. El PDF lo genera la API con pdfkit, sin Chromium: no cabe en Lambda. Los gráficos son del cliente (ECharts) contra endpoints de agregados |
+| 14 | Sin integración con otros sistemas | No hay API para terceros ni importación desde un ERP. Exportar un archivo no cuenta como integración |
+| 15 | Dominio propio, ya registrado | Falta el nombre y el id de la zona (Anexo A). El correo sale por SES en ese dominio, no por el remitente de Cognito |
+| 16 | Dos cuentas AWS | ADR-8. Faltan los números de cuenta |
+| 17 | 24/7, con una caída tolerable de horas | Prod: `t4g.small`, sin Multi-AZ, un NAT, una instancia de Lambda provisionada, backup de 35 días, presupuesto 400 USD/mes |
+
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
 
-El núcleo se puede implementar y desplegar en `dev` sin estos datos, usando los valores propuestos de la sección 1 donde los hay. Lo que sigue **bloquea un despliegue de prod con usuarios reales**, y son decisiones de producto, no de código. Cada una tiene las opciones y el sitio exacto del cambio.
+Lo cerrado el 2026-10-08 está en ADR-13. Aquí queda lo que todavía bloquea un prod con usuarios reales, más las dos decisiones de producto que el alta abierta y los datos sensibles dejan en conflicto.
 
-### A.1 Dominio
+### A.1 Cerrado, falta el dato
 
-| Opción | Efecto |
-|---|---|
-| Un dominio propio (`app.ejemplo.com`, `app-dev.ejemplo.com`, `app-qa.ejemplo.com`) | Se rellena `<DOMINIO_BASE>`, `<HOSTED_ZONE_ID>` y la zona ya existe en Route 53 de la cuenta. Es el camino que el stack espera |
-| Sin dominio todavía | `dev` puede salir con el dominio por defecto de CloudFront, pero las cookies `Secure` y el certificado hay que resolverlos antes de que un navegador guarde la sesión. No es un modo que el stack implemente: se espera a la zona |
+| Dato | Decisión ya tomada | Falta |
+|---|---|---|
+| Dominio | Propio y ya registrado. Correo por SES (`no-reply@<DOMINIO_BASE>`), no el remitente de Cognito | El nombre y el `<HOSTED_ZONE_ID>` |
+| Cuentas | Dos (ADR-8) | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>` |
+| Rol | `<ROL_A>` = `Usuario`, `<ROL_B>` = `Admin` | Nada |
+| Alta | Abierta, MFA obligatorio, sin SSO, plan Essentials | Ver A.2 |
+| País | Prod solo desde Perú (`PE`). dev y qa sin filtro | Nada |
+| Cognito Plus | No. Essentials cubre MFA y cuesta menos; con menos de 100 usuarios no se paga Plus | Nada, salvo que se reabra |
 
-### A.2 Cuentas AWS
+### A.2 Sigue abierto, y cambia el código
 
-| Opción | Efecto |
-|---|---|
-| Dos cuentas, como está escrito | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>`. Recomendado (ADR-8) |
-| Una sola cuenta para los tres stages | Posible: los nombres llevan el stage y no chocan. Se pierde el aislamiento de prod. Hay que cambiar el `account` de `prod` en `config.ts` y el trust de OIDC |
+| # | Pregunta | Por qué no se puede dejar para después |
+|---|---|---|
+| 1 | Un alta nueva, ¿entra directo o un Admin la activa? | El alta es abierta y los datos son sensibles. Hoy `userStatus` nace en `active` |
+| 2 | En el registro, ¿cómo se sabe si es interno o externo? | `users.kind` es obligatorio y solo un Admin lo cambia después |
+| 3 | ¿Qué datos sensibles hay: salud, financieros, biométricos, o una mezcla? | Cambia qué columnas se redactan y si hace falta cifrado de columna |
+| 4 | La transferencia de datos personales de Perú a `sa-east-1` (Brasil), ¿qué texto legal la cubre? | AWS no tiene región en Perú. Sin ese texto no hay prod |
 
-### A.3 Nombre del rol operativo (`<ROL_A>`)
-
-`<ROL_B>` queda en `Admin`. `<ROL_A>` es el grupo de quien usa la aplicación sin administrar usuarios. Hasta que el dominio tenga nombre (Operaciones, Analista, …), los `@Roles` del código de ejemplo no compilan sustituidos. No afecta al núcleo de auth, que trata el nombre como un marcador.
-
-### A.4 Alta de usuarios
-
-| Opción | Dónde |
-|---|---|
-| Cada persona se registra (`selfSignup: true`) | Ya está así en `config.ts` y en `AUTH_SELF_SIGNUP` |
-| Solo invitación | `selfSignup: false` y las altas salen de `create-admin` o de un endpoint de `<ROL_B>` que llame a `AdminCreateUser` |
-
-### A.5 Correo
-
-| Opción | Efecto |
-|---|---|
-| Dejar el email por defecto de Cognito | Funciona el primer día. Remitente genérico, cuota baja, los correos caen en spam |
-| SES con un subdominio (`no-reply@<DOMINIO_BASE>`) | Hay que verificar la identidad en la misma región y añadirla al user pool. No está escrito en `auth-stack.ts` porque sin el dominio no se puede sintetizar |
-
-### A.6 Cognito Plus
-
-| Opción | Efecto |
-|---|---|
-| Essentials (actual) | MFA, rotación de refresh, precio menor |
-| Plus | Añade protección contra credenciales comprometidas y riesgo adaptativo. Se cambia `featurePlan` a `'PLUS'` y se quita la aceptación `COG8` de `nag.ts` |
-
-### A.7 Países
-
-`geoAllowList` vacío deja el WAF sin filtro geográfico (aceptación `CFR1`). Cuando se sepa desde qué países se opera, se rellena el array y el synth deja de aceptar `CFR1`.
-
-### A.8 El resto de marcadores pendientes
+### A.3 El resto de marcadores pendientes
 
 | Marcador | Quién lo da | Dónde se usa |
 |---|---|---|
@@ -10285,7 +10311,7 @@ El núcleo se puede implementar y desplegar en `dev` sin estos datos, usando los
 | `<DOC_TIPO_1..3>` | El dominio | El DTO de documentos rechaza cualquier tipo que no esté en la lista |
 | `<TERMS_URL>` | Legal | `GET /api/auth/terms-link` lo devuelve para que el signup lo muestre |
 
-### A.9 Lo que se verificó y lo que no
+### A.4 Lo que se verificó y lo que no
 
 Verificado el 07/10/2026, sin cuenta AWS: compilación, lint con tipos, 10 unitarios, 44 e2e contra PostgreSQL 17, bundle con invocación simulada de API Gateway (200/401/403), `cdk synth` de los cinco conjuntos con cdk-nag limpio, `actionlint` y `shellcheck`.
 
