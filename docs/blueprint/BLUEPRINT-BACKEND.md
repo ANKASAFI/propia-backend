@@ -4304,6 +4304,24 @@ export class UsersModule {}
 
 `PATCH /api/users/:id/status` exige `<ROL_B>`. Desactivar a un usuario no revoca por sí solo sus refresh tokens: el administrador que desactiva llama también al flujo de `logout-all` de ese usuario (queda como paso del servicio de dominio cuando exista la pantalla; el endpoint `logout-all` ya revoca la sesión de quien llama). Un usuario `disabled` recibe 403 en el guard aunque su access token siga siendo válido, así que el efecto es inmediato para la API.
 
+### 10.7 Puerta para invertir
+
+🆕 **V2.2.** El alta no la aprueba nadie. `userStatus` nace en `active` y la persona entra en ese momento. Lo que no puede hacer todavía es invertir.
+
+El recorrido del `Usuario` es este, y en este orden:
+
+1. Entra (sesión válida).
+2. Llena su ficha de datos. Puede guardarla a medias.
+3. La firma. Firmar congela esa versión: si después cambia un dato, la firma deja de valer y tiene que firmar otra vez.
+4. Solo con la ficha firmada puede crear una operación de inversión.
+5. La operación queda en `submitted`. El `Admin` la aprueba o la rechaza. El admin no aprueba la cuenta.
+
+`GET /api/auth/me` incluye `fichaStatus`: `draft` o `signed`. Crear una operación con `draft` responde 403 con el código `FICHA_NOT_SIGNED`. El cliente, con ese código, lleva a la ficha y no pinta la pantalla de invertir como si estuviera rota.
+
+La operación la crea el `Usuario` (`@Idempotent()`). Pasarla a `approved` o `rejected` es solo de `Admin`, dentro de la misma transacción que la auditoría. Rechazar no borra la fila. El admin ve la cola de las `submitted`. El usuario ve las suyas.
+
+Cómo se firma, qué campos lleva la ficha y si el dinero se mueve dentro de la app siguen en el Anexo A. Hasta cerrarlos no se escribe el módulo.
+
 ---
 ## 11. Capa de datos: entidades, convenciones y migraciones
 
@@ -10260,7 +10278,7 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 |---|---|---|
 | 1 | Una organización por instalación | ADR-12. No hay `tenant_id` |
 | 2 | La usan empleados y externos, con pantallas distintas | `users.kind`: `interno` o `externo`. El grupo `Admin` solo se asigna a un interno. `<ROL_A>` es `Usuario` |
-| 3 | El alta es abierta | `selfSignup: true`. Cómo se distingue el `kind` en el formulario, y si un alta ve datos el mismo día, siguen en el Anexo A |
+| 3 | El alta es abierta y entra ese día | `selfSignup: true`. `userStatus` nace en `active`. Invertir exige ficha firmada; el Admin valida la operación, no la cuenta (10.7) |
 | 4 | Email, contraseña y MFA. Sin SSO | `mfa: 'REQUIRED'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes |
 | 5 | Los usuarios están en Perú | `<REGION>` = `sa-east-1` (São Paulo: no hay región de AWS en Perú). `geoAllowList: ['PE']` solo en prod. El certificado y el WAF de CloudFront siguen en `us-east-1` y no guardan datos. Guardar datos personales peruanos en Brasil es una transferencia internacional (Ley 29733): el texto legal que la cubre sigue en el Anexo A |
 | 6 | Datos sensibles | 26.4. No se loguean, se redactan en la auditoría, y el export de los datos de una persona existe antes de prod |
@@ -10275,11 +10293,12 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 | 15 | Dominio propio, ya registrado | Falta el nombre y el id de la zona (Anexo A). El correo sale por SES en ese dominio, no por el remitente de Cognito |
 | 16 | Dos cuentas AWS | ADR-8. Faltan los números de cuenta |
 | 17 | 24/7, con una caída tolerable de horas | Prod: `t4g.small`, sin Multi-AZ, un NAT, una instancia de Lambda provisionada, backup de 35 días, presupuesto 400 USD/mes |
+| 18 | Invertir es un paso posterior al alta | Ficha (`draft` → `signed`) y operación (`submitted` → `approved` \| `rejected`). Ver 10.7 |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
 
-Lo cerrado el 2026-10-08 está en ADR-13. Aquí queda lo que todavía bloquea un prod con usuarios reales, más las dos decisiones de producto que el alta abierta y los datos sensibles dejan en conflicto.
+Lo cerrado el 2026-10-08 está en ADR-13 y en 10.7. Aquí queda lo que todavía bloquea escribir el módulo de inversión y un prod con usuarios reales.
 
 ### A.1 Cerrado, falta el dato
 
@@ -10288,7 +10307,8 @@ Lo cerrado el 2026-10-08 está en ADR-13. Aquí queda lo que todavía bloquea un
 | Dominio | Propio y ya registrado. Correo por SES (`no-reply@<DOMINIO_BASE>`), no el remitente de Cognito | El nombre y el `<HOSTED_ZONE_ID>` |
 | Cuentas | Dos (ADR-8) | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>` |
 | Rol | `<ROL_A>` = `Usuario`, `<ROL_B>` = `Admin` | Nada |
-| Alta | Abierta, MFA obligatorio, sin SSO, plan Essentials | Ver A.2 |
+| Alta | Abierta. Entra ese día, con MFA, sin SSO, plan Essentials | Nada en la cuenta. La ficha es otra puerta (10.7) |
+| Invertir | Ficha firmada, y el Admin valida la operación | Cómo se firma, los campos de la ficha y si el dinero se mueve en la app (A.2) |
 | País | Prod solo desde Perú (`PE`). dev y qa sin filtro | Nada |
 | Cognito Plus | No. Essentials cubre MFA y cuesta menos; con menos de 100 usuarios no se paga Plus | Nada, salvo que se reabra |
 
@@ -10296,10 +10316,11 @@ Lo cerrado el 2026-10-08 está en ADR-13. Aquí queda lo que todavía bloquea un
 
 | # | Pregunta | Por qué no se puede dejar para después |
 |---|---|---|
-| 1 | Un alta nueva, ¿entra directo o un Admin la activa? | El alta es abierta y los datos son sensibles. Hoy `userStatus` nace en `active` |
-| 2 | En el registro, ¿cómo se sabe si es interno o externo? | `users.kind` es obligatorio y solo un Admin lo cambia después |
-| 3 | ¿Qué datos sensibles hay: salud, financieros, biométricos, o una mezcla? | Cambia qué columnas se redactan y si hace falta cifrado de columna |
-| 4 | La transferencia de datos personales de Perú a `sa-east-1` (Brasil), ¿qué texto legal la cubre? | AWS no tiene región en Perú. Sin ese texto no hay prod |
+| 1 | Al invertir, ¿el dinero se mueve dentro de la app? | Una pasarela de pago es otra arquitectura. Registrarlo y validarlo a mano no |
+| 2 | ¿Cómo se firma la ficha? | Cambia lo que se guarda como prueba (casilla, trazo o firma digital) |
+| 3 | En el registro, ¿cómo se sabe si es interno o externo? | `users.kind` es obligatorio y solo un Admin lo cambia después |
+| 4 | ¿Qué datos sensibles hay: salud, financieros, biométricos, o una mezcla? | Cambia qué columnas se redactan y si hace falta cifrado de columna |
+| 5 | La transferencia de datos personales de Perú a `sa-east-1` (Brasil), ¿qué texto legal la cubre? | AWS no tiene región en Perú. Sin ese texto no hay prod |
 
 ### A.3 El resto de marcadores pendientes
 
