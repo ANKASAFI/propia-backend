@@ -5710,7 +5710,7 @@ La unicidad es un índice parcial `WHERE status <> 'quarantined'`. Dos subidas c
 | `GET` | `/api/documents` | sesión | Lista por `entityId` |
 | `GET` | `/api/documents/:id/download` | sesión | URL prefirmada de descarga de 60 s, auditada |
 
-`POST /uploads` exige `contentType` permitido (en el núcleo, solo `application/pdf`), `sizeBytes` ≤ 20 MiB y `sha256` en hexadecimal de 64 caracteres. Los tipos de documento son `<DOC_TIPO_1>`, `<DOC_TIPO_2>`, `<DOC_TIPO_3>` (Anexo A). Hasta que existan, el DTO trae tres slugs de ejemplo que se sustituyen.
+`POST /uploads` exige `contentType` permitido (en el núcleo, solo `application/pdf`), `sizeBytes` ≤ 20 MiB y `sha256` en hexadecimal de 64 caracteres. 🆕 V2.2. El tipo `comprobante` acepta además `image/jpeg` e `image/png` (10.7). Los tipos de documento son `<DOC_TIPO_1>`, `<DOC_TIPO_2>`, `<DOC_TIPO_3>` (Anexo A). Hasta que existan, el DTO trae tres slugs de ejemplo que se sustituyen, y uno de ellos pasa a ser `comprobante`.
 
 ### 13.3 La URL prefirmada
 
