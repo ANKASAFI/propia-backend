@@ -4313,14 +4313,15 @@ El recorrido del `Usuario` es este, y en este orden:
 1. Entra (sesión válida).
 2. Llena su ficha de datos. Puede guardarla a medias.
 3. La firma. Firmar congela esa versión: si después cambia un dato, la firma deja de valer y tiene que firmar otra vez.
-4. Solo con la ficha firmada puede crear una operación de inversión.
-5. La operación queda en `submitted`. El `Admin` la aprueba o la rechaza. El admin no aprueba la cuenta.
+4. Solo con la ficha firmada puede armar una operación de inversión.
+5. Sube el comprobante de la transferencia. El dinero no pasa por la app: no hay pasarela, ni tarjeta, ni Yape, ni datos de pago que guardar.
+6. Envía la operación. Queda en `submitted`. El `Admin` abre el comprobante y la aprueba o la rechaza. El admin no aprueba la cuenta.
 
 `GET /api/auth/me` incluye `fichaStatus`: `draft` o `signed`. Crear una operación con `draft` responde 403 con el código `FICHA_NOT_SIGNED`. El cliente, con ese código, lleva a la ficha y no pinta la pantalla de invertir como si estuviera rota.
 
-La operación la crea el `Usuario` (`@Idempotent()`). Pasarla a `approved` o `rejected` es solo de `Admin`, dentro de la misma transacción que la auditoría. Rechazar no borra la fila. El admin ve la cola de las `submitted`. El usuario ve las suyas.
+La operación la crea el `Usuario` en `draft` (`@Idempotent()`). El comprobante es un documento de la sección 13, tipo `comprobante`, con `contentType` `application/pdf`, `image/jpeg` o `image/png`. Enviarla exige ese documento en `processed`: si falta o sigue en `scanning`, responde 409 `COMPROBANTE_REQUIRED`. Desde `submitted` el archivo queda congelado. Pasarla a `approved` o `rejected` es solo de `Admin`, en la misma transacción que la auditoría, y el admin descarga el archivo por la URL prefirmada de 13.2. `approved` no se reabre. `rejected` vuelve a `draft` para que el usuario suba otro comprobante y la envíe de nuevo. Rechazar no borra la fila. El usuario ve las suyas.
 
-Cómo se firma, qué campos lleva la ficha y si el dinero se mueve dentro de la app siguen en el Anexo A. Hasta cerrarlos no se escribe el módulo.
+Cómo se firma y qué campos lleva la ficha siguen en el Anexo A. Hasta cerrarlos no se escribe el módulo.
 
 ---
 ## 11. Capa de datos: entidades, convenciones y migraciones
@@ -10293,7 +10294,8 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 | 15 | Dominio propio, ya registrado | Falta el nombre y el id de la zona (Anexo A). El correo sale por SES en ese dominio, no por el remitente de Cognito |
 | 16 | Dos cuentas AWS | ADR-8. Faltan los números de cuenta |
 | 17 | 24/7, con una caída tolerable de horas | Prod: `t4g.small`, sin Multi-AZ, un NAT, una instancia de Lambda provisionada, backup de 35 días, presupuesto 400 USD/mes |
-| 18 | Invertir es un paso posterior al alta | Ficha (`draft` → `signed`) y operación (`submitted` → `approved` \| `rejected`). Ver 10.7 |
+| 18 | Invertir es un paso posterior al alta | Ficha (`draft` → `signed`) y operación (`draft` → `submitted` → `approved` \| `rejected`). Ver 10.7 |
+| 19 | El dinero no entra en la app | El usuario sube un comprobante (PDF, JPEG o PNG) por el flujo de S3. El Admin valida mirando ese archivo. Sin pasarela de pago |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
@@ -10308,7 +10310,7 @@ Lo cerrado el 2026-10-08 está en ADR-13 y en 10.7. Aquí queda lo que todavía 
 | Cuentas | Dos (ADR-8) | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>` |
 | Rol | `<ROL_A>` = `Usuario`, `<ROL_B>` = `Admin` | Nada |
 | Alta | Abierta. Entra ese día, con MFA, sin SSO, plan Essentials | Nada en la cuenta. La ficha es otra puerta (10.7) |
-| Invertir | Ficha firmada, y el Admin valida la operación | Cómo se firma, los campos de la ficha y si el dinero se mueve en la app (A.2) |
+| Invertir | Ficha firmada. El dinero se mueve fuera. El usuario sube el comprobante y el Admin lo valida | Cómo se firma y los campos de la ficha (A.2) |
 | País | Prod solo desde Perú (`PE`). dev y qa sin filtro | Nada |
 | Cognito Plus | No. Essentials cubre MFA y cuesta menos; con menos de 100 usuarios no se paga Plus | Nada, salvo que se reabra |
 
@@ -10316,11 +10318,10 @@ Lo cerrado el 2026-10-08 está en ADR-13 y en 10.7. Aquí queda lo que todavía 
 
 | # | Pregunta | Por qué no se puede dejar para después |
 |---|---|---|
-| 1 | Al invertir, ¿el dinero se mueve dentro de la app? | Una pasarela de pago es otra arquitectura. Registrarlo y validarlo a mano no |
-| 2 | ¿Cómo se firma la ficha? | Cambia lo que se guarda como prueba (casilla, trazo o firma digital) |
-| 3 | En el registro, ¿cómo se sabe si es interno o externo? | `users.kind` es obligatorio y solo un Admin lo cambia después |
-| 4 | ¿Qué datos sensibles hay: salud, financieros, biométricos, o una mezcla? | Cambia qué columnas se redactan y si hace falta cifrado de columna |
-| 5 | La transferencia de datos personales de Perú a `sa-east-1` (Brasil), ¿qué texto legal la cubre? | AWS no tiene región en Perú. Sin ese texto no hay prod |
+| 1 | ¿Cómo se firma la ficha? | Cambia lo que se guarda como prueba (casilla, trazo o firma digital) |
+| 2 | En el registro, ¿cómo se sabe si es interno o externo? | `users.kind` es obligatorio y solo un Admin lo cambia después |
+| 3 | ¿Qué datos sensibles hay: salud, financieros, biométricos, o una mezcla? | Cambia qué columnas se redactan y si hace falta cifrado de columna |
+| 4 | La transferencia de datos personales de Perú a `sa-east-1` (Brasil), ¿qué texto legal la cubre? | AWS no tiene región en Perú. Sin ese texto no hay prod |
 
 ### A.3 El resto de marcadores pendientes
 
