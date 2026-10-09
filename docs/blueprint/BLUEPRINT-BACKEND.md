@@ -5787,6 +5787,9 @@ export const DOCUMENT_TYPES = [
   'tasacion',
   'constancia_pago',
   'sustento_plaft',
+  'comprobante_pago',
+  'contrato_arriendo',
+  'estudio_titulos',
 ] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export const ALLOWED_CONTENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png'] as const;
@@ -10411,6 +10414,7 @@ Un interno no tiene wallet ni invierte con su usuario interno. La cuenta institu
 | `bank` | sistema | Contrapartida del dinero en las cuentas bancarias de PROPIA. Puede ser negativa |
 | `property_settlement` | sistema | Lo pagado por las propiedades al cerrar |
 | `commissions` | sistema | Comisiones del secundario cobradas por PROPIA |
+| `reserve` | propiedad | 🆕 V2.4. Fondo de reserva de la propiedad (28.13). `CHECK (balance >= 0)` |
 
 **Asientos.** `ledger_transactions` (id, `type`, `reference_type`, `reference_id`, `actor_sub`, `request_id`, `created_at`) y `ledger_entries` (id, `transaction_id`, `account_id`, `currency`, `amount` con signo). Un trigger `DEFERRABLE INITIALLY DEFERRED` comprueba al hacer `COMMIT` que cada transacción suma cero por moneda. Otro rechaza `UPDATE` y `DELETE`. El servicio `LedgerService.post(type, reference, lines, manager)` es la única puerta: bloquea las cuentas con `SELECT … FOR UPDATE` en orden de id (para no cruzarse en un deadlock), inserta los asientos y actualiza `balance`. Si un `CHECK (balance >= 0)` salta, la transacción entera se revierte y el servicio responde 409 `INSUFFICIENT_FUNDS`.
 
@@ -10532,9 +10536,11 @@ La compra es de la oferta entera, como en el prototipo. La comisión es `round(p
 | `constancia_deposito` | Inversionista | `deposit` | El inversionista y Tesorería |
 | `constancia_retiro` | Tesorería | `withdrawal` | El inversionista y Tesorería |
 | `poder_firmado` | Sistema, desde DocuSign | `user` | El inversionista, Operaciones y Admin |
-| `escritura`, `partida_registral` | Operaciones | `property` u `offer` | Los copropietarios de esa propiedad e internos |
+| `escritura`, `partida_registral` | Operaciones | `property` u `offer` | Los copropietarios de esa propiedad e internos. 🆕 V2.4: la `partida_registral` también la ven los habilitados desde `funding` |
 | `constancia_retencion` | Operaciones | `user` | El inversionista y Operaciones |
-| `tasacion` | Operaciones | `property` | Internos |
+| `tasacion` | Operaciones | `property` | Internos y, 🆕 V2.4, los habilitados desde `funding` (28.13) |
+| 🆕 V2.4. `contrato_arriendo`, `estudio_titulos` | Operaciones | `property` | Internos y los habilitados desde `funding` |
+| 🆕 V2.4. `comprobante_pago` | Tesorería | `offer` o `rent_period` | El inversionista al que se emitió, Tesorería y Admin |
 | 🆕 V2.4. `constancia_pago` | Tesorería | `property_payment` o `institutional_withdrawal` | Tesorería, Operaciones y Admin |
 | 🆕 V2.4. `sustento_plaft` | Inversionista, a pedido de Cumplimiento | `user` | El inversionista y Cumplimiento |
 
@@ -10603,6 +10609,9 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | 🆕 V2.4. `default_currency` | `USD` |
 | 🆕 V2.4. `secondary.offer_expiry_days` | `90` |
 | 🆕 V2.4. `rent.management_fee_pct` | `0.00` |
+| 🆕 V2.4. `rent.reserve_pct` | `0.00` |
+| 🆕 V2.4. `plaft.single_deposit_usd` / `_pen`, `plaft.monthly_deposits_usd` / `_pen` | vacíos hasta que Cumplimiento los ponga |
+| 🆕 V2.4. `plaft.roundtrip_days` | `30` |
 | 🆕 V2.4. `approvals.dual_threshold_usd` / `approvals.dual_threshold_pen` | vacíos hasta que producto dé el monto |
 | 🆕 V2.4. `secondary.closing_cost_estimate_usd` / `_pen` | `<a definir>` |
 
@@ -10620,7 +10629,7 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 
 **Depósitos (H7, H8, O1).** El depósito lleva `origin_payout_account_id` (una cuenta del propio inversionista: sin cuentas registradas no puede depositar) y `operation_number`. `UNIQUE (treasury_bank_account_id, operation_number)`: una operación repetida responde 409 `DUPLICATE_OPERATION`. Tesorería puede subir el extracto de una cuenta en CSV (`bank_statements`, `bank_statement_lines`). La app propone parejas por número de operación, monto y fecha (±2 días), y Tesorería las confirma en lote; cada aprobación queda igual que una individual, con doble aprobación por encima del umbral. Las líneas sin pareja quedan en la conciliación.
 
-**Pagos del cierre (H13, H14).** `property_payments` (propiedad, concepto `vendedor | notaria | registro | alcabala | otros`, monto, fecha, constancia `constancia_pago`, Tesorería) con asiento `property_settlement` −monto / `bank` +monto. La propiedad no pasa a `registered` sin al menos un pago `vendedor`. Al registrar, lo que queda en `property_settlement` de esa propiedad (precio − pagos) se cierra según la decisión **H33** (29.15). El documento `constancia_pago` se añade a `DOCUMENT_TYPES`; lo ven Tesorería, Operaciones y Admin.
+**Pagos del cierre (H13, H14).** `property_payments` (propiedad, concepto `vendedor | notaria | registro | alcabala | otros`, monto, fecha, constancia `constancia_pago`, Tesorería) con asiento `property_settlement` −monto / `bank` +monto. La propiedad no pasa a `registered` sin al menos un pago `vendedor`. Al registrar, lo que queda en `property_settlement` de esa propiedad (precio − pagos) es de PROPIA (H33, 28.13). El documento `constancia_pago` se añade a `DOCUMENT_TYPES`; lo ven Tesorería, Operaciones y Admin.
 
 **Renta negativa (H16).** Si la neta sale negativa, el período pasa a `carried`, sin asientos. El negativo entra al período siguiente como gasto "Saldo del período anterior".
 
@@ -10642,6 +10651,38 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 - Detalle y pedido.
 
 Arriba se muestran la razón social, el RUC y la dirección de PROPIA SAC. Cada hoja recibe un correlativo (`R-2026-000001`) y sale por email en PDF al momento. `complaints` guarda la hoja, la respuesta, quién respondió y las fechas. El Admin las atiende en `/admin/reclamaciones`, con la cuenta de días que quedan del plazo legal (legal confirma el plazo vigente y cuánto tiempo se conservan, Anexo A). La respuesta sale por email y queda en auditoría.
+
+### 28.13 Decisiones de la segunda pasada
+
+🆕 **V2.4.** Cierran los huecos de 29.15 marcados como decididos.
+
+**Fondo de reserva (H29).** Nueva cuenta `reserve` por propiedad y moneda en `ledger_accounts` (dueño: la propiedad, `CHECK (balance >= 0)`). Al distribuir, si `rent.reserve_pct` es mayor que cero, `round(bruta * pct / 100, 2)` va a `reserve` antes de repartir, en el mismo asiento. Un gasto del período puede marcarse "pagado con la reserva": sale de `reserve` y no resta a la neta. Si la reserva no alcanza, la parte que falta resta a la neta, como cualquier gasto. Arranca en `0.00`. Si la propiedad se vende (H28), lo que quede en la reserva se reparte con el neto.
+
+**Comprobantes de las comisiones (H30).** En la primera versión Tesorería emite la boleta o factura electrónica fuera de la app y la sube como `comprobante_pago` a la venta del secundario o al período de renta que la originó. El inversionista la ve en su cartera. La integración con un proveedor de facturación electrónica queda para después, detrás de una interfaz, como DocuSign.
+
+**Documentos antes de invertir (H32).** Con la propiedad en `funding` o después, los inversionistas habilitados ven la partida registral, la tasación, el contrato de arriendo con los datos del inquilino tapados y el estudio de títulos. Operaciones los sube antes de publicar: `contrato_arriendo` y `estudio_titulos` se añaden a `DOCUMENT_TYPES` y `tasacion` deja de ser solo interna. La escritura de compra sigue siendo solo para los copropietarios.
+
+**Diferencia de los gastos de cierre (H33).** Al registrar, lo que queda en `property_settlement` de esa propiedad es de PROPIA. Si sobra: `property_settlement` −saldo / `available` de PROPIA +saldo. Si falta: `property_settlement` +faltante / `bank` −faltante. Después de ese asiento la cuenta queda en cero para la propiedad, y la conciliación diaria lo comprueba.
+
+**Comisiones bancarias e ITF de los retiros (H34).** Las asume PROPIA. El inversionista recibe el monto que pidió. Esos costos no entran al libro mayor: son gasto de PROPIA en su contabilidad.
+
+**Edad y residencia (H35).** El perfil rechaza menores de 18 (`400 UNDERAGE`) y pregunta si la persona es domiciliada en Perú (`is_domiciled`). Pasaporte y CE se aceptan.
+
+**Estado de cuenta (H36).** `GET /api/wallet/statement?currency=USD&period=2026-09` o `period=2026` devuelve un PDF (pdfkit, ADR-13 fila 13) con saldo inicial, movimientos y saldo final. Se descarga desde la wallet. El anual sale por email cada enero.
+
+**Alertas PLAFT (H37).** Un job diario evalúa reglas sobre los movimientos y crea filas en `plaft_alerts` para Cumplimiento:
+
+| Regla | Clave en `settings` |
+|---|---|
+| Un depósito mayor que | `plaft.single_deposit_usd` / `_pen` |
+| Depósitos del mes mayores que | `plaft.monthly_deposits_usd` / `_pen` |
+| Depósito y retiro de casi el mismo monto sin invertir, en menos de N días | `plaft.roundtrip_days` (30) |
+
+Arrancan vacías (sin alerta) hasta que Cumplimiento ponga los montos. Cumplimiento marca cada alerta como revisada, con comentario. El reporte a la UIF se hace fuera de la app y se anota en la alerta.
+
+**Datos personales (H38).** `POST /api/privacy-requests { type: 'acceso' | 'rectificacion' | 'cancelacion' | 'oposicion', detail }` desde `/perfil`. El Admin las atiende en `/admin/reclamaciones`, junto a las hojas del libro, con la cuenta del plazo legal. Cancelar se resuelve con el cierre de cuenta (28.12) cuando se puede.
+
+**Aviso de dispositivo nuevo (H39).** Al iniciar sesión, la API compara un identificador de dispositivo (cookie `__Host-<app-short>_dev`, aleatoria y de un año) con `user_devices`. Si es nuevo, lo guarda y manda un email con fecha, IP y navegador, y un enlace a `/perfil/sesiones` para cerrar todas las sesiones (`AdminUserGlobalSignOut`).
 
 ---
 ## 29. Flujos end to end
@@ -10852,18 +10893,18 @@ Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo. 🆕 V2.4: 
 
 | # | Hueco | Propuesta | Peso |
 |---|---|---|---|
-| H28 | Venta total del inmueble. No hay salida final: el inmueble se tiene para siempre | Estados `selling` → `sold`. Operaciones registra la venta (precio, gastos y comisión de salida configurable), el sistema reparte el neto a prorrata en las wallets y cierra los `holdings`. Las ofertas abiertas se cancelan | Bloquea |
-| H29 | Gasto extraordinario grande (techo, ascensor) que se come la renta de varios meses | Fondo de reserva por propiedad: un % de la renta bruta (`rent.reserve_pct`, arranca en 0) se aparta cada mes en una cuenta `reserve` de la propiedad y paga esos gastos | Recomendado |
-| H30 | Comprobantes de pago. PROPIA cobra comisiones y tiene que emitir boleta o factura electrónica | Primera versión: Tesorería emite el comprobante fuera de la app y lo sube. Después, integración con un proveedor de facturación electrónica | Bloquea (contador) |
-| H31 | Impuesto a la renta del alquiler de cada copropietario | Si el contador confirma que PROPIA retiene y paga por cada uno: `rent.tax_withholding_pct` por domiciliado y no domiciliado, retenido en el reparto a una cuenta `tax_payable` que Tesorería paga a SUNAT. La constancia de retención anual ya existe | Bloquea (contador) |
-| H32 | Antes de invertir solo se ven fotos y textos | Los habilitados ven, durante el fondeo, la partida, la tasación, el contrato de arriendo (con los datos del inquilino tapados) y el estudio de títulos | Recomendado |
-| H33 | Los gastos de cierre van en el precio, pero el real casi nunca coincide con el estimado | La diferencia es de PROPIA: si sobra, a su `available`; si falta, sale de su `bank` | Bloquea |
-| H34 | Comisión del banco y ITF al pagar un retiro | PROPIA las asume | Recomendado |
-| H35 | Edad y residencia | Solo mayores de 18. Pasaporte y CE se aceptan, y el perfil pregunta si es domiciliado en Perú (sirve para H31) | Recomendado |
-| H36 | Estado de cuenta | PDF mensual y anual por moneda, descargable desde la wallet: saldo inicial, movimientos y saldo final | Recomendado |
-| H37 | PLAFT después de habilitar: nadie mira las operaciones | Alertas a Cumplimiento con reglas configurables: depósito único alto, suma de depósitos del mes alta, depósito y retiro sin invertir en menos de 30 días. Cumplimiento las marca revisadas; el reporte a la UIF se hace fuera de la app | Bloquea (legal) |
-| H38 | Derechos sobre los datos personales (acceso, rectificación, cancelación y oposición, Ley 29733) | Formulario en el perfil y bandeja del Admin junto a las reclamaciones, con plazo | Bloquea (legal) |
-| H39 | Sin MFA, una contraseña robada da acceso | Email de aviso en cada inicio de sesión desde un dispositivo nuevo, con enlace para cerrar todas las sesiones. Las acciones de dinero ya piden código por email | Recomendado |
+| H28 | Venta total del inmueble. No hay salida final: el inmueble se tiene para siempre | Estados `selling` → `sold`. Operaciones registra la venta (precio, gastos y comisión de salida configurable), el sistema reparte el neto a prorrata en las wallets y cierra los `holdings`. Las ofertas abiertas se cancelan | Pendiente: quién decide vender |
+| H29 | Gasto extraordinario grande (techo, ascensor) que se come la renta de varios meses | Fondo de reserva por propiedad: un % de la renta bruta (`rent.reserve_pct`, arranca en 0) se aparta cada mes en una cuenta `reserve` de la propiedad y paga esos gastos | ✅ Decidido (28.13) |
+| H30 | Comprobantes de pago. PROPIA cobra comisiones y tiene que emitir boleta o factura electrónica | Primera versión: Tesorería emite el comprobante fuera de la app y lo sube. Después, integración con un proveedor de facturación electrónica | ✅ Decidido (28.13) |
+| H31 | Impuesto a la renta del alquiler de cada copropietario | Si el contador confirma que PROPIA retiene y paga por cada uno: `rent.tax_withholding_pct` por domiciliado y no domiciliado, retenido en el reparto a una cuenta `tax_payable` que Tesorería paga a SUNAT. La constancia de retención anual ya existe | Pendiente del contador |
+| H32 | Antes de invertir solo se ven fotos y textos | Los habilitados ven, durante el fondeo, la partida, la tasación, el contrato de arriendo (con los datos del inquilino tapados) y el estudio de títulos | ✅ Decidido (28.13) |
+| H33 | Los gastos de cierre van en el precio, pero el real casi nunca coincide con el estimado | La diferencia es de PROPIA: si sobra, a su `available`; si falta, sale de su `bank` | ✅ Decidido (28.13) |
+| H34 | Comisión del banco y ITF al pagar un retiro | PROPIA las asume | ✅ Decidido (28.13) |
+| H35 | Edad y residencia | Solo mayores de 18. Pasaporte y CE se aceptan, y el perfil pregunta si es domiciliado en Perú (sirve para H31) | ✅ Decidido (28.13) |
+| H36 | Estado de cuenta | PDF mensual y anual por moneda, descargable desde la wallet: saldo inicial, movimientos y saldo final | ✅ Decidido (28.13) |
+| H37 | PLAFT después de habilitar: nadie mira las operaciones | Alertas a Cumplimiento con reglas configurables: depósito único alto, suma de depósitos del mes alta, depósito y retiro sin invertir en menos de 30 días. Cumplimiento las marca revisadas; el reporte a la UIF se hace fuera de la app | ✅ Decidido (28.13) |
+| H38 | Derechos sobre los datos personales (acceso, rectificación, cancelación y oposición, Ley 29733) | Formulario en el perfil y bandeja del Admin junto a las reclamaciones, con plazo | ✅ Decidido (28.13) |
+| H39 | Sin MFA, una contraseña robada da acceso | Email de aviso en cada inicio de sesión desde un dispositivo nuevo, con enlace para cerrar todas las sesiones. Las acciones de dinero ya piden código por email | ✅ Decidido (28.13) |
 | H40 | "Liquidado" en la wallet | Si es lo cobrado por ventas totales (H28) y por ventas en el secundario, se muestra como un acumulado informativo, fuera del saldo | Pendiente |
 
 ---
