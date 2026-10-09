@@ -10452,6 +10452,9 @@ Tesorería no edita el monto. Si no coincide con el banco, rechaza con el motivo
 | `notary` | Operaciones | Firma de escritura en curso. Sube `escritura` |
 | `registered` | Operaciones, con la `partida_registral` subida | Liquida compromisos y crea `holdings` |
 | `operating` | Sistema, tras `registered` | Reparte renta. Admite ofertas del secundario |
+| `sale_vote` | 🆕 V2.4. Operaciones propone la venta total con una oferta | Votan los copropietarios (28.13, H28). El secundario se pausa. Si no se aprueba, vuelve a `operating` |
+| `selling` | Sistema, con la votación aprobada | Escritura de venta en curso. Sigue repartiendo la renta |
+| `sold` | Operaciones, con el cobro registrado por Tesorería | Reparte el neto y la reserva, cierra `holdings` y cancela las ofertas pausadas. No se deshace |
 | `cancelled` | 🆕 V2.4. Operaciones la propone desde `funding`, `funded` o `notary` con motivo, y un Admin la confirma | La compra se cayó. Cada compromiso vuelve: `committed` −monto / `available` +monto, estado `refunded`. El de PROPIA vuelve a `bank`. Aviso a todos los comprometidos. No se deshace |
 
 **Compromiso** (`commitments`): inversionista, propiedad, unidades, monto (`units * unit_price`), estado `active` → `settled`. Crearlo exige `investorStatus = 'enabled'`, propiedad en `funding`, `units ≤ unidades libres` y `units + las que ya tiene comprometidas ≤ max_units_per_investor`. Se bloquea la fila de la propiedad (`FOR UPDATE`) antes de contar las unidades libres: dos compromisos simultáneos no pueden vender la misma unidad. Asiento `available` −monto / `committed` +monto. No se cancela (ADR-13, 23). Si con él se llega a `units_total`, la propiedad pasa a `funded` en la misma transacción.
@@ -10563,6 +10566,7 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | Renta distribuida | Cada copropietario |
 | Oferta nueva en una propiedad suya (ventana interna) | Copropietarios |
 | Comprador encontrado, retracto ejercido, venta completada | Vendedor y compradores implicados |
+| 🆕 V2.4. Votación de venta total abierta, a mitad de plazo, un día antes y con el resultado; venta cobrada y repartida | Copropietarios de la propiedad |
 
 ### 28.10 Contrato (resumen)
 
@@ -10595,6 +10599,8 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | 🆕 V2.4. `GET /api/plaft/reviews`, `POST /api/plaft/reviews/{userId}/approve`, `/observe`, `/reject`; `GET /api/plaft/alerts`, `POST /api/plaft/alerts/{id}/review` | Cumplimiento |
 | 🆕 V2.4. `POST /api/properties/{id}/cancel` (propone), `/cancel/confirm`, `/deadline/extend`, `/deadline/institutional-buy` | Operaciones propone; Admin confirma |
 | 🆕 V2.4. `PATCH /api/secondary/offers/{id}` (solo bajar el precio) | Inversionista, el vendedor |
+| 🆕 V2.4. `POST /api/properties/{id}/sale` (propone), `/sale/complete` | Operaciones (28.13, H28) |
+| 🆕 V2.4. `POST /api/properties/{id}/sale/vote { vote }` | Inversionista copropietario |
 
 Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respuesta con dinero lo manda como string con dos decimales y su `currency`.
 
@@ -10614,6 +10620,8 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | 🆕 V2.4. `plaft.roundtrip_days` | `30` |
 | 🆕 V2.4. `approvals.dual_threshold_usd` / `approvals.dual_threshold_pen` | vacíos hasta que producto dé el monto |
 | 🆕 V2.4. `secondary.closing_cost_estimate_usd` / `_pen` | `<a definir>` |
+| 🆕 V2.4. `sale.vote_days` / `sale.approval_pct` / `sale.cooldown_days` | `15` / `50` / `180` |
+| 🆕 V2.4. `sale.exit_commission_pct` | `0.00` |
 
 🆕 V2.4. **Doble aprobación.** Un depósito, un retiro, un reparto de renta o un pago al vendedor por encima del umbral de su moneda queda en `pending_second_approval` tras la primera aprobación, y lo completa otra persona con el mismo rol (o un Admin). Quien inició o aprobó primero no puede dar la segunda. Por debajo del umbral basta una. Mientras el umbral esté vacío, el monto no exige doble aprobación. Cancelar una propiedad y retirar ingresos de PROPIA siempre llevan dos, haya umbral o no.
 
@@ -10683,6 +10691,19 @@ Arrancan vacías (sin alerta) hasta que Cumplimiento ponga los montos. Cumplimie
 **Datos personales (H38).** `POST /api/privacy-requests { type: 'acceso' | 'rectificacion' | 'cancelacion' | 'oposicion', detail }` desde `/perfil`. El Admin las atiende en `/admin/reclamaciones`, junto a las hojas del libro, con la cuenta del plazo legal. Cancelar se resuelve con el cierre de cuenta (28.12) cuando se puede.
 
 **Aviso de dispositivo nuevo (H39).** Al iniciar sesión, la API compara un identificador de dispositivo (cookie `__Host-<app-short>_dev`, aleatoria y de un año) con `user_devices`. Si es nuevo, lo guarda y manda un email con fecha, IP y navegador, y un enlace a `/perfil/sesiones` para cerrar todas las sesiones (`AdminUserGlobalSignOut`).
+
+**Venta total del inmueble (H28).** Deciden los copropietarios por mayoría y PROPIA ejecuta con el poder (legal confirma que el poder alcanza, Anexo A):
+
+1. Operaciones propone la venta desde `/admin/propiedades` con la oferta recibida (precio, gastos estimados y comprador) y la sustenta con una tasación. La propiedad pasa de `operating` a `sale_vote`. Las ofertas abiertas del secundario se pausan y no se aceptan nuevas.
+2. Cada copropietario vota sí o no en `/cartera` durante `sale.vote_days` (15). Se avisa al abrir, a mitad de plazo y un día antes del cierre. Cada participación es un voto. Las participaciones de la cuenta institucional de PROPIA no votan.
+3. Si los votos a favor superan `sale.approval_pct` (50) del total de participaciones con voto (no de los votos emitidos), la propiedad pasa a `selling`. Si no, vuelve a `operating`, las ofertas se reanudan y no se puede proponer otra venta de esa propiedad en `sale.cooldown_days` (180).
+4. Con la escritura firmada y el dinero en la cuenta de PROPIA, Tesorería registra el cobro y los gastos reales (`property_payments` con conceptos de venta) y Operaciones confirma. El sistema reparte en un solo asiento: `bank` −(precio − gastos) / `commissions` +comisión de salida (`sale.exit_commission_pct`, `0.00`) / `reserve` −saldo / `available` de cada copropietario +su parte a prorrata (sobrante del redondeo a PROPIA, como en la renta). Los `holdings` se cierran, las ofertas pausadas se cancelan y la propiedad pasa a `sold`.
+
+`property_sale_votes` (propiedad, usuario, participaciones, voto, fecha, IP) es única por propiedad y usuario, y el voto se puede cambiar hasta el cierre. Todo queda en auditoría.
+
+**Impuesto a la renta del alquiler (H31).** En la primera versión PROPIA no retiene. Cada copropietario declara su renta. La constancia anual de lo cobrado sale del estado de cuenta (H36). Si el contador confirma que hay que retener, se activa lo descrito en 29.15 (`rent.tax_withholding_pct` y la cuenta `tax_payable`) sin cambiar el resto del reparto.
+
+**"Liquidado" (H40).** Es un acumulado informativo por moneda: lo que el inversionista cobró por sus ventas en el secundario y por ventas totales (H28). Sale de los asientos de esos tipos y no forma parte del saldo. `GET /api/wallet` lo devuelve en cada moneda como `settledTotal`. En la wallet va debajo de los saldos, separado y con su leyenda. El total de la wallet suma solo disponible, comprometido y en retiro.
 
 ---
 ## 29. Flujos end to end
@@ -10893,10 +10914,10 @@ Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo. 🆕 V2.4: 
 
 | # | Hueco | Propuesta | Peso |
 |---|---|---|---|
-| H28 | Venta total del inmueble. No hay salida final: el inmueble se tiene para siempre | Estados `selling` → `sold`. Operaciones registra la venta (precio, gastos y comisión de salida configurable), el sistema reparte el neto a prorrata en las wallets y cierra los `holdings`. Las ofertas abiertas se cancelan | Pendiente: quién decide vender |
+| H28 | Venta total del inmueble. No hay salida final: el inmueble se tiene para siempre | Estados `selling` → `sold`. Operaciones registra la venta (precio, gastos y comisión de salida configurable), el sistema reparte el neto a prorrata en las wallets y cierra los `holdings`. Las ofertas abiertas se cancelan | ✅ Decidido (28.13): votan los copropietarios por mayoría de participaciones y PROPIA ejecuta con el poder; legal confirma |
 | H29 | Gasto extraordinario grande (techo, ascensor) que se come la renta de varios meses | Fondo de reserva por propiedad: un % de la renta bruta (`rent.reserve_pct`, arranca en 0) se aparta cada mes en una cuenta `reserve` de la propiedad y paga esos gastos | ✅ Decidido (28.13) |
 | H30 | Comprobantes de pago. PROPIA cobra comisiones y tiene que emitir boleta o factura electrónica | Primera versión: Tesorería emite el comprobante fuera de la app y lo sube. Después, integración con un proveedor de facturación electrónica | ✅ Decidido (28.13) |
-| H31 | Impuesto a la renta del alquiler de cada copropietario | Si el contador confirma que PROPIA retiene y paga por cada uno: `rent.tax_withholding_pct` por domiciliado y no domiciliado, retenido en el reparto a una cuenta `tax_payable` que Tesorería paga a SUNAT. La constancia de retención anual ya existe | Pendiente del contador |
+| H31 | Impuesto a la renta del alquiler de cada copropietario | Si el contador confirma que PROPIA retiene y paga por cada uno: `rent.tax_withholding_pct` por domiciliado y no domiciliado, retenido en el reparto a una cuenta `tax_payable` que Tesorería paga a SUNAT. La constancia de retención anual ya existe | ✅ Decidido (28.13): sin retención en la primera versión; se activa si el contador lo confirma |
 | H32 | Antes de invertir solo se ven fotos y textos | Los habilitados ven, durante el fondeo, la partida, la tasación, el contrato de arriendo (con los datos del inquilino tapados) y el estudio de títulos | ✅ Decidido (28.13) |
 | H33 | Los gastos de cierre van en el precio, pero el real casi nunca coincide con el estimado | La diferencia es de PROPIA: si sobra, a su `available`; si falta, sale de su `bank` | ✅ Decidido (28.13) |
 | H34 | Comisión del banco y ITF al pagar un retiro | PROPIA las asume | ✅ Decidido (28.13) |
@@ -10905,7 +10926,7 @@ Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo. 🆕 V2.4: 
 | H37 | PLAFT después de habilitar: nadie mira las operaciones | Alertas a Cumplimiento con reglas configurables: depósito único alto, suma de depósitos del mes alta, depósito y retiro sin invertir en menos de 30 días. Cumplimiento las marca revisadas; el reporte a la UIF se hace fuera de la app | ✅ Decidido (28.13) |
 | H38 | Derechos sobre los datos personales (acceso, rectificación, cancelación y oposición, Ley 29733) | Formulario en el perfil y bandeja del Admin junto a las reclamaciones, con plazo | ✅ Decidido (28.13) |
 | H39 | Sin MFA, una contraseña robada da acceso | Email de aviso en cada inicio de sesión desde un dispositivo nuevo, con enlace para cerrar todas las sesiones. Las acciones de dinero ya piden código por email | ✅ Decidido (28.13) |
-| H40 | "Liquidado" en la wallet | Si es lo cobrado por ventas totales (H28) y por ventas en el secundario, se muestra como un acumulado informativo, fuera del saldo | Pendiente |
+| H40 | "Liquidado" en la wallet | Si es lo cobrado por ventas totales (H28) y por ventas en el secundario, se muestra como un acumulado informativo, fuera del saldo | ✅ Decidido (28.13) |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
@@ -10928,8 +10949,8 @@ Lo cerrado está en ADR-13 y en la sección 28. Aquí queda lo que falta para es
 |---|---|---|
 | 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, si un poder firmado en DocuSign basta para disponer de inmuebles (Código Civil, art. 156, pide escritura pública), el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. Si el poder necesita escritura, se añade un paso en el onboarding en el que Operaciones sube la escritura antes de `enabled` |
 | 2 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
-| 3 | Qué es "Liquidado" en la wallet del prototipo | En el prototipo es la tercera línea y suma al saldo total (disponible 28.500 + comprometido 45.000 + liquidado 5.000 = 78.500). Mientras se decide, ese lugar lo ocupa "En retiro" (`withdrawing`, 28.3). Si resulta ser otro saldo, se añade como cuenta del libro mayor sin tocar las demás |
-| 4 | 🆕 V2.4. Legal: plazo de respuesta del libro de reclamaciones y cuánto se conservan las hojas; plazo de conservación de datos tras cerrar una cuenta (PLAFT); si la unión de hecho inscrita firma como cónyuge; si los copropietarios pueden renunciar al retracto por adelantado (H21); plazos de los derechos sobre datos personales (H38) | Se diseña con lo de 28.12 y 29.15. Cambia un número en `settings` o un texto, no el modelo |
+| 3 | ~~Qué es "Liquidado" en la wallet del prototipo~~ | ✅ Cerrado en V2.4 (28.13, H40): acumulado informativo de lo cobrado por ventas, fuera del saldo |
+| 4 | 🆕 V2.4. Legal: plazo de respuesta del libro de reclamaciones y cuánto se conservan las hojas; plazo de conservación de datos tras cerrar una cuenta (PLAFT); si la unión de hecho inscrita firma como cónyuge; si los copropietarios pueden renunciar al retracto por adelantado (H21); si el poder alcanza para vender el inmueble completo con el voto de la mayoría (H28); plazos de los derechos sobre datos personales (H38) | Se diseña con lo de 28.12 y 29.15. Cambia un número en `settings` o un texto, no el modelo |
 | 5 | 🆕 V2.4. Contador: comprobantes electrónicos de las comisiones (H30) y retención del impuesto a la renta del alquiler de cada copropietario (H31) | Primera versión: comprobante emitido fuera y subido. Sin retención hasta que el contador lo confirme |
 
 ### A.3 El resto de marcadores pendientes
