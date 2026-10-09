@@ -1,6 +1,16 @@
-# BLUEPRINT BACKEND — NestJS 11 + TypeORM + PostgreSQL sobre AWS Lambda
+# BLUEPRINT BACKEND v2 — NestJS 12 + TypeORM 1.1 + PostgreSQL 17 sobre AWS Lambda (Node 24), infraestructura con AWS CDK
 
-**Plantilla de arranque completa, derivada de un backend en producción, para construir una aplicación nueva con el mismo stack y la misma arquitectura de nube.**
+**Plantilla de arranque completa para construir una aplicación empresarial nueva. Parte de un backend que ya funciona en producción y lo endurece en seguridad, rendimiento, observabilidad, operación y cumplimiento.**
+
+> **Versión 2.0 — 2026-10-07.** Esta versión reemplaza a la v1 (la transcripción del backend original). La v1 queda en el historial de git como referencia, pero **no debe usarse para implementar**. Cuando la v1 y la v2 no coinciden, manda la v2. La sección 0.6 resume qué cambió y la sección 27 explica cada decisión.
+>
+> **Todo el código núcleo de esta versión fue compilado y probado** antes de escribirse aquí: un proyecto de verificación con estos mismos archivos pasó lint con reglas tipadas, typecheck estricto, 10 tests unitarios y 44 tests e2e contra PostgreSQL 17 real, el empaquetado de las Lambdas con una invocación simulada de API Gateway, `cdk synth` de los tres stages con cdk-nag como gate, y `actionlint` sobre los workflows. Lo que **no** se pudo probar sin una cuenta AWS (el primer despliegue real) está marcado como tal y tiene su comando de verificación en el plan (sección 20).
+>
+> **Versión 2.1 — 2026-10-08.** Añade los controles de prioridad 0, todos sin coste o dentro de una capa gratuita: idempotencia de los `POST` (9.6), contrato OpenAPI versionado con detección de cambios incompatibles (17.4), Actions fijadas por SHA, auditoría de workflows, SBOM y procedencia firmada del artefacto (17.1, 17.2), y la CSP con `script-src` que el frontend genera en su build (16.8). Ese código **no se ejecutó** al escribirlo: va marcado 🆕 **V2.1** y su verificación está en el checklist (21).
+>
+> **Versión 2.2 — 2026-10-08.** Cierra las decisiones de producto que cambian el núcleo antes de escribir el dominio: región `sa-east-1`, papelera, datos sensibles, avisos y reportes (ADR-13). El código tocado va marcado 🆕 **V2.2** y no se ejecutó.
+>
+> **Versión 2.3 — 2026-10-09.** Añade el dominio de PROPIA a partir del prototipo `propia_desktop` (sección 28): cuatro roles, onboarding con poder firmado en DocuSign, wallet sobre un libro mayor de partida doble, propiedades por unidades, cierre notarial, renta mensual y mercado secundario con retracto. Es diseño: entidades, estados, reglas y contrato. Marcado 🆕 **V2.3**, sin ejecutar.
 
 ---
 
@@ -8,42 +18,77 @@
 
 ### 0.1 Qué es esto
 
-Este documento es la **transcripción literal y comentada** del núcleo reutilizable de un backend NestJS real que corre en producción sobre AWS Lambda, con Cognito como proveedor de identidad, PostgreSQL/RDS como persistencia, Serverless Framework como empaquetador y GitHub Actions con OIDC como pipeline de despliegue.
+Este documento describe, archivo por archivo, el núcleo reutilizable de un backend NestJS sobre AWS Lambda: Cognito como proveedor de identidad, PostgreSQL en RDS (detrás de RDS Proxy) como persistencia, AWS CDK como infraestructura como código y GitHub Actions con OIDC como pipeline.
 
-El dominio original (evaluación de riesgo crediticio) **no se reutiliza**. Lo que se reutiliza es todo lo que hay debajo del dominio: arranque, configuración, validación de entorno, autenticación, RBAC, auditoría, documentos/S3, migraciones, infraestructura y CI/CD.
+Nació como transcripción de un backend real en producción (dominio: evaluación de riesgo crediticio). **El dominio no se reutiliza.** Se reutiliza todo lo que hay debajo: arranque, configuración, autenticación, RBAC, auditoría, documentos en S3, migraciones, infraestructura, CI/CD, observabilidad y operación.
+
+La v2 añade sobre el original lo que le faltaba para ser una aplicación empresarial y rápida: sesión en cookies `httpOnly` servida desde el mismo dominio que el frontend, MFA, WAF, infraestructura completa como código, base de datos privada con autenticación IAM, despliegues con versión y rollback, logs estructurados con trazabilidad por petición, alarmas, backups y recuperación ante desastres, y presupuestos de rendimiento.
 
 ### 0.2 Quién lee esto
 
 Un **agente de código autónomo** que trabaja en un repositorio vacío y que **no tiene acceso al repositorio original**. Por eso:
 
-- Todo archivo del núcleo está **transcrito completo**, listo para copiar y pegar.
+- Todo archivo del núcleo está **completo**, listo para copiar y pegar.
 - No hay referencias del tipo "ver el archivo X del repo original": si se necesita, está aquí.
-- Los nombres propios de la organización original fueron sustituidos por **marcadores** (sección 1). Hay que reemplazarlos de forma consistente antes de escribir el primer archivo.
+- Los nombres propios fueron sustituidos por **marcadores** (sección 1). Hay que reemplazarlos de forma consistente antes de escribir el primer archivo.
+- Donde el documento no puede garantizar un detalle (por ejemplo, el comportamiento de una versión concreta de una librería), lo dice y da el comando para verificarlo. **No asumir: verificar.**
 
 ### 0.3 Sistema de etiquetas
 
-Cada bloque de este documento lleva una de estas tres etiquetas. **Respetarlas es obligatorio.**
+Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.**
 
 | Etiqueta | Significado | Qué hacer |
 |---|---|---|
 | 🟩 **NÚCLEO** | Infraestructura reutilizable, independiente del dominio | **Copiar literalmente**, sustituyendo marcadores |
+| 🆕 **V2** | Núcleo nuevo o reescrito en la v2 (no existía así en el original) | **Copiar literalmente**, igual que el núcleo. La etiqueta solo indica procedencia |
+| 🆕 **V2.1** | Añadido en la 2.1, escrito contra el código verificado pero sin ejecutar | Copiar igual. La primera implementación corre el checklist de la sección 21 antes de darlo por bueno |
+| 🆕 **V2.2** | Decisión de producto del 2026-10-08, escrita en el núcleo | Copiar igual. Si choca con un bloque V2, manda V2.2 |
+| 🆕 **V2.3** | Dominio de PROPIA (sección 28) | Es diseño, no código para copiar. Se implementa con la forma de la sección 12. Si choca con un bloque anterior, manda V2.3 |
 | 🟦 **EJEMPLO DE DOMINIO** | Código del dominio original, incluido solo como referencia de patrón | **No copiar**. Leer, entender la forma, aplicarla al dominio nuevo |
 | 🟥 **DEUDA — NO REPLICAR** | El original lo hace así y está mal | **No copiar**. La sección 19 explica la corrección obligatoria |
 
 ### 0.4 Orden de lectura y ejecución
 
-1. Leer las secciones **1 a 3** completas antes de escribir nada. Definen marcadores, topología y prerrequisitos.
-2. Leer la sección **19 (correcciones obligatorias)** antes de copiar código. Hay nueve decisiones en las que el blueprint se aparta del original a propósito; si se copia primero y se corrige después, hay que rehacer trabajo.
-3. Ejecutar el **plan de la sección 20** de arriba abajo. Cada fase termina con un comando de verificación que debe pasar antes de seguir.
-4. Cerrar con el **checklist de la sección 21**.
+1. Leer las secciones **0 a 3** completas antes de escribir nada. Definen decisiones, marcadores, topología y prerrequisitos.
+2. Leer la sección **27 (registro de decisiones)**. Explica el porqué de cada elección de la v2; sin ese contexto es fácil "simplificar" algo que es así a propósito.
+3. Leer las secciones **23 a 26** (seguridad, observabilidad, rendimiento, datos y recuperación). Son transversales: afectan a casi todos los archivos.
+4. Ejecutar el **plan de la sección 20** de arriba abajo. Cada fase termina con un comando de verificación que debe pasar antes de seguir.
+5. Cerrar con el **checklist de la sección 21**.
 
 ### 0.5 Reglas que no se negocian
 
 - **Nunca** se commitea un `.env`. Está en `.gitignore` desde el primer commit.
-- **Nunca** se pasa un secreto como variable de entorno de Lambda. Los secretos se leen de SSM SecureString en el arranque (sección 7.4).
-- **Nunca** se corren migraciones desde el runtime de Lambda. Corren en CI, antes de publicar código (sección 19.2).
-- **Ninguna** entidad usa `synchronize: true`. Todo cambio de esquema es una migración versionada.
+- **Nunca** se pasa un secreto como variable de entorno de Lambda. Los secretos viven en AWS Secrets Manager y se leen al arrancar (sección 7.4). La base de datos no usa contraseña desde la Lambda: usa autenticación IAM contra RDS Proxy (sección 7.2).
+- **Nunca** se corren migraciones en el arranque de la API. Las corre una Lambda dedicada (`migrator`) que el CI invoca **antes** de publicar el código nuevo (secciones 11.3 y 17).
+- **Ninguna** entidad usa `synchronize: true`. Todo cambio de esquema es una migración versionada y **compatible hacia atrás** (sección 11.3).
+- **Ningún** token de sesión es legible por JavaScript. El backend emite cookies `httpOnly`, `Secure`, `SameSite=Strict` (sección 10).
+- **Ningún** recurso de AWS se crea a mano, salvo los tres de arranque de la sección 3.2. Todo lo demás es código CDK revisado por PR (sección 16).
+- La base de datos **no es accesible desde internet**. Vive en subredes privadas; solo las Lambdas de la VPC llegan a ella.
 - Dinero y cantidades exactas: columna `numeric` en PostgreSQL, `string` en TypeScript, `decimal.js` para operar. **Nunca** `float`/`number` nativo.
+- Toda petición lleva un `requestId` que aparece en la respuesta, en los logs, en la auditoría y en los errores (sección 24).
+
+### 0.6 Qué cambió respecto a la v1 (resumen)
+
+| Área | v1 (original) | v2 (este documento) | Detalle |
+|---|---|---|---|
+| Runtime | Node 20 (deprecado en Lambda el 30/04/2026) | **Node 24** en local, CI y Lambda, arquitectura **arm64** | 3.1, 27 |
+| Framework y librerías | NestJS 11, TypeORM 0.3.20, TS 5, Zod 3 | **NestJS 12**, **TypeORM 1.1**, **TypeScript 6.0**, **Zod 4**, **Vitest 5** | 3.1, 4 |
+| Gestor de paquetes | npm | **pnpm 12** con `packageManager` fijado, aprobación explícita de scripts de instalación y antigüedad mínima de versiones | 4 |
+| Empaquetado | Serverless Framework v3 (sin mantenimiento desde 2025) | **`tsc` + esbuild** (bundle minificado por función) | 6.11 |
+| Infraestructura | Recursos creados a mano + `serverless.yml` | **AWS CDK** para todo: red, base de datos, Cognito, S3, CloudFront, WAF, alarmas, OIDC. **cdk-nag** (AWS Solutions) como gate de seguridad | 16 |
+| Dominio y CORS | Front y API en orígenes distintos, CORS `*` en Lambda | **Mismo dominio**: CloudFront sirve el front y enruta `/api/*` a la API. Sin CORS ni preflight | 2, 8 |
+| Sesión | Tokens en cookies legibles por JS, Bearer en cada llamada | **Cookies `httpOnly`** emitidas por el backend, rotación de refresh token, protección CSRF | 10 |
+| MFA | No | **TOTP obligatorio** (configurable) con flujo de retos genérico | 10 |
+| Validación JWT | Solo firma y expiración | Firma + `iss` + `client_id` + `token_use=access`; falla cerrado ante error de BD | 10.4 |
+| Rate limiting | Throttler en memoria (inútil en Lambda) | **AWS WAF** (reglas gestionadas y por tasa) + throttling de API Gateway | 23 |
+| Base de datos | Pública, contraseña, sin pool limitado | **Privada**, RDS Proxy con **IAM de extremo a extremo** (ningún rol de aplicación tiene contraseña), Multi-AZ en prod, PITR, cifrado | 7.2, 16.4, 26 |
+| Migraciones | Desde el runner de CI hacia una BD pública | **Lambda `migrator`** dentro de la VPC, invocada por el CI | 11.3, 17 |
+| Documentos | Evento S3 directo al worker, sin reintentos | **Antivirus GuardDuty** → EventBridge → **SQS + DLQ** → worker | 13 |
+| Despliegue | `update-function-code` sin versiones | **Versiones + alias** de Lambda, **canary** con rollback automático en prod, aprobación manual | 17 |
+| Entornos | Una cuenta AWS, rama → stage | Cuenta **no-prod** (dev, qa) y cuenta **prod**; una rama `main`, promoción dev → qa → prod del **mismo artefacto** | 16, 17 |
+| Observabilidad | Logs de texto libre, una alarma | Logs **JSON** (pino) con `requestId`, **X-Ray**, **Sentry**, dashboard, alarmas con SNS | 24 |
+| Tests | Jest añadido por el blueprint | **Vitest** + Supertest + PostgreSQL real en CI, Cognito simulado con tokens RS256 locales, umbral de cobertura | 15 |
+| Auditoría | Inconsistente, mutable | **Append-only** a nivel de BD, con antes/después y `requestId` | 11.2 |
 
 ---
 
@@ -57,7 +102,7 @@ Cada bloque de este documento lleva una de estas tres etiquetas. **Respetarlas e
 - [5. Estructura de carpetas](#5-estructura-de-carpetas)
 - [6. Archivos de configuración del proyecto](#6-archivos-de-configuración-del-proyecto)
 - [7. Capa de configuración (`src/config/`)](#7-capa-de-configuración-srcconfig)
-- [8. Bootstrap: `main.ts`, `lambda.ts`, `lambda-bootstrap.ts`, `app.module.ts`](#8-bootstrap-maints-lambdats-lambda-bootstrapts-appmodulets)
+- [8. Bootstrap: `configure-app.ts`, `main.ts`, `lambda.ts`, `app.module.ts`](#8-bootstrap-configure-appts-maints-lambdats-appmodulets)
 - [9. Cross-cutting (`src/common/`)](#9-cross-cutting-srccommon)
 - [10. Autenticación y RBAC con Cognito, end to end](#10-autenticación-y-rbac-con-cognito-end-to-end)
 - [11. Capa de datos: entidades, convenciones y migraciones](#11-capa-de-datos-entidades-convenciones-y-migraciones)
@@ -65,14 +110,20 @@ Cada bloque de este documento lleva una de estas tres etiquetas. **Respetarlas e
 - [13. Documentos y S3](#13-documentos-y-s3)
 - [14. Jobs programados (cron Lambda)](#14-jobs-programados-cron-lambda)
 - [15. Testing](#15-testing)
-- [16. Infraestructura (`serverless.yml`, SSM, IAM)](#16-infraestructura-serverlessyml-ssm-iam)
+- [16. Infraestructura como código (AWS CDK)](#16-infraestructura-como-código-aws-cdk)
 - [17. CI/CD](#17-cicd)
 - [18. Entorno de desarrollo local y Cursor Cloud](#18-entorno-de-desarrollo-local-y-cursor-cloud)
 - [19. Correcciones obligatorias respecto al original](#19-correcciones-obligatorias-respecto-al-original)
 - [20. Plan de implementación ordenado](#20-plan-de-implementación-ordenado)
 - [21. Checklist de aceptación final](#21-checklist-de-aceptación-final)
 - [22. Errores conocidos y cómo evitarlos](#22-errores-conocidos-y-cómo-evitarlos)
-- [Anexo A — Qué no pude determinar con certeza desde el repositorio](#anexo-a--qué-no-pude-determinar-con-certeza-desde-el-repositorio)
+- [23. Seguridad empresarial](#23-seguridad-empresarial)
+- [24. Observabilidad](#24-observabilidad)
+- [25. Rendimiento](#25-rendimiento)
+- [26. Datos, backups, recuperación y cumplimiento](#26-datos-backups-recuperación-y-cumplimiento)
+- [27. Registro de decisiones (ADR)](#27-registro-de-decisiones-adr)
+- [28. Dominio PROPIA](#28-dominio-propia)
+- [Anexo A — Puntos abiertos y cómo resolverlos](#anexo-a--puntos-abiertos-y-cómo-resolverlos)
 
 ---
 
@@ -80,52 +131,67 @@ Cada bloque de este documento lleva una de estas tres etiquetas. **Respetarlas e
 
 ### 1.1 Marcadores
 
-Todo el código transcrito usa estos marcadores. **Antes de escribir el primer archivo, decidir el valor de cada uno y aplicarlo de forma consistente en todo el repositorio.** La columna "valor en el original" existe solo para que se entienda la forma del valor esperado; no debe copiarse.
+🆕 **V2** — Todo el código usa estos marcadores. **Antes de escribir el primer archivo, fijar el valor de cada uno y aplicarlo de forma consistente en los dos repositorios.** La columna "valor propuesto" trae los valores ya decididos para este proyecto; los que dicen *pendiente* los confirma el responsable del producto (Anexo A).
 
-| Marcador | Qué es | Forma esperada | Valor en el original (NO copiar) |
+| Marcador | Qué es | Forma esperada | Valor propuesto |
 |---|---|---|---|
-| `<org>` | Prefijo de organización. Primer segmento de las rutas SSM. Minúsculas, sin espacios | `[a-z0-9-]+` | `anka` |
-| `<app>` | Nombre del servicio backend. Es a la vez: nombre del repo, `service:` de `serverless.yml`, segmento de SSM y prefijo de los nombres físicos de Lambda | `[a-z0-9-]+` | `app-risk-backend` |
-| `<app-frontend>` | Nombre del repo/servicio frontend | `[a-z0-9-]+` | `app-risk-frontend` |
-| `<stage>` | Entorno de despliegue. Se deriva de la rama (sección 17.4) | `dev` \| `qa` \| `prod` | idem |
-| `<AWS_ACCOUNT_ID>` | Id numérico de la cuenta AWS | 12 dígitos | `650251694954` |
-| `<REGION>` | Región AWS única para todo el stack | `us-east-1`, `sa-east-1`, … | `us-east-1` |
-| `<ROL_A>` | Rol funcional principal (acceso al dominio) | Nombre de grupo Cognito | `Riesgos` |
-| `<ROL_B>` | Rol administrador | Nombre de grupo Cognito | `Admin` |
-| `<USER_POOL_ID>` | Id del User Pool de Cognito | `<REGION>_XXXXXXXXX` | `us-east-1_BZcAr4vcZ` |
-| `<CLIENT_ID>` | Id del App Client de Cognito (con secreto) | 26 caracteres alfanuméricos | `17h3ckbligs91cnud7cjt6c9bq` |
-| `<BUCKET_DOCS>` | Bucket S3 de documentos del backend, uno por stage | `<org>-<app-corto>-<stage>` | `anka-risk-dev` |
-| `<BUCKET_FRONTEND>` | Bucket S3 del sitio estático, uno por stage | `<org>-<app-corto>-frontend-<stage>` | `anka-risk-frontend-dev` |
-| `<BUCKET_DEPLOY>` | Bucket de artefactos de despliegue creado por CloudFormation | `<app>-dev-serverlessdeploymentbucket-<sufijo>` | `app-risk-backend-dev-serverlessdeploymentbucket-kmr5xvqbleym` |
-| `<CF_DIST_ID>` | Id de distribución CloudFront del frontend, uno por stage | `E...` | `E3C58NP1P32PSM` (dev) |
-| `<DOMINIO_APP>` | Dominio público del frontend por stage | `app-<stage>.<dominio>` / `app.<dominio>` en prod | `app-dev.kipu.pe` |
-| `<DB_HOST>` | Endpoint de PostgreSQL (RDS o RDS Proxy) | FQDN | `…rds.amazonaws.com` |
-| `<DB_NAME>` | Nombre de la base por stage | `<app_snake>_<stage>` | `app_risk_dev` |
-| `<DEPLOY_ROLE>` | Rol IAM que asume GitHub Actions vía OIDC | nombre de rol | `github-actions-deployment-role` |
-| `<TERMS_URL>` | URL pública de términos y condiciones | URL | `https://anka.pe/terminos-y-condiciones` |
-| `<ENTITY_ID>` | Identificador natural de la entidad de negocio principal (el "RUC" del dominio nuevo: puede ser un id de cliente, un código de proyecto, etc.) | definido por el dominio | RUC de 11 dígitos |
-| `<DOC_TIPO_1>`, `<DOC_TIPO_2>`, `<DOC_TIPO_3>` | Tipos de documento que el sistema ingiere | slug minúsculas | `formulario_710`, `reporte_tributario`, `sentinel` |
-| `<AUTOR>` | Autor del `package.json` | nombre | — |
+| `<org>` | Prefijo de organización. Primer segmento de las rutas de Secrets Manager y SSM | `[a-z0-9-]+` | `anka` |
+| `<app-short>` | Nombre corto del producto. Prefijo de stacks, funciones, buckets y cookies | `[a-z0-9-]{3,12}` | `propia` |
+| `<app_snake>` | El mismo nombre en `snake_case`, para la base de datos | `[a-z0-9_]+` | `propia` |
+| `<app>` | Nombre del repositorio del backend y del paquete npm | `[a-z0-9-]+` | `propia-backend` |
+| `<app-frontend>` | Nombre del repositorio del frontend | `[a-z0-9-]+` | `propia-frontend` |
+| `<GITHUB_ORG>` | Organización de GitHub dueña de los dos repositorios | texto | `ANKASAFI` |
+| `<stage>` | Entorno de despliegue | `dev` \| `qa` \| `prod` | — |
+| `<ACCOUNT_NONPROD>` | Cuenta AWS que aloja `dev` y `qa` | 12 dígitos | *pendiente* |
+| `<ACCOUNT_PROD>` | Cuenta AWS que aloja `prod` | 12 dígitos | *pendiente* |
+| `<REGION>` | Región AWS principal de todo el stack | `sa-east-1` | `sa-east-1` |
+| `<DOMINIO_BASE>` | Dominio registrado en Route 53 | dominio | *pendiente* |
+| `<HOSTED_ZONE_ID>` | Id de la zona alojada de `<DOMINIO_BASE>` en Route 53 | `Z...` | *pendiente* |
+| `<DOMINIO_APP>` | Dominio público del stage (front **y** API, mismo origen) | `app-<stage>.<DOMINIO_BASE>`; en prod `app.<DOMINIO_BASE>` | derivado |
+| `<ROL_A>` | Grupo de Cognito del inversionista. Lo recibe toda persona que se registra sola | nombre de grupo | `Inversionista` |
+| `<ROL_C>` | Grupo interno que valida depósitos y paga retiros (28) | nombre de grupo | `Tesoreria` |
+| `<ROL_D>` | Grupo interno que lleva propiedades, cierres, rentas y el secundario (28) | nombre de grupo | `Operaciones` |
+| `<ROL_B>` | Grupo de Cognito administrador | nombre de grupo | `Admin` |
+| `<ALERT_EMAIL>` | Buzón que recibe alarmas y avisos de presupuesto | email | *pendiente* |
+| `<SENTRY_DSN_BACKEND>` | DSN del proyecto de Sentry del backend (no es secreto) | URL | *pendiente* |
+| `<TERMS_URL>` | URL pública de términos y condiciones | URL | *pendiente* |
+| `<AUTOR>` | Autor del `package.json` | nombre | `<org>` |
+
+**Marcadores de la v1 que desaparecen.** `<USER_POOL_ID>`, `<CLIENT_ID>`, `<BUCKET_DOCS>`, `<BUCKET_FRONTEND>`, `<BUCKET_DEPLOY>`, `<CF_DIST_ID>`, `<DB_HOST>`, `<DB_NAME>` y `<DEPLOY_ROLE>` ya no se rellenan a mano: los crea CDK y los expone como variables de entorno de las Lambdas o como parámetros SSM de salida (16.9). Si aparecen en un archivo nuevo, es un error.
 
 ### 1.2 Convención de nombres derivada
 
-Una vez fijados `<org>`, `<app>`, `<REGION>` y `<AWS_ACCOUNT_ID>`, **todo lo demás se deriva**. No inventar nombres fuera de este esquema:
+🆕 **V2** — Una vez fijados `<org>`, `<app-short>`, `<REGION>` y las cuentas, **todo lo demás se deriva**. No inventar nombres fuera de este esquema; CDK los construye con la función `name()` de 16.3.
 
 | Recurso | Patrón |
 |---|---|
-| Stack CloudFormation | `<app>-<stage>` |
-| Función Lambda HTTP | `<app>-<stage>-main` |
-| Función Lambda worker | `<app>-<stage>-ingestWorker` |
-| Función Lambda cron | `<app>-<stage>-<nombreJob>` |
-| Rol de ejecución de Lambda | `<app>-<stage>-<REGION>-lambdaRole` |
-| HTTP API (API Gateway v2) | `<stage>-<app>` |
-| Prefijo SSM del backend | `/<org>/<app>/<stage>/` |
-| Prefijo SSM del frontend | `/<org>/<app-frontend>/<stage>/` |
-| Clave S3 de documento | `raw/<ENTITY_ID>/<tipo>/<sha256>-<sufijo>.pdf` |
-| Clave S3 de cuarentena | `quarantine/<ENTITY_ID>/…` |
-| Rama git → stage | `dev`→`dev`, `qa`→`qa`, `master`→`prod` |
+| Stack CDK | `<app-short>-<stage>-<capa>` con `<capa>` ∈ `network`, `data`, `auth`, `storage`, `api`, `migrator`, `edge`, `web`, `observability` |
+| Stack CDK de CI (uno por cuenta) | `<app-short>-ci` |
+| Función Lambda HTTP | `<app-short>-<stage>-api` |
+| Función Lambda worker | `<app-short>-<stage>-ingest-worker` |
+| Función Lambda de webhooks (🆕 V2.3) | `<app-short>-<stage>-webhooks` |
+| Función Lambda de migraciones | `<app-short>-<stage>-migrator` |
+| Función Lambda cron | `<app-short>-<stage>-job-<nombre>` |
+| Alias de Lambda que recibe tráfico | `live` |
+| HTTP API (API Gateway v2) | `<app-short>-<stage>-http` |
+| Cola de ingesta / cola de errores | `<app-short>-<stage>-ingest` / `<app-short>-<stage>-ingest-dlq` |
+| Bucket de documentos | `<app-short>-<stage>-docs-<cuenta>` |
+| Bucket del sitio estático | `<app-short>-<stage>-web-<cuenta>` |
+| Bucket de logs de acceso | `<app-short>-<stage>-logs-<cuenta>` |
+| User Pool de Cognito | `<app-short>-<stage>-users` |
+| Base de datos | `<app_snake>` (una instancia RDS por stage, una base por instancia) |
+| Usuario de BD de la aplicación | `app_user` (solo DML) |
+| Usuario de BD de migraciones | `postgres` (usuario maestro; solo lo usa la Lambda `migrator`) |
+| Secretos (Secrets Manager) | `/<org>/<app-short>/<stage>/<nombre>` |
+| Parámetros SSM de salida | `/<org>/<app-short>/<stage>/<clave>` (un solo prefijo para backend y frontend) |
+| Cookies de sesión | `__Host-<app-short>_at`, `__Secure-<app-short>_rt`, `__Secure-<app-short>_mfa` |
+| Rama git → stage | Solo `main`. Cada merge despliega a `dev`; `qa` y `prod` se promueven con aprobación (17.2) |
+| GitHub Environments | `dev`, `qa`, `prod` |
+| Etiquetas obligatorias de todo recurso | `app=<app-short>`, `stage=<stage>`, `owner=<org>`, `managed-by=cdk` |
 
-> 🟥 **DEUDA — NO REPLICAR.** El original usa **dos prefijos SSM distintos**: `/anka/app-risk-backend/<stage>/` para el backend y `/app-risk-frontend/<stage>/` (sin `<org>`) para el frontend. Eso obliga a escribir dos patrones de ARN en cada política IAM y es una fuente constante de error. El blueprint unifica en `/<org>/<app>/<stage>/` y `/<org>/<app-frontend>/<stage>/`. Ver corrección **19.4**.
+> **Por qué el número de cuenta va en el nombre de los buckets.** Los nombres de bucket son globales en todo AWS. `<app-short>-dev-docs` puede estar tomado por otra cuenta del mundo; con el sufijo de cuenta la colisión es imposible y el nombre sigue siendo predecible.
+
+> **Por qué un solo prefijo SSM.** La v1 tenía un prefijo para el backend y otro para el frontend, y cada política IAM necesitaba dos ARNs. Ahora CDK escribe todas las salidas bajo `/<org>/<app-short>/<stage>/`, y el pipeline del frontend lee solo las claves `web/*` (16.9).
 
 ---
 
@@ -133,115 +199,138 @@ Una vez fijados `<org>`, `<app>`, `<REGION>` y `<AWS_ACCOUNT_ID>`, **todo lo dem
 
 ### 2.1 Topología de runtime
 
-```
-                            ┌──────────────────────────────────────┐
-                            │  Navegador (SPA)                     │
-                            │  https://<DOMINIO_APP>               │
-                            └──────────────┬───────────────────────┘
-                                           │ HTTPS
-                     ┌─────────────────────┼─────────────────────┐
-                     │                     │                     │
-                     ▼                     ▼                     ▼
-        ┌────────────────────┐  ┌────────────────────┐  ┌──────────────────┐
-        │ CloudFront         │  │ API Gateway        │  │ Cognito          │
-        │ <CF_DIST_ID>       │  │ HTTP API           │  │ User Pool        │
-        │   ↓ origen         │  │ <stage>-<app>      │  │ <USER_POOL_ID>   │
-        │ S3 <BUCKET_FRONTEND>│ │ ruta catch-all '*' │  │ + JWKS público   │
-        └────────────────────┘  └─────────┬──────────┘  └────────▲─────────┘
-                                          │                      │
-                                          │ proxy                │ SDK
-                                          ▼                      │ (login,
-                              ┌───────────────────────┐          │ signup,
-                              │ Lambda <app>-<stage>- │──────────┘ refresh…)
-                              │ main   (nodejs20.x)   │
-                              │ dist/lambda.handler   │
-                              │ timeout 30 s          │
-                              └───┬───────────┬───────┘
-                                  │           │
-                   ┌──────────────┘           └───────────────┐
-                   ▼                                          ▼
-        ┌──────────────────────┐                   ┌────────────────────┐
-        │ SSM Parameter Store  │                   │ RDS Proxy          │
-        │ /<org>/<app>/<stage>/│                   │   ↓                │
-        │  · String  (config)  │                   │ RDS PostgreSQL 16  │
-        │  · SecureString      │                   │ <DB_NAME>          │
-        │    (db_password,     │                   └────────────────────┘
-        │     cognito_secret)  │
-        └──────────────────────┘
+🆕 **V2**
 
-        ┌──────────────────────────────────────────────────────────────┐
-        │ S3 <BUCKET_DOCS>                                             │
-        │   raw/<ENTITY_ID>/<tipo>/<sha256>-<sufijo>.pdf  (inmutable)  │
-        │   quarantine/…                                               │
-        └───────────────┬──────────────────────────────────────────────┘
-                        │ evento s3:ObjectCreated:* (prefijo raw/)
-                        ▼
-        ┌───────────────────────────────────────┐
-        │ Lambda <app>-<stage>-ingestWorker     │
-        │ dist/lambda-ingest.handler            │
-        │ timeout 900 s, memory 512 MB          │
-        └───────────────────────────────────────┘
-
-        ┌───────────────────────────────────────┐
-        │ Lambda <app>-<stage>-<nombreJob>      │  ← EventBridge
-        │ dist/lambda-<job>.handler             │     cron(...)
-        │ timeout 30 s, memory 256 MB           │
-        └───────────────────────────────────────┘
 ```
+                      ┌────────────────────────────────────────────────┐
+                      │ Navegador (SPA)   https://<DOMINIO_APP>        │
+                      └───────────────────────┬────────────────────────┘
+                                              │ HTTPS (HTTP/2 y HTTP/3)
+                                              ▼
+            ┌──────────────────────────────────────────────────────────────────┐
+            │ AWS WAF (us-east-1): reglas gestionadas + límites por IP          │
+            ├──────────────────────────────────────────────────────────────────┤
+            │ CloudFront  (un solo dominio, certificado ACM, cabeceras de        │
+            │             seguridad, compresión Brotli/Gzip)                     │
+            │   /*       → S3 web (privado, OAC)       caché larga para /_nuxt/* │
+            │   /api/*   → API Gateway HTTP API        sin caché, reenvía cookies│
+            │              + cabecera secreta x-origin-verify                    │
+            └───────────────┬───────────────────────────────┬──────────────────┘
+                            │                               │
+                            ▼                               ▼
+              ┌──────────────────────────┐   ┌───────────────────────────────────┐
+              │ S3 <app-short>-<stage>-  │   │ API Gateway HTTP API              │
+              │ web-<cuenta>             │   │ <app-short>-<stage>-http          │
+              │ (index.html sin caché)   │   │ throttling por stage, ruta '*'    │
+              └──────────────────────────┘   └────────────────┬──────────────────┘
+                                                              │ alias `live`
+   ┌──────────────────────────────── VPC (subredes privadas) ──┼──────────────────────┐
+   │                                                          ▼                      │
+   │   ┌────────────────────────────┐        ┌──────────────────────────────────┐   │
+   │   │ Lambda <app-short>-<stage>-│        │ Lambda <app-short>-<stage>-api   │   │
+   │   │ migrator (invocada por CI) │        │ Node 24 · arm64 · 1536 MB · 29 s │   │
+   │   └─────────────┬──────────────┘        │ bundle esbuild · X-Ray activo     │   │
+   │                 │ usuario maestro       └───┬───────────┬───────────┬──────┘   │
+   │                 │ (contraseña rotada en     │ IAM (TLS) │           │          │
+   │                 │  Secrets Manager, TLS)    ▼           │           │          │
+   │                 │              ┌──────────────────┐     │           │          │
+   │                 │              │ RDS Proxy        │     │           │          │
+   │                 │              │ IAM de extremo a │     │           │          │
+   │                 │              │ extremo          │     │           │          │
+   │                 ▼              └────────┬─────────┘     │           │          │
+   │        ┌─────────────────────────────────────────┐      │           │          │
+   │        │ RDS PostgreSQL 17 (subredes aisladas)    │      │           │          │
+   │        │ Multi-AZ en prod · cifrado · PITR 7-35 d │      │           │          │
+   │        └─────────────────────────────────────────┘      │           │          │
+   │                                                         │ NAT       │ endpoint │
+   └─────────────────────────────────────────────────────────┼───────────┼──────────┘
+                                                             ▼           ▼
+                                      ┌────────────────────────┐  ┌─────────────────┐
+                                      │ Cognito User Pool       │  │ S3 docs (gateway│
+                                      │ (Essentials, MFA TOTP,  │  │ endpoint),      │
+                                      │ rotación refresh token) │  │ Secrets Manager │
+                                      └────────────────────────┘  └─────────────────┘
+
+   Subida de documentos (asíncrona):
+   Navegador ──PUT presignado──► S3 docs  incoming/…
+                                   │ GuardDuty Malware Protection (antivirus)
+                                   ▼
+                        EventBridge (resultado del escaneo)
+                                   │
+                                   ▼
+                     SQS <app-short>-<stage>-ingest ──(3 fallos)──► DLQ ──► alarma
+                                   │
+                                   ▼
+                     Lambda <app-short>-<stage>-ingest-worker (VPC)
+                        limpio → mueve a raw/ y procesa · amenaza → quarantine/
+
+   Programados:  EventBridge Scheduler ──► Lambda <app-short>-<stage>-job-<nombre>
+   Observabilidad: CloudWatch Logs (JSON) · métricas · X-Ray · Sentry · alarmas → SNS → <ALERT_EMAIL>
+```
+
+**Las cinco decisiones que definen esta topología** (detalle en la sección 27):
+
+1. **Un solo dominio para front y API.** CloudFront enruta `/api/*` a API Gateway. El navegador no hace peticiones *cross-origin*: no hay CORS, no hay preflight `OPTIONS` (una ida y vuelta menos por cada llamada que no sea simple) y las cookies de sesión son de primera parte con `SameSite=Strict`.
+2. **Sesión en cookies `httpOnly`.** El JavaScript del navegador nunca ve un token. Un XSS no puede robar la sesión.
+3. **Base de datos privada con IAM de extremo a extremo vía RDS Proxy.** Ni la API ni el proxy usan contraseña de base de datos: la Lambda presenta un token IAM de 15 minutos y el proxy entra a PostgreSQL también con IAM. RDS Proxy absorbe la concurrencia de Lambda. Solo la Lambda `migrator` usa el usuario maestro, cuya contraseña rota Secrets Manager.
+4. **Todo es CDK.** Un stage nuevo se crea con un comando y queda idéntico a los demás.
+5. **Un artefacto, tres entornos.** El código se compila una vez y el mismo bundle se promueve de dev a qa a prod.
 
 ### 2.2 Flujo de un request protegido
+
+🆕 **V2**
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Cliente (SPA)
+    participant C as Navegador (SPA)
+    participant CF as CloudFront + WAF
     participant AG as API Gateway HTTP API
-    participant L as Lambda main
-    participant H as handler (lambda.ts)
+    participant L as Lambda api (alias live)
     participant N as Nest (serverless-express)
     participant JW as JwtStrategy (JWKS)
-    participant DB as PostgreSQL
-    participant S as SSM
+    participant DB as PostgreSQL (vía RDS Proxy)
+    participant SM as Secrets Manager
 
-    C->>AG: GET /recursos/123  (Authorization: Bearer <idToken>)
+    C->>CF: GET /api/recursos/123  (Cookie: __Host-<app-short>_at=…)
+    CF->>CF: WAF: reglas gestionadas + límite por IP
+    CF->>AG: misma petición + x-origin-verify + CloudFront-Viewer-Address
     AG->>L: evento httpApi v2
-    L->>H: handler(event, context)
-    alt cold start
-        H->>S: GetParameter db_password, cognito_client_secret (WithDecryption)
-        S-->>H: SecureString descifrado
-        H->>N: bootstrapLambda() → NestFactory.create + app.init()
-        N-->>H: Handler cacheado en memoria (cachedServer)
+    alt arranque en frío
+        L->>SM: GetSecretValue (cognito client secret, origin verify)
+        L->>N: bootstrapLambda() → NestFactory.create + app.init()
+        N-->>L: handler cacheado en memoria
     end
-    H->>N: cachedServer(event, context)
-    N->>N: helmet → CORS → ThrottlerGuard → JwtAuthGuard
-    N->>JW: validar firma RS256 contra JWKS del pool
-    JW->>DB: SELECT userStatus FROM users WHERE id = payload.sub
-    DB-->>JW: userStatus
-    alt userStatus ∈ {blocked, rejected, observed}
-        JW-->>C: 401 con mensaje específico
+    L->>N: handler(event, context)
+    N->>N: requestId → pino-http → helmet → OriginVerifyGuard → CsrfGuard
+    N->>JW: JwtAuthGuard: cookie → verificar RS256 contra JWKS, iss, client_id, token_use
+    JW->>DB: SELECT "userStatus" FROM users WHERE id = sub (PK, ~1 ms)
+    alt userStatus ≠ active, usuario inexistente o BD caída
+        JW-->>C: 401 (falla cerrado)
     end
     N->>N: RolesGuard: cognito:groups ∩ @Roles(...)
     N->>N: ValidationPipe (whitelist + transform) sobre el DTO
     N->>DB: consulta del servicio
     DB-->>N: filas
-    N->>N: LoggingInterceptor registra método, ruta, status, ms, sub
-    N-->>C: 200 JSON
+    N-->>C: 200 JSON + x-request-id (log JSON con requestId, sub, ruta, status, ms)
 ```
 
-### 2.3 Dos caminos de arranque
+### 2.3 Dos caminos de arranque, una sola configuración
 
-El mismo `AppModule` se arranca de **dos** maneras distintas. Es el punto más importante de toda la arquitectura:
+🆕 **V2** — El mismo `AppModule` arranca de dos maneras, pero **la configuración HTTP vive en una única función, `configureApp()`** (8.1), que llaman ambos caminos. En la v1 cada camino configuraba CORS, pipes y filtros por su cuenta y divergían (lista blanca en local, `*` en producción). Eso ya no puede pasar.
 
-| | Local / contenedor | Lambda |
+| | Local | Lambda |
 |---|---|---|
 | Entrada | `src/main.ts` | `src/lambda.ts` → `src/lambda-bootstrap.ts` |
-| Factory | `NestFactory.create(AppModule, { rawBody: true })` | `NestFactory.create(AppModule)` |
-| Servidor | `app.listen(PORT)` (Express real) | `app.init()` + `@vendia/serverless-express` |
-| Swagger | sí, en `/api` | no se monta |
-| CORS | lista blanca desde `ALLOWED_ORIGINS` con alias localhost/127.0.0.1 | `origin: '*'` + cabeceras manuales en el preflight |
-| Secretos | `.env` | SSM SecureString al arrancar |
-| Caché | no aplica | `cachedServer` a nivel de módulo, sobrevive entre invocaciones del mismo contenedor |
-| Migraciones | ninguna (se corren a mano) | ninguna (se corren en CI) — ver **19.2** |
+| Configuración HTTP | `configureApp(app)` | `configureApp(app)` |
+| Servidor | `app.listen(PORT, '127.0.0.1')` (Express 5) | `app.init()` + `@codegenie/serverless-express` v5 |
+| Prefijo de rutas | `/api` | `/api` (CloudFront reenvía la ruta tal cual) |
+| Swagger | sí, en `/docs` | no se monta |
+| Cómo llega el navegador | El dev server del front (`127.0.0.1:4200`) hace *proxy* de `/api` a `localhost:3000`: mismo origen también en local | CloudFront `/api/*` |
+| Secretos | `.env` | Secrets Manager al arrancar (7.4) |
+| Base de datos | Contraseña de `.env` contra PostgreSQL local | Token IAM contra RDS Proxy (7.2) |
+| Cookies | Sin prefijo `__Host-`/`__Secure-` y sin `Secure` (HTTP local) | Con prefijo, `Secure`, `SameSite=Strict` |
+| Migraciones | `pnpm migration:run` a mano | Lambda `migrator`, invocada por el CI |
 
 ---
 
@@ -249,65 +338,72 @@ El mismo `AppModule` se arranca de **dos** maneras distintas. Es el punto más i
 
 ### 3.1 Versiones exactas
 
+🆕 **V2**
+
 | Componente | Versión | Nota |
 |---|---|---|
-| Node.js (local y CI) | **20.x** | Debe coincidir con el runtime de Lambda. Ver corrección **19.6** |
-| npm | **10.x** (el que trae Node 20) | El lockfile es `lockfileVersion: 3` |
-| PostgreSQL | **16** | Local y RDS |
-| TypeScript | `^5.0.0` | `target: ES2021`, `module: commonjs` |
-| NestJS | `^11.1.27` | Núcleo, common, platform-express |
-| TypeORM | **`0.3.20`** exacto (sin `^`) | Pinned a propósito: 0.3.x rompe APIs entre minors |
-| Serverless Framework | `^3.40.0` | **No** v4: v4 exige licencia/registro |
-| Runtime de Lambda | `nodejs20.x` | |
+| Node.js (local, CI y Lambda) | **24.x** (LTS, soportado en Lambda hasta abril de 2028) | Fijado en `.nvmrc`, `engines`, `setup-node` del CI y `runtime` de CDK. Ver 19.6 |
+| pnpm | **12.x**, fijado con `packageManager` en `package.json` | Corepack lo activa: `corepack enable`. pnpm 12 rechaza la instalación si una dependencia trae scripts de instalación no aprobados (`allowBuilds`, 6.12) |
+| PostgreSQL | **17** | Local, CI y RDS |
+| TypeScript | **`~6.0`** | `target: ES2023`, `module: commonjs`. **No** TypeScript 7: el CLI de Nest 12 fija `~6.0` y `typescript-eslint` no soporta 7 (aunque 7 sí emite `emitDecoratorMetadata`) |
+| NestJS | `^12.1` | Se publica como **ESM**; el código de la app sigue compilando a CommonJS (Node 24 admite `require()` de ESM). Ver la trampa del bundle en 22.23 |
+| TypeORM | **`1.1.1`** exacto (sin `^`) | Pinned a propósito. Cambios respecto a 0.3 que afectan a este blueprint: `select`/`relations` solo con sintaxis de objeto, `null`/`undefined` en un `where` lanzan error, `findOneById` eliminado |
+| Zod | `^4.6` | `z.stringbool()` para booleanos de entorno; los errores se leen en `error.issues` |
+| Vitest | `^5.0` | Con `unplugin-swc`: SWC sí emite la metadata de decoradores (esbuild no) |
+| `@codegenie/serverless-express` | `^5.0` | Sucesor de `@vendia/serverless-express`. La v5 solo admite handlers con promesa, que es lo que exige Node 24 |
+| AWS CDK | `aws-cdk-lib ^2.270`, CLI `aws-cdk ^2.1140`, `cdk-nag ^3` | Infraestructura (sección 16) |
+| esbuild | `^0.28` | Empaquetado de las Lambdas (6.11) |
+| Runtime de Lambda | `nodejs24.x`, arquitectura `arm64` | Graviton: más rápido por milisegundo y ~20 % más barato que x86 |
+
+> **Por qué Node 24 y no 22.** `nodejs20.x` quedó deprecado en Lambda el 30/04/2026; `nodejs22.x` se depreca el 30/04/2027; `nodejs24.x` el 30/04/2028. Empezar un proyecto en 22 obliga a migrar en meses. Node 24 elimina los handlers con `callback`, por eso el handler de 8.3 es solo `async` y se usa `@codegenie/serverless-express` v5.
+
+> **Versiones exactas de las dependencias.** Los rangos de la sección 4 son los que se verificaron el 07/10/2026. `pnpm install` resolverá la última versión compatible y el `pnpm-lock.yaml` las congela. Dependabot (17.6) las mantiene al día con PRs agrupados y revisables.
 
 ```bash
 # Verificación de prerrequisitos
-node -v    # debe imprimir v20.x
-npm -v     # debe imprimir 10.x
-psql --version   # debe imprimir psql (PostgreSQL) 16.x
+node -v              # v24.x (≥ 24.11: lo exige TypeORM 1.x)
+corepack enable && pnpm -v   # 12.x
+psql --version       # psql (PostgreSQL) 17.x
+aws --version        # aws-cli/2.x
+npx cdk --version    # 2.x
 ```
 
-### 3.2 Recursos AWS que deben existir ANTES de escribir código
+### 3.2 Recursos que deben existir ANTES de escribir código
 
-Estos recursos **no** los crea el repositorio. Se crean una vez, a mano o por un IaC separado, y el repositorio los consume:
+🆕 **V2** — En la v1 había nueve recursos que se creaban a mano. En la v2 **solo hay tres**, y son de arranque (no se pueden crear con el propio CDK sin un huevo y la gallina). Todo lo demás lo crea la sección 16.
 
-| # | Recurso | Detalle | Bloquea |
-|---|---|---|---|
-| 1 | **Cognito User Pool** | `<USER_POOL_ID>`. Con `email` como alias de login y atributos `email`, `phone_number`, `given_name`, `family_name`, `name` | Todo el módulo auth |
-| 2 | **Cognito App Client** | `<CLIENT_ID>` **con client secret** y los flujos `ALLOW_USER_PASSWORD_AUTH` y `ALLOW_REFRESH_TOKEN_AUTH` habilitados | Login y refresh |
-| 3 | **Grupos Cognito** | `<ROL_A>` y `<ROL_B>` creados en el pool | RBAC |
-| 4 | **RDS PostgreSQL 16** | Instancia por stage, o una instancia con una base por stage | Migraciones |
-| 5 | **RDS Proxy** | Apuntando a la instancia anterior. **Obligatorio** con Lambda: ver corrección **19.3** | Estabilidad en producción |
-| 6 | **Bucket S3 de documentos** | `<BUCKET_DOCS>` por stage, con Versioning y SSE-KMS activados | Módulo documents |
-| 7 | **Parámetros SSM** | Los 9 `String` + 2 `SecureString` de la sección 16.3, por cada stage | Arranque de Lambda y CI |
-| 8 | **Rol OIDC para GitHub** | `<DEPLOY_ROLE>` con trust policy hacia `token.actions.githubusercontent.com` y las policies de la sección 16.5 | CI/CD |
-| 9 | **Bucket S3 del frontend + CloudFront** | `<BUCKET_FRONTEND>`, `<CF_DIST_ID>` | Deploy del frontend |
+| # | Recurso | Detalle | Lo hace | Bloquea |
+|---|---|---|---|---|
+| 1 | **Dos cuentas AWS** | `<ACCOUNT_NONPROD>` (dev y qa) y `<ACCOUNT_PROD>`, idealmente bajo AWS Organizations con facturación consolidada y CloudTrail organizativo | Administrador de la nube | Todo despliegue |
+| 2 | **Dominio en Route 53** | `<DOMINIO_BASE>` con su zona alojada `<HOSTED_ZONE_ID>`. Si la zona vive en otra cuenta, delegar subdominios (`app-dev`, `app-qa`) a la cuenta no-prod | Administrador de la nube | Certificado y CloudFront |
+| 3 | **CDK bootstrap + stack de CI** | `cdk bootstrap` en cada cuenta (en `<REGION>` y en `us-east-1`) y un primer `cdk deploy -c ci=nonprod` / `-c ci=prod` con credenciales de administrador, que crea el proveedor OIDC de GitHub y los roles de despliegue (16.12) | Administrador de la nube, una vez | El CI |
 
-> **Nota sobre el orden.** Se puede escribir y probar todo el código en local con PostgreSQL local y Cognito real sin tener nada más (1–3 y PostgreSQL local). Los recursos 4–9 solo bloquean el primer despliegue.
+> **Se puede escribir y probar todo el código sin AWS.** Con PostgreSQL local y el fallback de almacenamiento en disco (7.6), las fases 0 a 7 del plan corren en una laptop. Cognito sí es real desde la fase 4: se usa el pool de `dev`, que crea CDK en la fase 9; hasta entonces, los tests de auth usan el cliente de Cognito simulado (15.3).
 
 ### 3.3 Secretos y cómo circulan
 
+🆕 **V2**
+
 | Secreto | Local | CI | Lambda |
 |---|---|---|---|
-| `DB_PASSWORD` | `.env` (gitignored) | `aws ssm get-parameter --with-decryption` en `run-migrations.sh` | `hydrateSsmSecrets()` al arrancar |
-| `COGNITO_CLIENT_SECRET` | `.env` (gitignored) | no se usa | `hydrateSsmSecrets()` al arrancar |
-| Credenciales AWS | perfil `~/.aws` o `aws sso login` | STS vía OIDC (`aws-actions/configure-aws-credentials@v4`) | rol de ejecución, inyectado por el runtime |
+| Contraseña de BD de la API | `.env` (`DB_PASSWORD`, solo PostgreSQL local) | **no existe**: el CI nunca toca la base | **no existe**: `app_user` es IAM-only; la Lambda genera un token de 15 min con `@aws-sdk/rds-signer` (7.2) y el proxy entra a la base también con IAM |
+| Contraseña del usuario maestro (`postgres`) | — | **no la ve**: el CI solo invoca la Lambda `migrator` | Secrets Manager `/<org>/<app-short>/<stage>/db-master`, generada por RDS/CDK y **rotada cada 30 días**. Solo la lee la Lambda `migrator` (y una persona en emergencia, con rastro en CloudTrail) |
+| Secreto del App Client de Cognito | `.env` (`COGNITO_CLIENT_SECRET`) | no se usa | Secrets Manager `/<org>/<app-short>/<stage>/cognito-client-secret`, leído al arrancar |
+| Secreto de origen (`x-origin-verify`) | no aplica (sin CloudFront) | no se usa | Secrets Manager `/<org>/<app-short>/<stage>/origin-verify`, leído al arrancar. CloudFront lo envía como cabecera |
+| DSN de Sentry | `.env`, opcional | variable del workflow | Variable de entorno (no es secreto) |
+| Credenciales AWS | `aws sso login` (perfil) | STS vía OIDC (`aws-actions/configure-aws-credentials`) | Rol de ejecución, inyectado por el runtime |
 
-**No hay access keys estáticas en ningún secret de GitHub.** Esa es una propiedad del diseño, no un detalle.
+**No hay access keys estáticas en ningún lugar**, ni contraseñas de base de datos en manos de personas o del CI. Eso es una propiedad del diseño, no un detalle.
 
 ---
 
 ## 4. `package.json` completo
 
-🟩 **NÚCLEO** — copiar y ajustar `name`, `description`, `author`.
+🆕 **V2** — copiar y ajustar `name` y `author`. Verificado con `pnpm install` el 07/10/2026.
 
-> Diferencias deliberadas respecto al original, justificadas en la sección 19:
-> - `engines.node` pasa de `>=26.0.0` a `>=20.0.0 <21` (corrección **19.6**).
-> - Se añaden `jest`, `ts-jest`, `@types/jest`, `supertest`, `@types/supertest` y los scripts `test`, `test:watch`, `test:cov`, `test:e2e` (corrección **19.8**).
-> - Se eliminan las dependencias de dominio del original (`pdf-parse`, `xlsx`) porque no son núcleo; se dejan comentadas como referencia.
+Archivo: `package.json`
 
 ```json
-// package.json
 {
   "name": "<app>",
   "version": "0.0.1",
@@ -315,791 +411,1036 @@ Estos recursos **no** los crea el repositorio. Se crean una vez, a mano o por un
   "author": "<AUTOR>",
   "private": true,
   "license": "UNLICENSED",
+  "packageManager": "pnpm@12.10.1",
   "engines": {
-    "node": ">=20.0.0 <21"
+    "node": ">=24.11.0 <25"
   },
   "scripts": {
     "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\"",
-    "start": "nest start",
+    "bundle": "node scripts/bundle.mjs",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepare": "husky",
-    "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js",
-    "migration:generate": "npm run typeorm -- migration:generate -d src/config/typeorm.config.ts",
-    "migration:run": "npm run typeorm -- migration:run -d src/config/typeorm.config.ts",
-    "migration:revert": "npm run typeorm -- migration:revert -d src/config/typeorm.config.ts",
-    "db:seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
-    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"
+    "typeorm": "typeorm",
+    "migration:generate": "pnpm build && typeorm migration:generate -d dist/config/typeorm.config.js",
+    "migration:run": "pnpm build && typeorm migration:run -d dist/config/typeorm.config.js",
+    "migration:revert": "pnpm build && typeorm migration:revert -d dist/config/typeorm.config.js",
+    "db:seed": "pnpm build && node dist/database/seed.js",
+    "openapi": "pnpm build && OPENAPI_OUT=openapi/openapi.json node dist/main.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:cov": "vitest run --coverage",
+    "test:e2e": "vitest run --config vitest.e2e.config.mts",
+    "test:e2e:cov": "vitest run --config vitest.e2e.config.mts --coverage"
   },
   "dependencies": {
-    "@aws-sdk/client-cognito-identity-provider": "^3.1075.0",
-    "@aws-sdk/client-s3": "^3.1075.0",
-    "@aws-sdk/client-ssm": "^3.1110.0",
-    "@aws-sdk/s3-request-presigner": "^3.1075.0",
-    "@nestjs/common": "^11.1.27",
-    "@nestjs/config": "^4.0.4",
-    "@nestjs/core": "^11.1.27",
-    "@nestjs/jwt": "^11.0.2",
-    "@nestjs/passport": "^11.0.5",
-    "@nestjs/platform-express": "^11.1.27",
-    "@nestjs/swagger": "^11.4.4",
-    "@nestjs/throttler": "^6.5.0",
-    "@nestjs/typeorm": "^11.0.3",
-    "@vendia/serverless-express": "^4.12.6",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1100.0",
+    "@aws-sdk/client-s3": "^3.1100.0",
+    "@aws-sdk/client-secrets-manager": "^3.1100.0",
+    "@aws-sdk/rds-signer": "^3.1100.0",
+    "@aws-sdk/s3-request-presigner": "^3.1100.0",
+    "@codegenie/serverless-express": "^5.0.0",
+    "@nestjs/common": "^12.1.2",
+    "@nestjs/config": "^12.0.1",
+    "@nestjs/core": "^12.1.2",
+    "@nestjs/passport": "^12.0.0",
+    "@nestjs/platform-express": "^12.1.2",
+    "@nestjs/swagger": "^12.0.2",
+    "@nestjs/typeorm": "^12.0.2",
+    "@sentry/node": "^11.4.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "cookie-parser": "^1.4.7",
     "decimal.js": "^10.6.0",
-    "helmet": "^8.2.0",
-    "jwks-rsa": "^3.1.0",
+    "express": "^5.2.1",
+    "helmet": "^8.3.0",
+    "jwks-rsa": "^4.1.0",
+    "nestjs-pino": "^5.3.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
-    "pg": "^8.11.0",
-    "reflect-metadata": "^0.2.0",
-    "rxjs": "^7.8.1",
-    "typeorm": "0.3.20",
-    "zod": "^3.22.0"
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typeorm": "1.1.1",
+    "typeorm-naming-strategies": "^4.1.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@nestjs/cli": "^11.0.23",
-    "@nestjs/testing": "^11.1.27",
-    "@types/aws-lambda": "^8.10.162",
-    "@types/jest": "^29.5.14",
-    "@types/node": "^20.0.0",
-    "@types/passport": "^1.0.17",
+    "@eslint/js": "^10.0.1",
+    "@nestjs/cli": "^12.0.8",
+    "@nestjs/schematics": "^12.0.6",
+    "@nestjs/testing": "^12.1.2",
+    "@swc/core": "^1.16.13",
+    "@types/aws-lambda": "^8.10.164",
+    "@types/cookie-parser": "^1.4.9",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.0.0",
     "@types/passport-jwt": "^4.0.1",
-    "@types/supertest": "^6.0.2",
-    "@typescript-eslint/eslint-plugin": "^8.62.0",
-    "@typescript-eslint/parser": "^8.62.0",
-    "dotenv": "^17.4.2",
-    "eslint": "^10.6.0",
+    "@types/supertest": "^6.0.3",
+    "@vitest/coverage-v8": "^5.0.3",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-prettier": "^5.5.6",
+    "globals": "^17.13.0",
     "husky": "^9.1.7",
-    "jest": "^29.7.0",
-    "prettier": "^3.9.1",
-    "serverless": "^3.40.0",
-    "serverless-offline": "^13.10.1",
-    "supertest": "^7.0.0",
-    "ts-jest": "^29.2.5",
-    "ts-node": "^10.9.2",
-    "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.0.0"
+    "pino-pretty": "^13.2.0",
+    "prettier": "^3.9.9",
+    "supertest": "^7.3.1",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "unplugin-swc": "^2.0.0",
+    "vitest": "^5.0.3"
   }
 }
 ```
 
+`infra/` es un paquete aparte del mismo workspace (la app CDK, sección 16):
+
+Archivo: `infra/package.json`
+
+```json
+{
+  "name": "infra",
+  "private": true,
+  "scripts": {
+    "cdk": "cdk",
+    "synth": "cdk synth --quiet",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.270.0",
+    "cdk-nag": "^3.0.2",
+    "constructs": "^10.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "aws-cdk": "^2.1140.0",
+    "tsx": "^4.20.0",
+    "typescript": "~6.0.3"
+  }
+}
+```
+
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - infra
+allowBuilds:
+  '@scarf/scarf': false
+  '@swc/core': true
+  esbuild: true
+```
+
+> **Diferencias deliberadas respecto a la v1** (justificadas en 19 y 27):
+> - Node 24, pnpm 12, NestJS 12, TypeORM 1.1.1, TypeScript 6.0, Zod 4.
+> - Sin `serverless`, `serverless-offline`, `ts-node`, `dotenv`, `@nestjs/jwt` (no se firma ningún token propio), `@nestjs/throttler` (en Lambda cada contenedor tiene su propia memoria: el límite por IP lo hace WAF, 23.3), `@aws-sdk/client-ssm`.
+> - Nuevas: `@codegenie/serverless-express` (Node 24), `@aws-sdk/rds-signer` (IAM auth), `@aws-sdk/client-secrets-manager`, `cookie-parser` (sesión en cookies), `nestjs-pino` + `pino` (logs JSON), `@sentry/node`, `typeorm-naming-strategies`, `express` (declarado: el módulo de documentos usa su `raw()` y pnpm no expone dependencias transitivas), `vitest` + `unplugin-swc` + `@swc/core`, `esbuild`.
+
 ### 4.1 Cada script, uno por uno
 
-| Script | Comando | Qué hace | Cuándo se usa |
-|---|---|---|---|
-| `build` | `nest build` | Compila TS → `dist/` usando `tsconfig.build.json`. **No** borra `dist/` previo (`deleteOutDir: false` en `nest-cli.json`) | Pre-push, CI, antes de empaquetar |
-| `format` | `prettier --write "src/**/*.ts"` | Formatea en sitio | A mano |
-| `start` | `nest start` | Arranca sin watch | Raro |
-| `start:dev` | `nest start --watch` | Servidor de desarrollo en `:3000` con recompilación | Desarrollo diario |
-| `start:prod` | `node dist/main` | Ejecuta el build. Camino de contenedor, no de Lambda | Docker, si se usa |
-| `lint` | `eslint "{src,apps,libs,test}/**/*.ts" --fix` | ESLint + Prettier como regla, **con `--fix`** | Pre-push, CI |
-| `prepare` | `husky` | Instala los hooks de git tras `npm install` | Automático |
-| `typeorm` | `ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js` | Base para los tres scripts de migración. `tsconfig-paths/register` permite usar los alias de `tsconfig.json` | Interno |
-| `migration:generate` | `npm run typeorm -- migration:generate -d src/config/typeorm.config.ts` | Hace *diff* entre entidades y esquema real y genera el archivo. **Requiere pasar la ruta de destino**: `npm run migration:generate src/migrations/NombreMigracion` | Al cambiar una entidad |
-| `migration:run` | `… migration:run -d src/config/typeorm.config.ts` | Aplica pendientes | Local, y en CI antes del deploy |
-| `migration:revert` | `… migration:revert -d src/config/typeorm.config.ts` | Revierte **una** migración | Rollback manual |
-| `db:seed` | `ts-node … src/database/seed.ts` | Arranca un contexto Nest sin servidor HTTP y ejecuta `SeederService.seed()` | Tras migrar, en entorno nuevo |
-| `test` | `jest` | Unitarios | CI, desarrollo |
-| `test:watch` | `jest --watch` | Unitarios en watch | Desarrollo |
-| `test:cov` | `jest --coverage` | Cobertura | CI opcional |
-| `test:e2e` | `jest --config ./test/jest-e2e.json --runInBand` | E2E con `supertest` contra la app real. `--runInBand` porque comparten base de datos | CI |
+| Script | Qué hace | Cuándo se usa |
+|---|---|---|
+| `build` | `nest build` con `tsc`: compila a `dist/` y **emite la metadata de decoradores** | Antes de todo lo demás |
+| `bundle` | Empaqueta cada Lambda desde `dist/` en un único `.lambda/<función>/index.js` minificado (6.11) | CI, antes de `cdk deploy` |
+| `start:dev` | Servidor local con recarga en `127.0.0.1:3000` | Desarrollo diario |
+| `lint` | ESLint con reglas que usan el sistema de tipos | Pre-push, CI |
+| `typecheck` | `tsc --noEmit` estricto | Pre-push, CI |
+| `migration:generate` | Compila y genera una migración por diff entre entidades y esquema real. Recibe la ruta destino: `pnpm migration:generate src/migrations/AddX` | Al cambiar una entidad |
+| `migration:run` / `migration:revert` | Aplica / revierte contra la base del `.env` | Solo en local. En AWS lo hace la Lambda `migrator` |
+| `db:seed` | Inserta las claves de `settings` que falten (idempotente) | Tras migrar en local |
+| `openapi` | 🆕 **V2.1.** Compila y reescribe `openapi/openapi.json`, el contrato que se commitea (17.4). Lee el `.env` local; no conecta a la base | En el mismo commit que cambia un controlador o un DTO |
+| `test` | Unitarios (`src/**/*.spec.ts`) | Desarrollo, CI |
+| `test:e2e` / `test:e2e:cov` | E2E contra PostgreSQL real; la variante `:cov` aplica el umbral de cobertura | CI |
 
-> **Por qué `typeorm` está pinned a `0.3.20` sin `^`.** TypeORM 0.3.x cambia firmas públicas entre versiones *minor* (por ejemplo el contrato de `DataSourceOptions` y el comportamiento de `migration:generate`). Un `^0.3.20` deja que npm instale 0.3.25 y rompa la generación de migraciones sin tocar una línea de código. Mantener el pin.
+> **Por qué el CLI de TypeORM corre sobre `dist/` y no sobre `src/` con ts-node.** `ts-node` no se mantiene al ritmo de TypeScript 6, y las alternativas rápidas (`tsx`, esbuild) **no emiten la metadata de decoradores**: TypeORM perdería los tipos de las columnas que no los declaran y `migration:generate` produciría SQL incorrecto. Compilar con `tsc` y ejecutar el JavaScript resultante es la única forma de que el CLI vea exactamente lo mismo que la app.
+
+> **Por qué `typeorm` está fijado sin `^`.** Cada minor puede cambiar el SQL que genera `migration:generate`. Se sube en un PR propio que regenera una migración de prueba y revisa el diff.
 
 ---
 
 ## 5. Estructura de carpetas
 
-🟩 **NÚCLEO**
+🆕 **V2**
 
 ```
 <app>/
-├── .cursor/                       # Entorno de Cursor Cloud (sección 18)
-│   ├── environment.json
-│   ├── install.sh
-│   └── start.sh
+├── .cursor/                       # Entorno de Cursor Cloud (18.2)
 ├── .github/
+│   ├── dependabot.yml             # Actualización semanal y agrupada de dependencias
 │   └── workflows/
-│       └── ci.yml                 # Pipeline único: lint, build, test, migrar, desplegar
-├── .husky/
-│   └── pre-push                   # lint && build && test antes de cada push
-├── infra/
-│   └── iam/                       # Políticas IAM versionadas (NO se aplican solas)
-│       ├── README.md
-│       ├── github-actions-deploy-least-privilege.json
-│       └── github-actions-serverless-deploy.json
+│       ├── ci.yml                 # Verificar en cada PR; construir una vez; promover dev → qa → prod
+│       ├── deploy.yml             # Workflow reutilizable: despliega un stage
+│       └── codeql.yml             # Análisis estático de seguridad
+├── .husky/pre-push                # lint + typecheck + test antes de cada push
+├── infra/                         # App CDK (paquete del workspace, sección 16)
+│   ├── bin/app.ts
+│   ├── lib/                       # Un archivo por stack + config, nombres, nag
+│   ├── cdk.json
+│   └── package.json
+├── openapi/openapi.json           # Contrato versionado; lo regenera `pnpm openapi` (17.4)
 ├── scripts/
-│   └── ci/                        # Los cuatro pasos del deploy, como bash auditable
-│       ├── preflight-deploy.sh
-│       ├── run-migrations.sh
-│       ├── deploy-functions.sh
-│       └── verify-deploy.sh
+│   ├── bundle.mjs                 # esbuild: dist/*.js → .lambda/<función>/index.js
+│   ├── lambda-smoke.mjs           # Invoca el bundle con un evento de API Gateway v2
+│   ├── synth-check.sh             # cdk synth sin AWS (valores ficticios)
+│   └── ci/
+│       ├── invoke-migrator.sh     # Invoca la Lambda migrator y falla si falla
+│       └── smoke.sh               # Prueba el stage a través de CloudFront
 ├── src/
-│   ├── main.ts                    # Entrada local/contenedor
-│   ├── lambda.ts                  # Entrada Lambda HTTP (handler + rutas de diagnóstico)
+│   ├── main.ts                    # Entrada local (Swagger en /docs, export de OpenAPI)
+│   ├── configure-app.ts           # Configuración HTTP ÚNICA para local y Lambda
+│   ├── lambda.ts                  # Handler HTTP (Node 24, solo async)
 │   ├── lambda-bootstrap.ts        # Construcción de la app Nest para Lambda
-│   ├── lambda-ingest.ts           # Entrada del worker S3
-│   ├── lambda-<job>.ts            # Entrada de cada cron
-│   ├── app.module.ts              # Raíz del grafo de dependencias
-│   ├── config/                    # Configuración y clientes AWS. Sin lógica de negocio
-│   │   ├── env.validation.ts      # Esquema Zod de process.env
-│   │   ├── database.config.ts     # Opciones de TypeORM para runtime
-│   │   ├── typeorm.config.ts      # DataSource standalone para el CLI de migraciones
-│   │   ├── hydrate-ssm-secrets.ts # Carga de SecureString desde SSM
-│   │   ├── ssm-secret-error.ts    # Traducción de errores de SSM/KMS a mensajes útiles
-│   │   └── aws-s3.client.ts       # Fábrica del S3Client + fallback a disco local
-│   ├── common/                    # Cross-cutting. Sin dependencias de módulos de feature
+│   ├── lambda-migrator.ts         # Migraciones, roles de BD, seeds, alta de admins
+│   ├── lambda-ingest.ts           # Worker de ingesta (SQS)
+│   ├── app.module.ts
+│   ├── config/                    # Entorno y clientes AWS. Única capa que lee process.env
+│   │   ├── env.validation.ts      # Esquema Zod
+│   │   ├── database.config.ts     # Opciones de TypeORM (pool, TLS, IAM auth)
+│   │   ├── typeorm.config.ts      # DataSource del CLI (se ejecuta compilado)
+│   │   ├── hydrate-secrets.ts     # Secretos desde Secrets Manager al arrancar
+│   │   ├── secret-error.ts
+│   │   └── aws-s3.client.ts       # Cliente S3 + fallback a disco en local
+│   ├── common/                    # Transversal. No importa nada de modules/
+│   │   ├── auth/                  # Guards, decoradores, roles
 │   │   ├── constants/
-│   │   ├── decorators/
-│   │   │   ├── current-user.decorator.ts
-│   │   │   ├── public.decorator.ts     # (añadido por el blueprint, corrección 19.1)
-│   │   │   └── roles.decorator.ts
+│   │   ├── database/pg-errors.ts
 │   │   ├── filters/
-│   │   │   └── http-exception.filter.ts
-│   │   ├── guards/
-│   │   │   ├── jwt-auth.guard.ts
-│   │   │   └── roles.guard.ts
-│   │   ├── interceptors/
-│   │   │   └── logging.interceptor.ts
-│   │   └── utils/
-│   │       └── decimal.util.ts
+│   │   ├── http/                  # requestId, IP real, filtros de origen y CSRF
+│   │   ├── idempotency/           # Idempotency-Key de los POST (9.6)
+│   │   ├── observability/         # Logger (pino) y Sentry
+│   │   ├── pagination/
+│   │   └── utils/decimal.util.ts
 │   ├── database/
-│   │   ├── seed.ts                # Entrypoint de `npm run db:seed`
-│   │   └── seeding/
-│   │       ├── seeder.module.ts
-│   │       ├── seeder.service.ts  # Orquesta los seeds, idempotente
-│   │       └── settings.seed.ts   # Datos de la tabla `settings`
-│   ├── migrations/                # 1 archivo por cambio de esquema, prefijo ordinal
-│   │   └── 00001-<timestamp>-<Nombre>.ts
-│   └── modules/                   # Un directorio por bounded context
+│   │   ├── entities.ts            # Lista explícita de entidades
+│   │   ├── db-roles.ts            # Rol app_user (IAM-only, solo DML)
+│   │   ├── seed-data.ts
+│   │   └── seed.ts                # pnpm db:seed (local)
+│   ├── migrations/
+│   │   ├── index.ts               # Lista explícita y ordenada
+│   │   └── <timestamp>-<Nombre>.ts
+│   └── modules/
 │       ├── auth/
-│       │   ├── auth.controller.ts
-│       │   ├── auth.module.ts
-│       │   ├── auth.service.ts
-│       │   ├── jwt.strategy.ts
-│       │   └── dto/
 │       ├── users/
-│       │   ├── user.entity.ts
-│       │   ├── setting.entity.ts
-│       │   ├── user-terms-acceptance.entity.ts
-│       │   ├── users.module.ts
-│       │   └── users.service.ts
 │       ├── audit/
-│       │   ├── audit.entity.ts
-│       │   ├── audit.module.ts
-│       │   └── audit.service.ts
 │       ├── documents/
-│       │   ├── document.entity.ts
-│       │   ├── document.module.ts
-│       │   ├── document.service.ts
-│       │   ├── document.controller.ts
-│       │   └── dto/
-│       └── <feature>/             # Módulos del dominio nuevo
+│       ├── health/
+│       └── <feature>/             # Módulos del dominio (plantilla en 12)
 ├── test/
-│   ├── jest-e2e.json
+│   ├── support/test-app.ts        # App de test con Cognito simulado y JWT locales
 │   └── *.e2e-spec.ts
 ├── .env.example
 ├── .gitattributes
 ├── .gitignore
+├── .nvmrc                         # 24
 ├── .prettierrc
-├── eslint.config.js
-├── jest.config.js
+├── eslint.config.mjs
 ├── nest-cli.json
 ├── package.json
-├── serverless.yml
+├── pnpm-workspace.yaml
+├── tsconfig.json
 ├── tsconfig.build.json
-└── tsconfig.json
+├── vitest.config.mts
+└── vitest.e2e.config.mts
 ```
 
 ### 5.1 Rol de cada carpeta y sus reglas de dependencia
 
 | Carpeta | Rol | Regla de dependencia |
 |---|---|---|
-| `src/config/` | Traduce entorno y credenciales a objetos tipados. Única capa que lee `process.env` directamente | **No importa nada de `src/modules/`**. Puede ser importada por cualquiera |
-| `src/common/` | Filtros, guards, interceptores, decoradores y utilidades puras | **No importa nada de `src/modules/`**. Los guards reciben datos por `Reflector`, no por inyección de servicios de feature |
-| `src/modules/<x>/` | Un bounded context: entidades, DTOs, servicio, controlador, módulo | Puede importar `common/`, `config/` y otros módulos vía `imports:` del `@Module`. Si hay ciclo, `forwardRef()` |
-| `src/migrations/` | SQL versionado | No importa nada salvo `typeorm` |
-| `src/database/seeding/` | Datos iniciales idempotentes | Importa módulos de feature para reutilizar sus servicios |
-| `scripts/ci/` | Pasos del despliegue, en bash | Solo AWS CLI, `jq`, `npx serverless` |
-| `infra/iam/` | Copias literales de lo que vive en AWS | Documentación ejecutable: **no** se aplican solas |
+| `src/config/` | Traduce entorno y credenciales a objetos tipados | **No importa nada de `src/modules/`**. Es la única capa que lee `process.env` (salvo los puntos de entrada `lambda*.ts`/`main.ts`, que solo pasan valores) |
+| `src/common/` | Guards, filtros, middleware, decoradores y utilidades puras | **No importa nada de `src/modules/`** |
+| `src/modules/<x>/` | Un contexto de negocio: entidades, DTOs, servicio, controlador, módulo | Importa `common/`, `config/` y otros módulos por `imports:` del `@Module` |
+| `src/database/` | Registro de entidades, roles de BD, seeds | Importa entidades de `modules/` |
+| `src/migrations/` | SQL versionado | Solo `typeorm` |
+| `infra/` | Infraestructura | **No importa nada de `src/`**. Solo consume `.lambda/` como artefacto |
+| `scripts/ci/` | Pasos del despliegue, en bash auditable | AWS CLI y `jq` |
 
 ---
 
 ## 6. Archivos de configuración del proyecto
 
-### 6.1 `tsconfig.json`
+🆕 **V2** — copiar todos. El compilador es `tsc` (emite metadata de decoradores). ESLint usa el servicio de tipos y **no** analiza `infra/` ni las migraciones generadas.
 
-🟩 **NÚCLEO** — transcripción literal.
+### 6.1 `tsconfig.json` y `tsconfig.build.json`
+
+Archivo: `tsconfig.json`
 
 ```json
-// tsconfig.json
 {
   "compilerOptions": {
     "module": "commonjs",
-    "declaration": true,
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "declaration": false,
     "removeComments": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "allowSyntheticDefaultImports": true,
-    "target": "ES2021",
+    "esModuleInterop": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./",
+    "rootDir": "./src",
     "incremental": true,
-    "skipLibCheck": true
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "skipLibCheck": true,
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
 }
 ```
 
-Lo no obvio:
-
-- `emitDecoratorMetadata` + `experimentalDecorators` son **obligatorios**: sin ellos NestJS no puede resolver los tipos de los constructores para inyección de dependencias, y TypeORM no puede inferir tipos de columna.
-- `module: commonjs` es obligatorio: `@vendia/serverless-express` y el modelo de carga de Lambda asumen CJS. Cambiar a ESM rompe el `require` dinámico del handler.
-- `target: ES2021` es compatible con `nodejs20.x`.
-- `declaration: true` genera `.d.ts` innecesarios en `dist/`. Es inofensivo pero engorda el paquete unos pocos KB. Se puede poner en `false`.
-- **No** hay `strict: true`. El original compila en modo laxo. Para un proyecto nuevo se recomienda activar `strictNullChecks` desde el día uno; activarlo después es muy caro.
-- `incremental: true` crea `tsconfig.tsbuildinfo`. Asegurarse de que `dist/` está en `.gitignore` (lo está).
-
-### 6.2 `tsconfig.build.json`
-
-🟩 **NÚCLEO** — transcripción literal.
+Archivo: `tsconfig.build.json`
 
 ```json
-// tsconfig.build.json
-{ "extends": "./tsconfig.json", "exclude": ["node_modules", "test", "dist", "**/*spec.ts"] }
+{ "extends": "./tsconfig.json", "exclude": ["node_modules", "test", "dist", "**/*.spec.ts"] }
 ```
 
-Excluye tests del artefacto de producción. Es el `tsConfigPath` que usa `nest build`.
+`strictPropertyInitialization` está apagado porque las propiedades de las entidades las rellena TypeORM, no el constructor. El resto de `strict` sigue activo. No se declara `moduleResolution`: con `"module": "commonjs"` y TypeScript 6 el valor por defecto es el correcto; fijar `node16` obliga a cambiar también `module` y rompe el emit CommonJS.
 
-### 6.3 `nest-cli.json`
+`include` es solo `src/**/*.ts`. Los tests viven fuera y los compila Vitest (SWC), no `tsc`. Por eso `tsc --noEmit` no typecheckea `test/`: el typecheck de los tests lo hace el propio `vitest` al transpilar, y ESLint sí los cubre con el project service (6.3).
 
-🟩 **NÚCLEO** — transcripción literal.
+### 6.2 `nest-cli.json`
+
+Archivo: `nest-cli.json`
 
 ```json
-// nest-cli.json
 {
   "$schema": "https://json.schemastore.org/nest-cli",
   "collection": "@nestjs/schematics",
   "sourceRoot": "src",
   "compilerOptions": {
-    "deleteOutDir": false,
-    "webpack": false,
+    "deleteOutDir": true,
+    "builder": "tsc",
     "tsConfigPath": "tsconfig.build.json"
   }
 }
 ```
 
-Lo no obvio:
+`builder: tsc` es obligatorio. El builder `swc` del CLI de Nest **no** emite `emitDecoratorMetadata` y TypeORM pierde los tipos de columna.
 
-- `webpack: false` → `nest build` emite **archivos sueltos** en `dist/`, no un bundle. Es lo que necesita el empaquetado de Serverless, que sube `dist/**` + `node_modules` de producción.
-- `deleteOutDir: false` → builds incrementales más rápidas, pero **archivos renombrados dejan residuos** en `dist/`. Si al depurar aparece un handler que ya no existe en `src/`, borrar `dist/` a mano.
+### 6.3 `eslint.config.mjs`
 
-### 6.4 `eslint.config.js`
+```mjs
+// eslint.config.mjs
+import eslint from '@eslint/js';
+import prettier from 'eslint-config-prettier';
+import globals from 'globals';
+import tseslint from 'typescript-eslint';
 
-🟩 **NÚCLEO** — transcripción literal. Formato *flat config* (ESLint 9+).
-
-```js
-// eslint.config.js
-const typescriptEslint = require('@typescript-eslint/eslint-plugin');
-const typescriptParser = require('@typescript-eslint/parser');
-const prettierPlugin = require('eslint-plugin-prettier');
-const prettierConfig = require('eslint-config-prettier');
-
-module.exports = [
+export default tseslint.config(
+  { ignores: ['dist/**', '.lambda/**', 'coverage/**', 'infra/cdk.out*/**', 'infra-synth/**', 'src/migrations/*-*.ts'] },
+  eslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
   {
-    ignores: ['dist/**', 'node_modules/**', '.eslintrc.js'],
-  },
-  {
-    files: ['src/**/*.ts', 'apps/**/*.ts', 'libs/**/*.ts', 'test/**/*.ts'],
     languageOptions: {
-      parser: typescriptParser,
-      parserOptions: {
-        project: './tsconfig.json',
-      },
-    },
-    plugins: {
-      '@typescript-eslint': typescriptEslint,
-      'prettier': prettierPlugin,
+      globals: globals.node,
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
     },
     rules: {
-      ...typescriptEslint.configs.recommended.rules,
-      'prettier/prettier': 'error',
-      '@typescript-eslint/interface-name-prefix': 'off',
-      '@typescript-eslint/explicit-function-return-type': 'off',
-      '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unsafe-function-type': 'off',
+      'no-console': ['error', { allow: ['error'] }],
     },
   },
-];
+  {
+    files: ['**/*.spec.ts', 'test/**/*.ts', 'scripts/**/*.mjs', '*.mts', '*.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+    rules: { 'no-console': 'off', '@typescript-eslint/no-unsafe-member-access': 'off' },
+  },
+  prettier,
+);
 ```
 
-Lo no obvio:
+`src/migrations/*-*.ts` se ignora: son archivos generados. El arreglo a mano del trigger de `audit_logs` (11.4) vive en ese archivo; se revisa en el PR de la migración, no con el linter.
 
-- El original hace `...prettierConfig.rules` **antes** de `'prettier/prettier': 'error'`. `eslint-config-prettier` solo *apaga* reglas de formato de ESLint; no aporta reglas propias. El orden que importa es que `prettier/prettier` quede **después**, como está. En el flat config moderno, `prettierConfig.rules` puede no existir como propiedad (según versión); si al correr `npm run lint` aparece `Cannot read properties of undefined`, sustituir esa línea por el spread del objeto completo o eliminarla. En la transcripción de arriba se eliminó para evitar el fallo; la variable `prettierConfig` queda declarada pero sin usar, lo cual ESLint no marca en un archivo `.js` que no está en `files`.
-- `parserOptions.project` activa reglas que requieren información de tipos. Hace el lint más lento pero mucho más útil.
-- `no-explicit-any: off` es una concesión del original. En un proyecto nuevo conviene dejarlo en `warn`.
+`infra/` tiene su propio `tsconfig` y no entra en este ESLint (el project service fallaría al mezclar las dos raíces). El gate de `infra/` es `tsc -p infra/tsconfig.json`, que ya corre `scripts/synth-check.sh` y el job de CI.
 
-### 6.5 `.prettierrc`
+### 6.4 Prettier, Node y fin de línea
 
-🟩 **NÚCLEO** — transcripción literal.
+Archivo: `.prettierrc`
 
 ```json
-// .prettierrc
 {
   "singleQuote": true,
-  "trailingComma": "all"
+  "trailingComma": "all",
+  "printWidth": 100
 }
 ```
 
-### 6.6 `.gitignore`
-
-🟩 **NÚCLEO** — transcripción literal, con la línea de dominio sustituida.
-
-```gitignore
-# .gitignore
-
-# Compiled output
-/dist
-/node_modules
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# IDEs and editors
-.idea/
-.vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# Documentos subidos en local (sin credenciales AWS / S3)
-.local-uploads/
-
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Serverless Framework
-.serverless/
-
-# Jest
-/coverage
+```text
+24
 ```
 
-> El original incluye además `/~$*.xlsx` (archivo de bloqueo de Excel abierto). Es específico de su dominio; se omite.
+`.gitattributes` (crear; no es un archivo del proyecto de verificación, es convención de repositorio):
 
-### 6.7 `.gitattributes`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```gitattributes
-# .gitattributes
+```
+* text=auto eol=lf
 *.sh text eol=lf
 ```
 
-**Por qué existe.** Sin esta línea, un clon en Windows con `core.autocrlf=true` convierte los scripts de `scripts/ci/` a CRLF. El runner de GitHub Actions (Linux) entonces falla con `bash\r: No such file or directory` o con errores crípticos en mitad del script. Es un bug que cuesta horas de diagnosticar. **Esta línea va en el primer commit.**
+Sin esto, un checkout en Windows convierte los scripts a CRLF y `bash` falla con `$'\r': command not found` (22.16).
 
-### 6.8 `.husky/pre-push`
+### 6.5 `.gitignore`
 
-🟩 **NÚCLEO** — el original corre `lint && build`. El blueprint añade los tests.
+```
+node_modules/
+dist/
+.lambda/
+coverage/
+infra/cdk.out*/
+infra-synth/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.local-uploads/
+```
+
+`.env` no se commitea. `.env.example` sí.
+
+### 6.6 `.env.example`
+
+Valores de **local**. En AWS ninguna de estas variables de secreto existe: las Lambdas reciben ARNs y leen Secrets Manager al arrancar (7.4).
+
+```
+NODE_ENV=development
+STAGE=local
+PORT=3000
+LOG_LEVEL=debug
+APP_ORIGIN=http://127.0.0.1:4200
+AWS_REGION=<REGION>
+DOCS_BUCKET=local
+COGNITO_USER_POOL_ID=
+COGNITO_CLIENT_ID=
+COGNITO_CLIENT_SECRET=
+AUTH_SELF_SIGNUP=true
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=postgres
+DB_NAME=<app_snake>
+DB_IAM_AUTH=false
+DB_SSL=false
+```
+
+`APP_ORIGIN` es el origen del **frontend**. En local Nuxt (127.0.0.1:4200) hace de proxy de `/api` hacia el puerto 3000, así que el navegador habla con un solo origen y las cookies `SameSite=Strict` viajan. `DB_IAM_AUTH=false` solo es válido en `local` y `test`.
+
+### 6.7 Husky
+
+`package.json` declara `"prepare": "husky"`. El hook de pre-push corre lo rápido; la suite e2e (PostgreSQL) queda en CI.
 
 ```sh
 # .husky/pre-push
-echo "=== Running local pre-push checks (Lint, Build and Tests) ==="
-npm run lint && npm run build && npm test
+pnpm lint && pnpm typecheck && pnpm test
 ```
 
-Instalación (una sola vez, tras `npm install`):
+### 6.8 Vitest
 
-```bash
-npx husky init
-# luego crear/editar .husky/pre-push con el contenido de arriba
-chmod +x .husky/pre-push
-```
+```ts
+// vitest.config.mts
+import swc from 'unplugin-swc';
+import { defineConfig } from 'vitest/config';
 
-El script `"prepare": "husky"` del `package.json` reinstala los hooks en cada `npm install`, de modo que un clon nuevo los obtiene automáticamente.
-
-### 6.9 `jest.config.js`
-
-🟩 **NÚCLEO** — **no existe en el original**. Añadido por la corrección **19.8**.
-
-```js
-// jest.config.js
-module.exports = {
-  moduleFileExtensions: ['js', 'json', 'ts'],
-  rootDir: 'src',
-  testRegex: '.*\\.spec\\.ts$',
-  transform: {
-    '^.+\\.(t|j)s$': 'ts-jest',
+// SWC (no esbuild) porque Nest y TypeORM necesitan emitDecoratorMetadata.
+export default defineConfig({
+  plugins: [swc.vite({ module: { type: 'es6' } })],
+  test: {
+    include: ['src/**/*.spec.ts'],
+    environment: 'node',
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/migrations/**', 'src/main.ts', 'src/lambda*.ts', 'src/**/*.module.ts'],
+    },
   },
-  collectCoverageFrom: ['**/*.(t|j)s'],
-  coverageDirectory: '../coverage',
-  testEnvironment: 'node',
-};
+});
 ```
+
+```ts
+// vitest.e2e.config.mts
+import swc from 'unplugin-swc';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  plugins: [swc.vite({ module: { type: 'es6' } })],
+  test: {
+    include: ['test/**/*.e2e-spec.ts'],
+    environment: 'node',
+    // Comparten una base de datos real: en serie.
+    fileParallelism: false,
+    hookTimeout: 60_000,
+    testTimeout: 30_000,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/migrations/**', 'src/main.ts', 'src/lambda*.ts', 'src/**/*.spec.ts', 'src/database/seed.ts'],
+      // Umbral mínimo del CI. Subirlo a medida que crezca la suite; nunca bajarlo.
+      thresholds: { lines: 70, functions: 70, branches: 50 },
+    },
+  },
+});
+```
+
+Los umbrales viven **solo** en la config e2e. Ponerlos en la config de unitarios hace fallar el job en cuanto la cobertura se mide sobre un subconjunto. Los números medidos el 07/10/2026, con esta misma suite: líneas 78.22 %, ramas 58.86 %, funciones 85.46 %, sentencias 75.1 %. El umbral de ramas está en 50 a propósito: se sube cuando la suite crezca, no se baja.
+
+`fileParallelism: false` porque todos los e2e comparten una base real y cada archivo hace `DROP SCHEMA public CASCADE` en el `beforeAll`.
+
+### 6.9 No hay Dockerfile
+
+🟥 **DEUDA — NO REPLICAR.** El original tenía un Dockerfile de una imagen que nadie desplegaba, con una versión de Node distinta a la de Lambda. El runtime es Lambda (Node 24) y el desarrollo local es `pnpm start:dev`. No añadir un Dockerfile "por si acaso": divergiría del runtime real.
+
+### 6.10 `infra/tsconfig.json`
+
+Archivo: `infra/tsconfig.json`
 
 ```json
-// test/jest-e2e.json
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
-  "rootDir": ".",
-  "testEnvironment": "node",
-  "testRegex": ".e2e-spec.ts$",
-  "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
-  }
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "commonjs",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noImplicitOverride": true
+  },
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "test/**/*.ts"]
 }
 ```
 
-### 6.10 `Dockerfile`
+`noEmit: true`: CDK ejecuta TypeScript con `tsx` (`cdk.json` → `npx tsx bin/app.ts`). No hay un `dist/` de infraestructura.
 
-🟥 **DEUDA — NO REPLICAR tal cual.** El original mantiene un `Dockerfile` que **nunca se usa** (el despliegue es Lambda, no contenedor) y que además arrastra el mismo error de versión de Node que el `package.json`:
+### 6.11 Empaquetado de las Lambdas
 
-```dockerfile
-# ORIGINAL — NO COPIAR
-FROM node:26-alpine AS builder   # ← Node 26 no existe como imagen estable
-...
+```mjs
+// scripts/bundle.mjs
+// Empaqueta cada Lambda en un único archivo minificado a partir de dist/ (ya compilado por tsc,
+// que es quien emite la metadata de decoradores que esbuild no sabe generar).
+// Uso: pnpm build && pnpm bundle   →   .lambda/<función>/index.js
+import { build } from 'esbuild';
+import { rmSync, statSync } from 'node:fs';
+
+const FUNCTIONS = {
+  api: 'dist/lambda.js',
+  migrator: 'dist/lambda-migrator.js',
+  'ingest-worker': 'dist/lambda-ingest.js',
+  // 'job-<nombre>': 'dist/lambda-<nombre>.js',
+};
+
+// Paquetes opcionales que Nest y TypeORM intentan cargar con require() dinámico
+// y que esta aplicación no usa. Marcarlos como externos evita errores de bundle;
+// como nunca se cargan en runtime, no hace falta que existan en el zip.
+const OPTIONAL = [
+  '@nestjs/microservices',
+  '@nestjs/microservices/*',
+  '@nestjs/websockets',
+  '@nestjs/websockets/*',
+  '@fastify/static',
+  '@fastify/view',
+  'class-transformer/storage',
+  'cache-manager',
+  '@sap/hana-client',
+  '@sap/hana-client/*',
+  'better-sqlite3',
+  'hdb-pool',
+  'ioredis',
+  'mongodb',
+  'mssql',
+  'mysql2',
+  'oracledb',
+  'pg-native',
+  'pg-query-stream',
+  'redis',
+  'sql.js',
+  'sqlite3',
+  'typeorm-aurora-data-api-driver',
+  '@google-cloud/spanner',
+  'react-native-sqlite-storage',
+  'pino-pretty',
+];
+
+rmSync('.lambda', { recursive: true, force: true });
+
+for (const [name, entry] of Object.entries(FUNCTIONS)) {
+  const outfile = `.lambda/${name}/index.js`;
+  await build({
+    entryPoints: [entry],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    target: 'node24',
+    format: 'cjs',
+    minify: true,
+    // IMPRESCINDIBLE: Nest deriva tokens de inyección del nombre de clase
+    // (getRepositoryToken) y TypeORM registra las migraciones por nombre de clase.
+    // Sin keepNames, la minificación renombra clases y ambos fallan.
+    keepNames: true,
+    sourcemap: 'linked',
+    legalComments: 'none',
+    external: OPTIONAL,
+    // NestJS 12 se publica como ESM y usa createRequire(import.meta.url). En un
+    // bundle CommonJS import.meta está vacío: se reconstruye desde __filename.
+    banner: { js: 'const __bundleMetaUrl=require("node:url").pathToFileURL(__filename).href;' },
+    define: { 'import.meta.url': '__bundleMetaUrl' },
+    logLevel: 'warning',
+  });
+  const kb = Math.round(statSync(outfile).size / 1024);
+  console.log(`${name.padEnd(16)} ${outfile}  ${kb} KB`);
+}
 ```
 
-Ver corrección **19.9**: o se borra, o se alinea a `node:20-alpine` y se documenta para qué sirve. Si se decide conservarlo:
+Orden obligatorio: `pnpm build && pnpm bundle`. esbuild **no** emite metadata de decoradores; por eso el entry es `dist/*.js`, ya compilado por `tsc`.
 
-```dockerfile
-# Dockerfile
-# Stage 1: build
-FROM node:20-alpine AS builder
-WORKDIR /usr/src/app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
+Tres detalles que, si se quitan, el bundle arranca y revienta en la primera petición:
 
-# Stage 2: runtime
-FROM node:20-alpine
-WORKDIR /usr/src/app
-COPY package*.json ./
-RUN npm ci --omit=dev
-COPY --from=builder /usr/src/app/dist ./dist
-EXPOSE 3000
-CMD ["node", "dist/main.js"]
+1. **`keepNames: true`.** Nest calcula el token de `getRepositoryToken(User)` a partir del nombre de la clase. TypeORM registra cada migración por `constructor.name`. Minificar sin conservar nombres hace que los repositorios no se resuelvan y que el migrator no encuentre ninguna migración.
+2. **El banner de `import.meta.url`.** NestJS 12 se publica como ESM y llama a `createRequire(import.meta.url)` dentro de `loadPackageSync`. En un bundle CommonJS `import.meta.url` queda `undefined` y el `require` resuelve contra el cwd. El banner reconstruye la URL desde `__filename` y `define` sustituye la expresión.
+3. **`pino-pretty` como external, y solo se activa fuera de Lambda.** El transport de `pino-pretty` lanza un worker thread que busca `pino-pretty/lib/worker.js` dentro del bundle y no lo encuentra. `app.module.ts` lo enciende únicamente cuando `STAGE=local` y no hay `AWS_LAMBDA_FUNCTION_NAME`.
+
+`scripts/lambda-smoke.mjs` invoca el bundle con un evento de API Gateway HTTP API (payload 2.0) y con los eventos del migrator. Es el mismo script que produjo el humo de la sección 21: arranque en frío 411 ms, caliente 2 ms, 401 sin cookie, 403 sin la cabecera de CloudFront.
+
+```mjs
+// scripts/lambda-smoke.mjs
+// Invoca el bundle de la Lambda con eventos sintéticos de API Gateway HTTP API (payload v2).
+// Uso: pnpm build && pnpm bundle && node --env-file=.env scripts/lambda-smoke.mjs
+import { createRequire } from 'node:module';
+import { performance } from 'node:perf_hooks';
+
+process.env.AWS_LAMBDA_FUNCTION_NAME ??= 'smoke-api';
+const require = createRequire(import.meta.url);
+
+function event(method, path, headers = {}) {
+  return {
+    version: '2.0',
+    routeKey: '$default',
+    rawPath: path,
+    rawQueryString: '',
+    headers: {
+      host: 'smoke.local',
+      'x-forwarded-proto': 'https',
+      'x-origin-verify': process.env.ORIGIN_VERIFY_SECRET ?? '',
+      ...headers,
+    },
+    requestContext: {
+      accountId: '000000000000',
+      apiId: 'smoke',
+      domainName: 'smoke.local',
+      http: { method, path, protocol: 'HTTP/1.1', sourceIp: '127.0.0.1', userAgent: 'smoke' },
+      requestId: `req-${Math.random().toString(36).slice(2)}`,
+      routeKey: '$default',
+      stage: '$default',
+      time: new Date().toISOString(),
+      timeEpoch: Date.now(),
+    },
+    isBase64Encoded: false,
+  };
+}
+const context = { awsRequestId: 'smoke', functionName: 'smoke-api', getRemainingTimeInMillis: () => 29000 };
+
+const t0 = performance.now();
+const { handler } = require('../.lambda/api/index.js');
+const tLoad = performance.now();
+const cold = await handler(event('GET', '/api/health'), context);
+const tCold = performance.now();
+const warm = await handler(event('GET', '/api/health'), context);
+const tWarm = performance.now();
+const unauth = await handler(event('GET', '/api/auth/me'), context);
+const bypass = await handler(event('GET', '/api/health', { 'x-origin-verify': 'wrong' }), context);
+
+console.log(`carga del módulo:          ${(tLoad - t0).toFixed(0)} ms`);
+console.log(`1.ª invocación (bootstrap): ${(tCold - tLoad).toFixed(0)} ms -> ${cold.statusCode} ${cold.body}`);
+console.log(`2.ª invocación (caliente):  ${(tWarm - tCold).toFixed(1)} ms -> ${warm.statusCode}`);
+console.log(`/api/auth/me sin cookie:    ${unauth.statusCode} ${unauth.body}`);
+console.log(`sin cabecera de CloudFront: ${bypass.statusCode} ${bypass.body}`);
+console.log(`cabeceras:                  x-request-id=${cold.headers['x-request-id']} cache-control=${cold.headers['cache-control']}`);
+process.exit(cold.statusCode === 200 && warm.statusCode === 200 && unauth.statusCode === 401 && bypass.statusCode === 403 ? 0 : 1);
 ```
-
-```
-# .dockerignore
-node_modules
-dist
-.git
-.github
-Dockerfile
-.dockerignore
-npm-debug.log
-.env
-```
-
-> Nota: el original usa `npm ci --only=production`, que está **deprecado** desde npm 7. El reemplazo correcto es `npm ci --omit=dev`. También copia `tsconfig.json` a la imagen final, cosa que el runtime no necesita; se omite.
 
 ---
-
 ## 7. Capa de configuración (`src/config/`)
 
-Esta carpeta es la **única** que lee `process.env` directamente. Todo lo demás recibe configuración por `ConfigService` o por parámetro.
+🆕 **V2.** Es la única capa que lee `process.env` (junto con los puntos de entrada, que solo reenvían). Ningún módulo de negocio importa el SDK de AWS ni abre `process.env`.
 
-### 7.1 `src/config/env.validation.ts`
-
-🟩 **NÚCLEO** — transcripción literal, con la variable de dominio `RATING_CALC_MODE` sustituida por un ejemplo genérico.
+### 7.1 Esquema de entorno
 
 ```ts
 // src/config/env.validation.ts
 import { z } from 'zod';
 
-const envSchema = z.object({
-  NODE_ENV: z.enum(['dev', 'prod', 'qa', 'test']).default('dev'),
-  PORT: z.coerce.number().default(3000),
+const optionalString = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => (v ? v : undefined));
 
-  // Credenciales de AWS: opcionales a propósito. El SDK las resuelve por su
-  // cadena estándar, y de dónde vienen depende de dónde corra la app:
-  //   - Lambda: el runtime las inyecta solo, desde el rol de ejecución.
-  //   - GitHub Actions: las emite STS al asumir el rol vía OIDC.
-  //   - Local: del perfil de ~/.aws o de `aws sso login`, sin declararlas acá.
-  // Exigirlas obligaba a inventar valores falsos en local, que además hacían
-  // fallar S3 en silencio en vez de dar un error claro.
-  AWS_ACCESS_KEY_ID: z.string().optional(),
-  AWS_SECRET_ACCESS_KEY: z.string().optional(),
-  AWS_REGION: z.string().default('<REGION>'),
-  AWS_S3_BUCKET_NAME: z.string().min(1, 'AWS_S3_BUCKET_NAME es requerido'),
+const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+    STAGE: z.enum(['local', 'test', 'dev', 'qa', 'prod']).default('local'),
+    PORT: z.coerce.number().int().positive().default(3000),
+    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    RELEASE: optionalString,
 
-  COGNITO_USER_POOL_ID: z.string().min(1, 'COGNITO_USER_POOL_ID es requerido'),
-  COGNITO_CLIENT_ID: z.string().min(1, 'COGNITO_CLIENT_ID es requerido'),
-  COGNITO_CLIENT_SECRET: z
-    .string()
-    .min(1, 'COGNITO_CLIENT_SECRET es requerido'),
-  COGNITO_REGION: z.string().default('<REGION>'),
+    // Origen público del frontend. En local es el dev server de Nuxt, que hace
+    // proxy de /api al backend; en AWS es https://<DOMINIO_APP>.
+    APP_ORIGIN: z.url({ message: 'APP_ORIGIN debe ser una URL (https://…)' }),
 
-  DB_HOST: z.string().min(1, 'DB_HOST es requerido'),
-  DB_PORT: z.coerce.number().default(5432),
-  DB_USERNAME: z.string().min(1, 'DB_USERNAME es requerido'),
-  DB_PASSWORD: z.string().min(1, 'DB_PASSWORD es requerido'),
-  DB_NAME: z.string().min(1, 'DB_NAME es requerido'),
-  ALLOWED_ORIGINS: z.string().optional(),
+    AWS_REGION: z.string().default('<REGION>'),
+    AWS_ACCESS_KEY_ID: optionalString,
+    AWS_SECRET_ACCESS_KEY: optionalString,
+    DOCS_BUCKET: z.string().min(1, 'DOCS_BUCKET es requerido'),
 
-  // Patrón de "interruptor de rollback": un enum con default que permite
-  // volver a un comportamiento anterior cambiando una variable de entorno,
-  // sin revertir código ni redesplegar. Sustituir por lo que el dominio
-  // necesite, o eliminar si no hace falta.
-  // FEATURE_MODE: z.enum(['v2', 'legacy']).default('v2'),
-});
+    COGNITO_USER_POOL_ID: z.string().min(1, 'COGNITO_USER_POOL_ID es requerido'),
+    COGNITO_CLIENT_ID: z.string().min(1, 'COGNITO_CLIENT_ID es requerido'),
+    COGNITO_CLIENT_SECRET: z
+      .string()
+      .min(1, 'COGNITO_CLIENT_SECRET es requerido (o COGNITO_CLIENT_SECRET_ARN en AWS)'),
+    AUTH_SELF_SIGNUP: z.stringbool().default(true),
+
+    DB_HOST: z.string().min(1, 'DB_HOST es requerido'),
+    DB_PORT: z.coerce.number().int().positive().default(5432),
+    DB_USERNAME: z.string().min(1, 'DB_USERNAME es requerido'),
+    DB_PASSWORD: optionalString,
+    DB_NAME: z.string().min(1, 'DB_NAME es requerido'),
+    DB_IAM_AUTH: z.stringbool().default(false),
+    DB_SSL: z.stringbool().default(false),
+    DB_POOL_MAX: z.coerce.number().int().positive().optional(),
+
+    ORIGIN_VERIFY_SECRET: optionalString,
+    SENTRY_DSN: optionalString,
+  })
+  .superRefine((env, ctx) => {
+    if (!env.DB_IAM_AUTH && !env.DB_PASSWORD) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DB_PASSWORD'],
+        message: 'DB_PASSWORD es requerido cuando DB_IAM_AUTH=false',
+      });
+    }
+    if (env.DB_IAM_AUTH && !env.DB_SSL) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DB_SSL'],
+        message: 'La autenticación IAM exige DB_SSL=true',
+      });
+    }
+    const deployed = ['dev', 'qa', 'prod'].includes(env.STAGE);
+    if (deployed && !env.ORIGIN_VERIFY_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ORIGIN_VERIFY_SECRET'],
+        message: 'En dev/qa/prod la API solo acepta tráfico que venga de CloudFront',
+      });
+    }
+    if (deployed && !env.APP_ORIGIN.startsWith('https://')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['APP_ORIGIN'],
+        message: 'En dev/qa/prod APP_ORIGIN debe ser https://',
+      });
+    }
+  });
 
 export type EnvConfig = z.infer<typeof envSchema>;
 
-export function validateEnv(config: Record<string, unknown>) {
+export function validateEnv(config: Record<string, unknown>): EnvConfig {
   const result = envSchema.safeParse(config);
-
   if (!result.success) {
-    console.error('❌ Error de validación en variables de entorno (.env):');
-    result.error.errors.forEach((err) => {
-      console.error(`  - [${err.path.join('.')}]: ${err.message}`);
-    });
-    throw new Error('Configuración inválida en variables de entorno.');
+    const lines = result.error.issues.map(
+      (issue) => `  - [${issue.path.join('.')}]: ${issue.message}`,
+    );
+    throw new Error(`Configuración inválida en variables de entorno:\n${lines.join('\n')}`);
   }
-
   return result.data;
 }
 ```
 
-**Explicación de lo no obvio:**
+```ts
+// src/config/env.validation.spec.ts
+import { describe, expect, it } from 'vitest';
+import { validateEnv } from './env.validation';
 
-- `validateEnv` se engancha en `ConfigModule.forRoot({ validate: validateEnv })`. Nest la llama **una vez**, al construir el módulo raíz. Si falla, la aplicación **no arranca**. En Lambda eso se traduce en el `503` controlado de `lambda.ts` con el detalle del error, no en un stack trace opaco.
-- `z.coerce.number()` en `PORT` y `DB_PORT`: todas las variables de entorno llegan como string. Sin `coerce`, `DB_PORT` sería la cadena `"5432"` y TypeORM la rechazaría.
-- **`AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` son opcionales a propósito.** Esta es la decisión más importante del archivo. Hacerlas obligatorias forzaba a poner valores falsos en el `.env` local, y el SDK de AWS trata unas credenciales presentes-pero-inválidas como "credenciales resueltas", abortando su cadena de resolución estándar. El resultado era S3 fallando con `Resolved credential object is not valid` en vez de caer al perfil de `~/.aws`. Ver también `aws-s3.client.ts` (7.6).
-- `NODE_ENV` solo acepta `dev | prod | qa | test`. **No acepta `production`**. Eso es consistente con el `serverless.yml`, que inyecta `NODE_ENV: ${self:provider.stage}`. Si alguien pone `NODE_ENV=production` la app no arranca. Es intencional: `NODE_ENV` identifica el *stage*, y el stage es parte de la ruta SSM.
-- `ALLOWED_ORIGINS` es opcional porque `main.ts` tiene un default embebido.
-- El retorno de `validateEnv` es lo que alimenta a `ConfigService`. Como devuelve `result.data` (el objeto ya parseado y coercido), `configService.get<number>('DB_PORT')` devuelve un número de verdad.
+const base = {
+  APP_ORIGIN: 'http://127.0.0.1:4200',
+  DOCS_BUCKET: 'b',
+  COGNITO_USER_POOL_ID: 'p',
+  COGNITO_CLIENT_ID: 'c',
+  COGNITO_CLIENT_SECRET: 's',
+  DB_HOST: 'localhost',
+  DB_USERNAME: 'postgres',
+  DB_PASSWORD: 'postgres',
+  DB_NAME: 'db',
+};
 
-### 7.2 `src/config/database.config.ts`
+describe('validateEnv', () => {
+  it('acepta un entorno local mínimo y aplica defaults tipados', () => {
+    const env = validateEnv(base);
+    expect(env.DB_PORT).toBe(5432);
+    expect(env.DB_IAM_AUTH).toBe(false);
+    expect(env.STAGE).toBe('local');
+  });
 
-🟩 **NÚCLEO** — transcripción literal.
+  it('nombra todas las variables que faltan', () => {
+    expect(() => validateEnv({})).toThrow(/APP_ORIGIN[\s\S]*COGNITO_USER_POOL_ID[\s\S]*DB_HOST/);
+  });
+
+  it('en un stage desplegado exige https y el secreto de origen', () => {
+    expect(() => validateEnv({ ...base, STAGE: 'prod' })).toThrow(
+      /ORIGIN_VERIFY_SECRET[\s\S]*https/,
+    );
+  });
+
+  it('IAM auth no requiere contraseña pero sí TLS', () => {
+    const { DB_PASSWORD: _omit, ...noPassword } = base;
+    expect(() => validateEnv({ ...noPassword, DB_IAM_AUTH: 'true' })).toThrow(/DB_SSL/);
+    expect(validateEnv({ ...noPassword, DB_IAM_AUTH: 'true', DB_SSL: 'true' }).DB_IAM_AUTH).toBe(
+      true,
+    );
+  });
+});
+```
+
+Decisiones que el esquema fija y que el resto del código da por hechas:
+
+- `NODE_ENV` es el modo de Node (`development` | `production` | `test`). `STAGE` es el entorno de la aplicación (`local` | `test` | `dev` | `qa` | `prod`). En la v1 ambos conceptos estaban mezclados en `NODE_ENV` y un `NODE_ENV=production` local se comportaba como prod.
+- `z.stringbool()` (Zod 4) acepta `true`/`false`/`1`/`0`. Las variables de entorno siempre llegan como string.
+- `DB_PASSWORD` es obligatoria solo cuando `DB_IAM_AUTH=false`. En AWS la Lambda de la API no tiene contraseña.
+- `DB_IAM_AUTH` exige `DB_SSL`: RDS Proxy con IAM autentica dentro del túnel TLS. Sin TLS el token no sirve y, peor, viajaría en claro.
+- En `dev`/`qa`/`prod`, `ORIGIN_VERIFY_SECRET` es obligatorio y `APP_ORIGIN` tiene que ser `https://`. Sin el secreto, la API aceptaría tráfico que no viene de CloudFront.
+
+`ConfigModule.forRoot({ validate: validateEnv })` llama a esta función con `process.env` al arrancar. Si falla, el proceso termina antes de escuchar: una Lambda mal configurada no llega a atender una sola petición.
+
+### 7.2 Conexión a PostgreSQL
 
 ```ts
 // src/config/database.config.ts
-import { TypeOrmModuleOptions } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
-import * as path from 'path';
+import type { DataSourceOptions } from 'typeorm';
+import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
+export interface DbEnv {
+  DB_HOST: string;
+  DB_PORT: number;
+  DB_USERNAME: string;
+  DB_PASSWORD?: string;
+  DB_NAME: string;
+  DB_IAM_AUTH: boolean;
+  DB_SSL: boolean;
+  DB_POOL_MAX?: number;
+  AWS_REGION: string;
+  STAGE: string;
+}
 
-export const databaseConfigFactory = (
-  configService: ConfigService,
-): TypeOrmModuleOptions => ({
-  type: 'postgres',
-  host: configService.get<string>('DB_HOST'),
-  port: configService.get<number>('DB_PORT') || 5432,
-  username: configService.get<string>('DB_USERNAME'),
-  password: configService.get<string>('DB_PASSWORD'),
-  database: configService.get<string>('DB_NAME'),
-  autoLoadEntities: true,
-  synchronize: false,
-  migrations: [path.join(__dirname, '/../migrations/*.{ts,js}')],
-  ssl: {
-    rejectUnauthorized: false, // necesario para AWS RDS sin certificado local
-  },
-});
+const isLambda = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+/**
+ * Con IAM auth, `pg` llama a esta función cada vez que abre una conexión
+ * física. El token dura 15 minutos, pero una conexión ya abierta sigue viva
+ * aunque el token expire: solo las conexiones nuevas necesitan uno fresco.
+ */
+function iamPasswordProvider(env: DbEnv): () => Promise<string> {
+  let signerPromise: Promise<{ getAuthToken(): Promise<string> }> | undefined;
+  return async () => {
+    signerPromise ??= import('@aws-sdk/rds-signer').then(
+      ({ Signer }) =>
+        new Signer({
+          region: env.AWS_REGION,
+          hostname: env.DB_HOST,
+          port: env.DB_PORT,
+          username: env.DB_USERNAME,
+        }),
+    );
+    return (await signerPromise).getAuthToken();
+  };
+}
+
+export function buildDataSourceOptions(env: DbEnv): DataSourceOptions {
+  return {
+    type: 'postgres',
+    host: env.DB_HOST,
+    port: env.DB_PORT,
+    username: env.DB_USERNAME,
+    password: env.DB_IAM_AUTH ? undefined : env.DB_PASSWORD,
+    database: env.DB_NAME,
+    namingStrategy: new SnakeNamingStrategy(),
+    synchronize: false,
+    migrationsRun: false,
+    // gen_random_uuid() es nativa desde PostgreSQL 13: no requiere extensiones.
+    uuidExtension: 'pgcrypto',
+    // Sin esto TypeORM intenta CREATE EXTENSION en cada arranque, y app_user no tiene permiso.
+    installExtensions: false,
+    logging: ['error', 'warn', 'migration'],
+    // El proxy presenta un certificado de ACM (Amazon Trust Services), que ya
+    // está en el almacén de confianza de Node: se valida la cadena completa.
+    ssl: env.DB_SSL ? { rejectUnauthorized: true } : false,
+    applicationName: `${env.STAGE}-${process.env.AWS_LAMBDA_FUNCTION_NAME ?? 'local'}`,
+    poolSize: env.DB_POOL_MAX ?? (isLambda ? 3 : 10),
+    connectTimeoutMS: 5_000,
+    extra: {
+      idleTimeoutMillis: isLambda ? 60_000 : 30_000,
+      statement_timeout: 10_000,
+      lock_timeout: 5_000,
+      idle_in_transaction_session_timeout: 15_000,
+      ...(env.DB_IAM_AUTH ? { password: iamPasswordProvider(env) } : {}),
+    },
+  };
+}
 ```
 
-**Explicación de lo no obvio:**
+Lo que hay que entender para no "simplificarlo":
 
-- `autoLoadEntities: true` → cada módulo que haga `TypeOrmModule.forFeature([X])` registra automáticamente `X` en el DataSource. Evita mantener una lista central de entidades. **Contrapartida:** una entidad que no esté en ningún `forFeature` no existe para TypeORM y sus migraciones generadas serán incorrectas. Por eso el DataSource del CLI (7.3) usa un glob en vez de `autoLoadEntities`.
-- `synchronize: false` es **no negociable**. `true` deja que TypeORM altere el esquema solo, lo que en producción destruye datos.
-- `migrations: [...]` con `{ts,js}` cubre los dos casos: `.ts` cuando corre bajo `ts-node`, `.js` cuando corre desde `dist/`. **Declarar `migrations` aquí no hace que se ejecuten**: falta `migrationsRun: true`, que el blueprint deliberadamente no activa (corrección **19.2**).
-- `ssl: { rejectUnauthorized: false }` es necesario porque RDS presenta un certificado firmado por la CA de Amazon, que no está en el almacén de confianza por defecto de Node. `rejectUnauthorized: false` cifra la conexión pero no valida la cadena. **Lo correcto para producción** es descargar el bundle de CA de RDS y pasar `ca:`; ver sección 22.2.
-- Este objeto **no** configura el pool. Con RDS Proxy delante eso es aceptable; sin RDS Proxy, hay que añadir `extra: { max: 1 }` (corrección **19.3**).
+- **El token IAM es una función, no un string.** `pg` ≥ 7.12 acepta `password` como `() => Promise<string>`. El token dura 15 minutos; un string fijado al arrancar caduca y el pool se queda mudo hasta el siguiente cold start. Se pasa por `extra.password` porque el driver de TypeORM para Postgres **pisa** `credentials.password` con el valor de `extra.password` (verificado en `PostgresDriver.js` de TypeORM 1.1.1).
+- **El pool es pequeño en Lambda.** `poolSize` 3 cuando existe `AWS_LAMBDA_FUNCTION_NAME`, 10 en local. RDS Proxy está delante precisamente para que N contenedores con 3 conexiones no agoten `max_connections`. Subir el pool "para ir más rápido" hace lo contrario: agota el proxy.
+- **`statement_timeout` 10 s** dentro de `extra.options`. Una query olvidada no puede ocupar una conexión hasta el timeout de 30 s de API Gateway.
+- **`uuidExtension: 'pgcrypto'` e `installExtensions: false`.** Así `migration:generate` emite `gen_random_uuid()` (built-in desde PostgreSQL 13) y no `uuid_generate_v4()` ni un `CREATE EXTENSION` que el rol de la app no puede ejecutar. La extensión `pgcrypto` la instala el usuario maestro, una vez, en la migración inicial.
+- **`ssl: { rejectUnauthorized: true }`** en AWS. El trust store lo aporta `NODE_EXTRA_CA_CERTS` apuntando al bundle de CA de Amazon que CDK deja en la Lambda (16.4). En local, contra un PostgreSQL sin TLS, `DB_SSL=false`.
 
-### 7.3 `src/config/typeorm.config.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
+### 7.3 DataSource del CLI
 
 ```ts
 // src/config/typeorm.config.ts
+import 'reflect-metadata';
+import { existsSync } from 'node:fs';
 import { DataSource } from 'typeorm';
-import * as dotenv from 'dotenv';
-import * as path from 'path';
+import { ENTITIES } from '../database/entities';
+import { MIGRATIONS } from '../migrations';
+import { buildDataSourceOptions } from './database.config';
+import { validateEnv } from './env.validation';
 
-dotenv.config();
+// DataSource del CLI de TypeORM. Se ejecuta COMPILADO (dist/config/typeorm.config.js):
+// así la metadata de decoradores la emite tsc y no hace falta ts-node.
+if (existsSync('.env')) process.loadEnvFile('.env');
+const env = validateEnv(process.env);
 
 export default new DataSource({
-  type: 'postgres',
-  host: process.env.DB_HOST,
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  username: process.env.DB_USERNAME,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  entities: [path.join(__dirname, '/../**/*.entity.{ts,js}')],
-  migrations: [path.join(__dirname, '/../migrations/*.{ts,js}')],
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  ...buildDataSourceOptions(env),
+  entities: ENTITIES,
+  migrations: MIGRATIONS,
 });
 ```
 
-**Por qué existe un segundo DataSource.** El CLI de TypeORM (`typeorm migration:generate|run|revert`) se ejecuta **fuera** del contexto de NestJS: no hay `ConfigService`, no hay inyección de dependencias, no hay `AppModule`. Necesita un `DataSource` exportado por defecto desde un archivo, que es lo que apunta el flag `-d src/config/typeorm.config.ts`.
+Se ejecuta **compilado**: `typeorm -d dist/config/typeorm.config.js`. Ver la nota de la sección 4 sobre por qué no se usa ts-node. El CLI solo corre en local (`migration:generate`, `migration:run`, `migration:revert`). En AWS el mismo `buildDataSourceOptions` lo usa la Lambda `migrator`, con otras credenciales (11.3).
 
-Diferencias con el DataSource de runtime, y por qué:
-
-| | runtime (`database.config.ts`) | CLI (`typeorm.config.ts`) |
-|---|---|---|
-| Entidades | `autoLoadEntities: true` | glob `**/*.entity.{ts,js}` |
-| Config | `ConfigService` (validada por Zod) | `process.env` crudo + `dotenv.config()` |
-| Secretos | ya hidratados desde SSM | de `.env` local, o exportados por `run-migrations.sh` en CI |
-
-El glob del CLI es **más amplio a propósito**: `migration:generate` necesita ver *todas* las entidades para calcular el diff, incluidas las que todavía no estén registradas en ningún módulo.
-
-> ⚠️ **Trampa.** Si una entidad no cumple el patrón `*.entity.ts`, el CLI no la ve y la migración generada **borrará** su tabla (la interpreta como tabla huérfana). Nombrar siempre `<algo>.entity.ts`.
-
-### 7.4 `src/config/hydrate-ssm-secrets.ts`
-
-🟩 **NÚCLEO** — transcripción literal, con el prefijo SSM parametrizado (corrección **19.4**).
+### 7.4 Secretos al arrancar
 
 ```ts
-// src/config/hydrate-ssm-secrets.ts
-import { formatSsmSecretError } from './ssm-secret-error';
+// src/config/hydrate-secrets.ts
+import { formatSecretError } from './secret-error';
 
-const SECRET_ENV_KEYS = ['DB_PASSWORD', 'COGNITO_CLIENT_SECRET'] as const;
+/**
+ * Variable de entorno destino → variable que trae el ARN del secreto.
+ * CDK pone el ARN en la Lambda; el valor nunca aparece en su configuración.
+ */
+const SECRET_SOURCES = {
+  COGNITO_CLIENT_SECRET: 'COGNITO_CLIENT_SECRET_ARN',
+  ORIGIN_VERIFY_SECRET: 'ORIGIN_VERIFY_SECRET_ARN',
+} as const;
 
-type SecretEnvKey = (typeof SECRET_ENV_KEYS)[number];
-
-const PARAM_BY_ENV: Record<SecretEnvKey, string> = {
-  DB_PASSWORD: 'db_password',
-  COGNITO_CLIENT_SECRET: 'cognito_client_secret',
-};
+type SecretKey = keyof typeof SECRET_SOURCES;
 
 function hasValue(value: string | undefined): boolean {
   return Boolean(value && value.trim() && !value.startsWith('<RELLENAR'));
 }
 
-function parameterName(stage: string, suffix: string): string {
-  return `/<org>/<app>/${stage}/${suffix}`;
-}
-
 /**
- * Rellena secretos en process.env desde Parameter Store si no vienen ya
- * (local usa .env; Lambda los pide al arrancar para no copiarlos a env).
+ * Rellena process.env con los secretos de Secrets Manager que falten.
+ * En local no hace nada (los valores vienen de .env y no hay ARNs).
+ * Debe llamarse ANTES de NestFactory.create(): la validación de entorno los exige.
  */
-export async function hydrateSsmSecrets(): Promise<void> {
-  const missing = SECRET_ENV_KEYS.filter((key) => !hasValue(process.env[key]));
-  if (missing.length === 0) {
-    return;
-  }
+export async function hydrateSecrets(): Promise<void> {
+  const pending = (Object.keys(SECRET_SOURCES) as SecretKey[]).filter(
+    (key) => !hasValue(process.env[key]) && hasValue(process.env[SECRET_SOURCES[key]]),
+  );
+  if (pending.length === 0) return;
 
-  const { GetParameterCommand, SSMClient } =
-    await import('@aws-sdk/client-ssm');
-  const stage = process.env.NODE_ENV || 'dev';
-  const region =
-    process.env.AWS_REGION || process.env.COGNITO_REGION || '<REGION>';
-  const client = new SSMClient({ region });
+  const { SecretsManagerClient, GetSecretValueCommand } =
+    await import('@aws-sdk/client-secrets-manager');
+  const client = new SecretsManagerClient({ region: process.env.AWS_REGION });
 
-  for (const key of missing) {
-    const name = parameterName(stage, PARAM_BY_ENV[key]);
-    try {
-      const response = await client.send(
-        new GetParameterCommand({ Name: name, WithDecryption: true }),
-      );
-      const value = response.Parameter?.Value;
-      if (!value) {
-        throw new Error(`SSM no devolvió valor para ${name}`);
+  await Promise.all(
+    pending.map(async (key) => {
+      const secretId = process.env[SECRET_SOURCES[key]] as string;
+      try {
+        const res = await client.send(new GetSecretValueCommand({ SecretId: secretId }));
+        if (!res.SecretString) throw new Error('el secreto no tiene SecretString');
+        process.env[key] = res.SecretString;
+      } catch (error) {
+        throw new Error(formatSecretError(secretId, error), { cause: error });
       }
-      process.env[key] = value;
-    } catch (error) {
-      throw new Error(formatSsmSecretError(name, error));
-    }
-  }
-  console.log(
-    `Hydrated ${missing.join(', ')} from SSM (not stored in Lambda env).`,
+    }),
   );
 }
 ```
 
-**Explicación línea por línea de lo no obvio:**
-
-- **El `import()` dinámico de `@aws-sdk/client-ssm` es deliberado.** Si fuera un `import` estático en la cabecera, el SDK de SSM se cargaría en *todo* arranque, incluido el local, donde nunca se usa. Con el import dinámico, el coste solo se paga cuando falta algún secreto. En un arranque en frío de Lambda eso son decenas de milisegundos.
-- `hasValue()` trata `<RELLENAR…>` como "no hay valor". Es el placeholder que usa el `.env.example`: si alguien copia el ejemplo sin rellenarlo, el sistema intenta SSM en vez de intentar conectarse con la cadena literal `<RELLENAR_DB_PASSWORD>`.
-- **El stage sale de `NODE_ENV`.** Esto encadena: el `serverless.yml` pone `NODE_ENV: ${self:provider.stage}` → la Lambda lee `process.env.NODE_ENV` → construye `/<org>/<app>/<stage>/db_password`. Hay un único punto de verdad para el stage.
-- `WithDecryption: true` es obligatorio para SecureString. Requiere **dos** permisos: `ssm:GetParameter` sobre el parámetro **y** `kms:Decrypt` sobre la clave KMS. Olvidar el segundo es el error más común (ver 7.5).
-- Los secretos se escriben en `process.env`, **no** se devuelven. Es un efecto de lado intencional: todo lo que viene después (`validateEnv`, `ConfigService`, `databaseConfigFactory`) lee de `process.env`. Por eso `hydrateSsmSecrets()` debe llamarse **antes** de `NestFactory.create()`.
-- No hay caché explícita, pero tampoco hace falta: tras la primera llamada `process.env` ya tiene los valores, y `missing` queda vacío en las siguientes. El contenedor Lambda caliente no vuelve a pegarle a SSM.
-
-### 7.5 `src/config/ssm-secret-error.ts`
-
-🟩 **NÚCLEO** — transcripción literal con el prefijo parametrizado.
-
 ```ts
-// src/config/ssm-secret-error.ts
-export function formatSsmSecretError(name: string, error: unknown): string {
+// src/config/secret-error.ts
+export function formatSecretError(secretId: string, error: unknown): string {
   const err = error as { name?: string; message?: string };
   const code = err.name ?? 'Error';
   const detail = err.message ?? String(error);
 
-  if (code === 'AccessDeniedException' || code === 'UnauthorizedException') {
+  if (code === 'AccessDeniedException') {
     return (
-      `Sin permiso para leer ${name} (${code}). ` +
-      'El rol Lambda necesita ssm:GetParameter y kms:Decrypt (clave aws/ssm, no solo el alias).'
+      `Sin permiso para leer ${secretId} (${code}). ` +
+      'El rol de la Lambda necesita secretsmanager:GetSecretValue sobre ese ARN ' +
+      '(CDK lo concede con secret.grantRead(fn)).'
     );
   }
-  if (code === 'ParameterNotFound') {
-    return `No existe el parámetro SSM ${name}.`;
+  if (code === 'ResourceNotFoundException') {
+    return `No existe el secreto ${secretId}. ¿Se desplegó el stack de auth/api de este stage?`;
   }
-  if (
-    code.startsWith('KMS') ||
-    /kms|decrypt|invalidciphertext/i.test(`${code} ${detail}`)
-  ) {
+  if (/kms|decrypt/i.test(`${code} ${detail}`)) {
     return (
-      `No se pudo descifrar ${name} (${code}). ` +
-      'kms:Decrypt debe apuntar a la clave real o a Resource "*", no solo a alias/aws/ssm.'
+      `No se pudo descifrar ${secretId} (${code}). ` +
+      'Si el secreto usa una clave KMS propia, el rol necesita kms:Decrypt sobre esa clave.'
     );
   }
-  return `No se pudo leer ${name} (${code}): ${detail}`;
+  if (/timed? ?out|ETIMEDOUT|ECONNREFUSED|getaddrinfo/i.test(detail)) {
+    return (
+      `No hay conexión con Secrets Manager para leer ${secretId} (${detail}). ` +
+      'La Lambda está en subredes privadas: revisar el NAT Gateway o el VPC endpoint de secretsmanager.'
+    );
+  }
+  return `No se pudo leer ${secretId} (${code}): ${detail}`;
 }
 ```
 
-**Por qué existe un archivo entero para formatear tres errores.** Cuando el arranque de Lambda falla por SSM, lo único que llega al cliente es un `503` con un mensaje. Sin esta traducción, ese mensaje sería `AccessDeniedException: User: arn:aws:sts::… is not authorized to perform: ssm:GetParameter`, que no dice **cuál de los dos permisos falta**. La distinción `ssm:GetParameter` vs `kms:Decrypt` es la causa de la mayoría de los fallos de arranque, y la pista sobre el alias KMS (`alias/aws/ssm` no sirve como `Resource` de una política de `kms:Decrypt`; hay que usar el ARN de la clave o `"*"`) ahorra una sesión entera de depuración.
+Se hidratan dos secretos, y solo si la variable de entorno trae un ARN (en local no hay ARN y se usan los valores del `.env`):
 
-Es además la única función de `src/config/` que es **pura** y por lo tanto trivialmente testeable (sección 15).
+| Variable de entorno (ARN) | Variable que rellena | Quién la lee |
+|---|---|---|
+| `COGNITO_CLIENT_SECRET_ARN` | `COGNITO_CLIENT_SECRET` | Firma `SECRET_HASH` de Cognito |
+| `ORIGIN_VERIFY_SECRET_ARN` | `ORIGIN_VERIFY_SECRET` | La API comprueba que la petición viene de CloudFront |
 
-### 7.6 `src/config/aws-s3.client.ts`
+La contraseña de base de datos **no** está en esta lista: la API no la tiene. El usuario maestro vive en otro secreto y solo lo lee el migrator, en cada invocación, sin caché (11.3).
 
-🟩 **NÚCLEO** — transcripción literal.
+Un fallo de Secrets Manager aborta el arranque con un mensaje que dice el ARN y el código de error, y no imprime el secreto. Cachear el cliente entre invocaciones calientes está bien; cachear el valor del secreto de Cognito también (no rota en cada request). El del usuario maestro no se cachea.
+
+### 7.5 Cliente S3
 
 ```ts
 // src/config/aws-s3.client.ts
 import { S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 function isUsableSecret(value: string | undefined): value is string {
   const trimmed = value?.trim();
-  if (!trimmed) {
-    return false;
-  }
-  if (trimmed.startsWith('<')) {
-    return false;
-  }
+  if (!trimmed) return false;
+  if (trimmed.startsWith('<')) return false;
   return trimmed.length >= 16;
 }
 
@@ -1112,73 +1453,59 @@ export function buildS3ClientConfig(): S3ClientConfig {
   // No pasar accessKey/secret vacíos: el SDK los trata como credenciales
   // resueltas e inválidas ("Resolved credential object is not valid") y
   // además anula la cadena por defecto (perfil ~/.aws, rol Lambda, SSO).
+  // Sin esto, el SDK v3 (≥ 3.729) añade por defecto un checksum CRC32 calculado sobre
+  // un cuerpo vacío a las URLs presignadas, y el PUT del navegador falla con 400.
+  const integrity = {
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
+  } as const;
+
   if (!isUsableSecret(accessKeyId) || !isUsableSecret(secretAccessKey)) {
-    return { region };
+    return { region, ...integrity };
   }
 
   return {
     region,
-    credentials: sessionToken
-      ? {
-          accessKeyId: accessKeyId.trim(),
-          secretAccessKey: secretAccessKey.trim(),
-          sessionToken,
-        }
-      : {
-          accessKeyId: accessKeyId.trim(),
-          secretAccessKey: secretAccessKey.trim(),
-        },
+    ...integrity,
+    credentials: {
+      accessKeyId: accessKeyId.trim(),
+      secretAccessKey: secretAccessKey.trim(),
+      ...(sessionToken ? { sessionToken } : {}),
+    },
   };
 }
 
-export function createS3Client(): S3Client {
-  return new S3Client(buildS3ClientConfig());
+let cachedClient: S3Client | undefined;
+
+export function getS3Client(): S3Client {
+  cachedClient ??= new S3Client(buildS3ClientConfig());
+  return cachedClient;
 }
 
 export function hasAwsCredentialSource(): boolean {
-  if (process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    return true;
-  }
+  if (process.env.AWS_LAMBDA_FUNCTION_NAME) return true;
   if (
     isUsableSecret(process.env.AWS_ACCESS_KEY_ID) &&
     isUsableSecret(process.env.AWS_SECRET_ACCESS_KEY)
   ) {
     return true;
   }
-  if (process.env.AWS_PROFILE?.trim()) {
-    return true;
+  if (process.env.AWS_PROFILE?.trim()) return true;
+  const credsFile = path.join(os.homedir(), '.aws', 'credentials');
+  if (!fs.existsSync(credsFile)) return false;
+  try {
+    const content = fs.readFileSync(credsFile, 'utf8');
+    return content.includes('aws_access_key_id') && content.includes('aws_secret_access_key');
+  } catch {
+    return false;
   }
-  const awsDir = path.join(os.homedir(), '.aws');
-  const credsFile = path.join(awsDir, 'credentials');
-  if (fs.existsSync(credsFile)) {
-    try {
-      const content = fs.readFileSync(credsFile, 'utf8');
-      return (
-        content.includes('aws_access_key_id') &&
-        content.includes('aws_secret_access_key')
-      );
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 /** En local, sin perfil ni keys, la ingesta guarda el archivo en disco. */
 export function shouldUseLocalDocumentStorage(): boolean {
-  if (
-    process.env.USE_LOCAL_STORAGE === 'true' ||
-    process.env.STORAGE_DRIVER === 'local'
-  ) {
-    return true;
-  }
-  if (process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    return false;
-  }
-  const env = process.env.NODE_ENV;
-  if (env === 'prod' || env === 'qa') {
-    return false;
-  }
+  if (process.env.STORAGE_DRIVER === 'local') return true;
+  if (process.env.AWS_LAMBDA_FUNCTION_NAME) return false;
+  if (['dev', 'qa', 'prod'].includes(process.env.STAGE ?? '')) return false;
   return !hasAwsCredentialSource();
 }
 
@@ -1191,6441 +1518,448 @@ export function localUploadPath(s3Key: string): string {
 }
 ```
 
-**Explicación de lo no obvio:**
+`requestChecksumCalculation: 'WHEN_REQUIRED'` y `responseChecksumValidation: 'WHEN_REQUIRED'`. A partir del SDK v3.729 el cliente añade por su cuenta una cabecera `x-amz-checksum-crc32` a los PUT. Esa cabecera no forma parte de la URL prefirmada que firma el backend, el navegador no la envía, y S3 responde 403. Con `WHEN_REQUIRED` el SDK solo añade checksum cuando la operación lo exige. La URL prefirmada firma **explícitamente** `content-type`, `content-length` y `x-amz-checksum-sha256` (13.3).
 
-- **`isUsableSecret` con `length >= 16`** es una heurística: un access key id real tiene 20 caracteres y un secret 40. Cualquier cosa más corta es un placeholder. El check de `startsWith('<')` captura `<RELLENAR…>`.
-- **`buildS3ClientConfig` devuelve `{ region }` a secas cuando no hay credenciales utilizables.** Ese es el punto del archivo: al no pasar la propiedad `credentials`, el SDK activa su cadena de resolución por defecto (variables de entorno → ficheros de perfil → SSO → metadata del contenedor/Lambda). Pasar `credentials: { accessKeyId: '', secretAccessKey: '' }` desactiva esa cadena y produce `Resolved credential object is not valid`.
-- `AWS_SESSION_TOKEN` se incluye solo si existe: es obligatorio para credenciales temporales de STS (lo que emite `aws sso login` o el OIDC de Actions).
-- **`AWS_LAMBDA_FUNCTION_NAME` como detector de "estoy en Lambda"** es un idioma estándar: el runtime siempre la define, y es más fiable que `NODE_ENV`.
-- `shouldUseLocalDocumentStorage()` implementa un **fallback a disco** que permite desarrollar el flujo completo de documentos sin ninguna credencial AWS. El orden de las comprobaciones importa: override explícito → Lambda nunca usa disco → `prod`/`qa` nunca usan disco → en dev, disco si no hay credenciales.
-- `localUploadPath` descompone la clave S3 (`raw/x/y/z.pdf`) en segmentos de ruta con `path.join`, lo que la hace correcta en Windows también.
-
-### 7.7 Tabla completa de variables de entorno
-
-| Variable | Tipo | Default | ¿Obligatoria? | Origen en local | Origen en Lambda |
-|---|---|---|---|---|---|
-| `NODE_ENV` | `dev\|prod\|qa\|test` | `dev` | no | `.env` | `environment:` de `serverless.yml` = `${self:provider.stage}` |
-| `PORT` | number | `3000` | no | `.env` | no se usa (no hay `listen`) |
-| `AWS_ACCESS_KEY_ID` | string | — | **no** | perfil `~/.aws` o `aws sso login`; **dejar sin definir** | inyectada por el runtime desde el rol de ejecución |
-| `AWS_SECRET_ACCESS_KEY` | string | — | **no** | idem | idem |
-| `AWS_SESSION_TOKEN` | string | — | no | `aws sso login` | inyectada por el runtime |
-| `AWS_REGION` | string | `<REGION>` | no | `.env` | inyectada por el runtime |
-| `AWS_S3_BUCKET_NAME` | string | — | **sí** | `.env` | SSM `String` `aws_s3_bucket_name` → `environment:` |
-| `COGNITO_USER_POOL_ID` | string | — | **sí** | `.env` | SSM `String` `cognito_user_pool_id` → `environment:` |
-| `COGNITO_CLIENT_ID` | string | — | **sí** | `.env` | SSM `String` `cognito_client_id` → `environment:` |
-| `COGNITO_CLIENT_SECRET` | string | — | **sí** | `.env` (secreto) | **SSM `SecureString`** leída en arranque por `hydrateSsmSecrets()` |
-| `COGNITO_REGION` | string | `<REGION>` | no | `.env` | SSM `String` `cognito_region` → `environment:` |
-| `DB_HOST` | string | — | **sí** | `.env` (`localhost`) | SSM `String` `db_host` → `environment:` |
-| `DB_PORT` | number | `5432` | no | `.env` | SSM `String` `db_port` → `environment:` |
-| `DB_USERNAME` | string | — | **sí** | `.env` | SSM `String` `db_username` → `environment:` |
-| `DB_PASSWORD` | string | — | **sí** | `.env` (secreto) | **SSM `SecureString`** leída en arranque por `hydrateSsmSecrets()` |
-| `DB_NAME` | string | — | **sí** | `.env` | SSM `String` `db_name` → `environment:` |
-| `ALLOWED_ORIGINS` | CSV de URLs | `http://localhost:4200,http://127.0.0.1:4200` (embebido en `main.ts`) | no | `.env` | SSM `String` `allowed_origins` → `environment:` |
-| `USE_LOCAL_STORAGE` | `'true'` | — | no | `.env`, opcional | no aplica |
-| `STORAGE_DRIVER` | `'local'` | — | no | `.env`, opcional | no aplica |
-| `AWS_LAMBDA_FUNCTION_NAME` | string | — | — | ausente | la define el runtime; se usa como detector de entorno |
-
-> **Regla de oro:** si una variable aparece en `environment:` de `serverless.yml`, **no** es un secreto. Los secretos nunca aparecen ahí; se piden a SSM en el arranque. Se ven en la consola de Lambda y en `get-function-configuration`.
+En `STAGE=local` o `test` no hay bucket: el módulo de documentos escribe en `.local-uploads/` y el worker de ingesta se simula en proceso. Así la suite e2e no necesita AWS.
 
 ---
+## 8. Bootstrap: `configure-app.ts`, `main.ts`, `lambda.ts`, `app.module.ts`
 
-## 8. Bootstrap: `main.ts`, `lambda.ts`, `lambda-bootstrap.ts`, `app.module.ts`
+🆕 **V2.** Hay **una** configuración HTTP. Local y Lambda la comparten. Lo que cambia es el adaptador de entrada.
 
-### 8.1 `src/main.ts` — entrada local / contenedor
+### 8.1 `configure-app.ts`
 
-🟩 **NÚCLEO** con una corrección: se elimina el bloque 6 (`runMigrations()`), por la corrección **19.2**.
+```ts
+// src/configure-app.ts
+import { type INestApplication, ValidationPipe } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import { Logger } from 'nestjs-pino';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+
+/**
+ * Configuración HTTP ÚNICA para los dos caminos de arranque (local y Lambda).
+ * Si algo se configura fuera de esta función, local y producción divergen.
+ */
+export function configureApp(app: INestApplication): void {
+  const express = app as NestExpressApplication;
+
+  app.useLogger(app.get(Logger));
+  app.setGlobalPrefix('api');
+  express.disable('x-powered-by');
+  // Detrás de API Gateway la IP de la conexión no es la del usuario; la real
+  // se lee de CloudFront-Viewer-Address (common/http/client-ip.ts).
+  express.set('trust proxy', false);
+
+  // El filtro de origen (CloudFront) y el de CSRF son middleware de Nest
+  // registrados en AppModule (EdgeGuardsMiddleware), detrás del logger.
+  // 1. Cabeceras de seguridad de la API. La CSP del HTML la pone CloudFront.
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        useDefaults: false,
+        directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] },
+      },
+      crossOriginResourcePolicy: { policy: 'same-origin' },
+      strictTransportSecurity: { maxAge: 63072000, includeSubDomains: true, preload: true },
+    }),
+  );
+  // 2. Cookies de sesión.
+  app.use(cookieParser());
+  // 3. Las respuestas de la API nunca se cachean en navegadores ni en CDNs.
+  app.use((_req: unknown, res: { setHeader(k: string, v: string): void }, next: () => void) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: false },
+    }),
+  );
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.enableShutdownHooks();
+}
+```
+
+Orden, y por qué:
+
+1. Prefijo global `api`. La ruta pública es `/api/...` tanto en local (el proxy de Nuxt) como en CloudFront (el behavior `/api/*`).
+2. `trust proxy` queda en `false`. Detrás de API Gateway la IP del cliente no se lee de `X-Forwarded-For` (cualquiera puede falsificarla): se lee de `CloudFront-Viewer-Address`, que solo puede escribir CloudFront (9.2).
+3. Helmet con CSP `default-src 'none'` y `useDefaults: false`. Una API JSON no sirve HTML. Si se dejan los defaults de Helmet, la CSP hereda `script-src 'self'` y similares, que no aportan nada y enmascaran el hecho de que esta respuesta no es un documento. `frame-ancestors 'none'` evita que un sitio embeba una respuesta.
+4. `cookie-parser` antes de los guards: el JWT se lee de la cookie.
+5. `Cache-Control: no-store` en todas las respuestas de la API. Una respuesta autenticada cacheada en un proxy intermedio es una fuga.
+6. `ValidationPipe` global: `whitelist`, `forbidNonWhitelisted`, `transform`. Un campo de más en el body es 400, no se descarta en silencio.
+7. Filtro de excepciones global (9.4).
+8. `enableShutdownHooks` para que el pool se cierre cuando Lambda congele el entorno tras un `SIGTERM`.
+
+**No hay `enableCors`.** El navegador habla con el mismo origen que sirve el HTML (CloudFront, o el dev server de Nuxt). Una petición same-origin simple no dispara preflight. Añadir CORS "por si el front se despliega en otro dominio" reabre el problema que esta arquitectura cerró.
+
+Origen y CSRF no se aplican aquí con `app.use`. Se aplican como middleware de Nest (9.2) para que corran **después** de que pino haya asignado el `requestId`. Si corren antes, un 403 de CSRF sale sin `requestId` y no se puede correlacionar.
+
+### 8.2 `main.ts` (local y exportación OpenAPI)
 
 ```ts
 // src/main.ts
+import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { hydrateSsmSecrets } from './config/hydrate-ssm-secrets';
-import { AppModule } from './app.module';
-import { ValidationPipe, Logger } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import helmet from 'helmet';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { writeFileSync } from 'node:fs';
+import { AppModule } from './app.module';
+import { initSentry } from './common/observability/sentry';
+import { configureApp } from './configure-app';
 
 async function bootstrap() {
-  const logger = new Logger('Bootstrap');
-  await hydrateSsmSecrets();
-  const app = await NestFactory.create(AppModule, { rawBody: true });
-
-  // 1. Seguridad básica con Helmet
-  app.use(helmet());
-
-  // 2. CORS dinámico.
-  // El navegador NO trata localhost y 127.0.0.1 como el mismo origen, y el
-  // servidor de desarrollo del frontend puede servir cualquiera de los dos.
-  const allowedOriginsEnv =
-    process.env.ALLOWED_ORIGINS ||
-    'http://localhost:4200,http://127.0.0.1:4200';
-  const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
-  const originAliases = (value: string) => [
-    value,
-    value.replace('://localhost', '://127.0.0.1'),
-    value.replace('://127.0.0.1', '://localhost'),
-  ];
-  app.enableCors({
-    origin: (origin, callback) => {
-      if (
-        !origin ||
-        origins.some((allowed) => originAliases(allowed).includes(origin))
-      ) {
-        callback(null, true);
-      } else {
-        callback(null, false);
-      }
-    },
-    credentials: true,
+  await initSentry({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.STAGE ?? 'local',
+    release: process.env.RELEASE,
   });
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  configureApp(app);
 
-  // 3. Validación y transformación global de DTOs
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
+  const document = SwaggerModule.createDocument(
+    app,
+    new DocumentBuilder()
+      .setTitle('<app-short> API')
+      // Versión del contrato, no del despliegue: el archivo commiteado tiene que salir igual en
+      // local y en CI. El SHA desplegado está en /api/health.
+      .setVersion('1')
+      .addCookieAuth('<app-short>_at')
+      .build(),
   );
+  SwaggerModule.setup('docs', app, document);
+  // El contrato OpenAPI se versiona: el frontend genera sus tipos a partir de él (17.4).
+  if (process.env.OPENAPI_OUT) {
+    writeFileSync(process.env.OPENAPI_OUT, `${JSON.stringify(document, null, 2)}\n`);
+    await app.close();
+    return;
+  }
 
-  // 3.5. Filtro de excepciones e interceptores globales
-  app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(new LoggingInterceptor());
-
-  // 4. Swagger
-  const config = new DocumentBuilder()
-    .setTitle('<app> API')
-    .setDescription('Backend de <app>')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api', app, document);
-
-  // 5. Arranque del servidor
-  const port = process.env.PORT ?? 3000;
-  await app.listen(port);
-
-  logger.log(
-    `Servidor iniciado en: http://localhost:${port} | Entorno: ${process.env.NODE_ENV ?? 'dev'}`,
-  );
-  logger.log(`Documentación de API disponible en: http://localhost:${port}/api`);
+  await app.listen(Number(process.env.PORT ?? 3000), '127.0.0.1');
 }
-bootstrap();
+
+void bootstrap();
 ```
 
-**Qué hace cada middleware global y por qué en ese orden:**
+Dos modos:
 
-| # | Pieza | Qué hace | Por qué en esa posición |
-|---|---|---|---|
-| 0 | `hydrateSsmSecrets()` | Rellena `DB_PASSWORD` y `COGNITO_CLIENT_SECRET` | **Antes** de `NestFactory.create`, porque la validación Zod del `ConfigModule` los exige y porque `databaseConfigFactory` los lee al construir el pool |
-| 0b | `{ rawBody: true }` | Hace que Nest conserve el cuerpo crudo en `request.rawBody` | Es una opción de *construcción*, no un middleware. Necesaria para subir binarios con `PUT` (sección 13.4) |
-| 1 | `helmet()` | Cabeceras de seguridad (`X-Frame-Options`, `Strict-Transport-Security`, `X-Content-Type-Options`, CSP por defecto…) | Primero, para que apliquen incluso a respuestas de error de capas posteriores |
-| 2 | `enableCors` | Lista blanca de orígenes, con alias `localhost`↔`127.0.0.1` | Después de helmet (helmet no toca CORS) y antes de los pipes, porque el preflight `OPTIONS` debe responderse sin validar nada |
-| 3 | `ValidationPipe` | Valida y transforma DTOs | Después de CORS, antes del controlador |
-| 3.5 | `HttpExceptionFilter` | Formato único de error | Los filtros globales envuelven todo el pipeline, incluido el `ValidationPipe` (por eso los errores de validación salen con el formato de la sección 9.1) |
-| 3.5 | `LoggingInterceptor` | Registra método, ruta, status, duración y `sub` | Los interceptores corren **después** de los guards, así que `request.user` ya existe |
-| 4 | Swagger en `/api` | Documentación interactiva | Tras registrar pipes/filtros para que el `document` refleje la app final |
+- **`OPENAPI_OUT` definido:** arranca la app, escribe el OpenAPI 3 y termina. No escucha. `pnpm openapi` lo usa para reescribir `openapi/openapi.json`, que se commitea, y CI comprueba que el archivo commiteado es el que sale del código (17.4). No requiere base de datos alcanzable: TypeORM no conecta hasta la primera query.
+- **Sin esa variable:** escucha en `127.0.0.1` (no en `0.0.0.0`) y monta Swagger en `/docs`. Swagger es una herramienta de desarrollo; CloudFront no enruta `/docs`.
 
-**Detalles del CORS que no son obvios:**
+`addCookieAuth` documenta que la sesión viaja en cookie, no en `Authorization`.
 
-- `callback(null, false)` en vez de `callback(new Error(...))`. Devolver `false` hace que Express **omita** la cabecera `Access-Control-Allow-Origin`, y el navegador bloquea la respuesta con un mensaje de CORS claro. Lanzar un error produciría un `500` con stack trace, que confunde.
-- `!origin` permite peticiones sin cabecera `Origin`: `curl`, Postman, health checks y peticiones servidor-a-servidor.
-- `credentials: true` obliga a que el `Access-Control-Allow-Origin` sea un origen concreto, nunca `*`. Por eso hace falta la función en vez de un array.
-
-### 8.2 `src/lambda-bootstrap.ts` — construcción de la app para Lambda
-
-🟩 **NÚCLEO** con dos correcciones: se añade `{ rawBody: true }` (igualando `main.ts`, ver 22.3) y se elimina el bloque de `runMigrations()` (corrección **19.2**).
-
-```ts
-// src/lambda-bootstrap.ts
-import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
-import helmet from 'helmet';
-import { configure as serverlessExpress } from '@vendia/serverless-express';
-import type { Handler } from 'aws-lambda';
-import { AppModule } from './app.module';
-import { hydrateSsmSecrets } from './config/hydrate-ssm-secrets';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
-
-export async function bootstrapLambda(): Promise<Handler> {
-  await hydrateSsmSecrets();
-  // rawBody: true igual que en main.ts. Sin esto, las rutas que aceptan un
-  // binario crudo (PUT de contenido) se comportan distinto en Lambda que en
-  // local, que es el peor modo de fallo posible.
-  const app = await NestFactory.create(AppModule, { rawBody: true });
-
-  app.use(helmet());
-  app.enableCors({
-    origin: '*',
-  });
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
-  app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(new LoggingInterceptor());
-
-  await app.init();
-
-  const expressApp = app.getHttpAdapter().getInstance();
-  return serverlessExpress({ app: expressApp });
-}
-```
-
-**Diferencias con `main.ts`, una por una:**
-
-| Aspecto | `main.ts` | `lambda-bootstrap.ts` | Por qué |
-|---|---|---|---|
-| `app.listen()` | sí | **no**, `app.init()` | En Lambda no hay socket que escuchar. `init()` construye el grafo de dependencias y deja la app lista; `serverlessExpress` traduce el evento de API Gateway a un request de Express |
-| Swagger | sí | **no** | `swagger-ui-dist` pesa varios MB y está explícitamente excluido del paquete en `serverless.yml`. Montarlo rompería el despliegue por tamaño |
-| CORS | lista blanca | `origin: '*'` | 🟥 Ver abajo |
-| `Logger` de bootstrap | sí | no | Los logs van a CloudWatch de todas formas |
-
-> 🟥 **DEUDA — `origin: '*'` en Lambda.** El original abre CORS a cualquier origen en el camino que corre en producción, mientras que el camino local tiene lista blanca. Eso es exactamente al revés de lo que se querría. El parámetro SSM `allowed_origins` **existe y se inyecta** en la Lambda, pero este archivo lo ignora. **Corrección recomendada:** reutilizar la misma lógica de `main.ts` extrayéndola a una función compartida:
->
-> ```ts
-> // src/common/cors.ts
-> import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
->
-> export function buildCorsOptions(): CorsOptions {
->   const raw =
->     process.env.ALLOWED_ORIGINS ||
->     'http://localhost:4200,http://127.0.0.1:4200';
->   const origins = raw.split(',').map((o) => o.trim()).filter(Boolean);
->   const aliases = (v: string) => [
->     v,
->     v.replace('://localhost', '://127.0.0.1'),
->     v.replace('://127.0.0.1', '://localhost'),
->   ];
->   return {
->     origin: (origin, callback) => {
->       if (!origin || origins.some((a) => aliases(a).includes(origin))) {
->         callback(null, true);
->       } else {
->         callback(null, false);
->       }
->     },
->     credentials: true,
->   };
-> }
-> ```
->
-> …y llamarla desde los dos bootstraps: `app.enableCors(buildCorsOptions())`. Ojo: si se hace esto, hay que alinear también las `CORS_HEADERS` estáticas de `lambda.ts` (8.3), o el preflight seguirá devolviendo `*`.
-
-### 8.3 `src/lambda.ts` — handler de Lambda HTTP
-
-🟩 **NÚCLEO** — transcripción literal.
+### 8.3 Lambda HTTP
 
 ```ts
 // src/lambda.ts
-import type { Callback, Context, Handler } from 'aws-lambda';
+import type { Context } from 'aws-lambda';
+import type { HttpHandler } from './lambda-bootstrap';
 
-let cachedServer: Handler | undefined;
+let cached: Promise<HttpHandler> | undefined;
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers':
-    'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token',
-  'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-  'Content-Type': 'application/json',
-};
-
-type LambdaEvent = {
-  source?: string;
-  httpMethod?: string;
-  rawPath?: string;
-  path?: string;
-  requestContext?: {
-    http?: { method?: string; path?: string };
-    httpMethod?: string;
-  };
-};
-
-function requestMethod(event: LambdaEvent): string | undefined {
-  return (
-    event.requestContext?.http?.method ||
-    event.httpMethod ||
-    event.requestContext?.httpMethod
+function bootFailure(error: unknown) {
+  console.error(
+    JSON.stringify({
+      level: 'fatal',
+      msg: 'Lambda bootstrap failed',
+      err: error instanceof Error ? error.stack : String(error),
+    }),
   );
-}
-
-function requestPath(event: LambdaEvent): string {
-  return event.rawPath || event.path || event.requestContext?.http?.path || '';
-}
-
-function errorDetail(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return String(error);
-  }
-  const withCause = error as Error & { cause?: unknown };
-  const cause =
-    withCause.cause instanceof Error ? withCause.cause.message : undefined;
-  return cause ? `${error.message} (${cause})` : error.message;
-}
-
-function jsonResponse(statusCode: number, payload: unknown) {
   return {
-    statusCode,
-    headers: CORS_HEADERS,
-    isBase64Encoded: false,
-    body: JSON.stringify(payload),
+    statusCode: 503,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    body: JSON.stringify({
+      statusCode: 503,
+      message: 'La API no está disponible. Intenta de nuevo.',
+    }),
   };
 }
 
-function bootstrapFailureResponse(error: unknown) {
-  const detail = errorDetail(error);
-  console.error('Lambda bootstrap failed:', error);
-  return jsonResponse(503, {
-    statusCode: 503,
-    message: `La API no pudo arrancar: ${detail}`,
-  });
-}
-
-export const handler: Handler = async (
-  event: LambdaEvent,
-  context: Context,
-  callback: Callback,
-) => {
-  if (event.source === 'serverless-plugin-warmup') {
-    return 'warmed';
-  }
-
-  if (requestMethod(event) === 'OPTIONS') {
-    return { statusCode: 204, headers: CORS_HEADERS, body: '' };
-  }
-
-  const path = requestPath(event);
-
-  if (path === '/__boot') {
-    return jsonResponse(200, {
-      nodeEnv: process.env.NODE_ENV,
-      hasDbPassword: Boolean(process.env.DB_PASSWORD),
-      hasCognitoSecret: Boolean(process.env.COGNITO_CLIENT_SECRET),
-    });
-  }
-
-  if (path === '/__hydrate') {
-    try {
-      const { hydrateSsmSecrets } = await import('./config/hydrate-ssm-secrets');
-      await hydrateSsmSecrets();
-      return jsonResponse(200, {
-        ok: true,
-        nodeEnv: process.env.NODE_ENV,
-        hasDbPassword: Boolean(process.env.DB_PASSWORD),
-        hasCognitoSecret: Boolean(process.env.COGNITO_CLIENT_SECRET),
-      });
-    } catch (error) {
-      return bootstrapFailureResponse(error);
-    }
-  }
-
+/**
+ * Handler HTTP. Solo async (Node 24 no admite callbacks).
+ * Los import() dinámicos mantienen fuera del camino caliente todo lo que no
+ * hace falta hasta el primer request, y permiten devolver un 503 controlado
+ * si el arranque falla (secreto ausente, entorno inválido).
+ */
+export const handler = async (event: unknown, context: Context) => {
   try {
-    if (!cachedServer) {
-      const { hydrateSsmSecrets } = await import('./config/hydrate-ssm-secrets');
-      await hydrateSsmSecrets();
+    cached ??= (async () => {
+      const { hydrateSecrets } = await import('./config/hydrate-secrets');
+      await hydrateSecrets();
       const { bootstrapLambda } = await import('./lambda-bootstrap');
-      cachedServer = await bootstrapLambda();
-    }
-    return cachedServer(event, context, callback);
+      return bootstrapLambda();
+    })();
+    const server = await cached;
+    return await server(event, context);
   } catch (error) {
-    return bootstrapFailureResponse(error);
+    // No cachear un arranque fallido: el siguiente request lo reintenta.
+    cached = undefined;
+    return bootFailure(error);
   }
 };
 ```
 
-**Explicación de lo no obvio. Este archivo es más sutil de lo que parece:**
+```ts
+// src/lambda-bootstrap.ts
+import 'reflect-metadata';
+import serverlessExpress from '@codegenie/serverless-express';
+import { NestFactory } from '@nestjs/core';
+import type { Context } from 'aws-lambda';
+import type { RequestListener } from 'node:http';
+import { AppModule } from './app.module';
+import { initSentry } from './common/observability/sentry';
+import { configureApp } from './configure-app';
 
-1. **`cachedServer` a nivel de módulo.** Esta variable sobrevive entre invocaciones del *mismo contenedor* Lambda. Es lo que convierte el segundo request en milisegundos en vez de segundos. Es también la razón por la que **cualquier estado a nivel de módulo persiste entre usuarios distintos**: nunca guardar datos de request en variables de módulo.
+export type HttpHandler = (event: unknown, context: Context) => Promise<unknown>;
 
-2. **Los `import()` dinámicos de `hydrate-ssm-secrets` y `lambda-bootstrap` son críticos.** Si fueran `import` estáticos, cargar `lambda.ts` cargaría todo el grafo de NestJS (TypeORM, Passport, todos los módulos) **antes** de ejecutar una sola línea de `handler`. Con imports dinámicos, las rutas `/__boot` y `/__hydrate` responden sin tocar ese grafo. Eso es lo que las hace útiles: diagnostican un arranque roto que, por definición, no puede arrancar.
+export async function bootstrapLambda(): Promise<HttpHandler> {
+  await initSentry({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.STAGE ?? 'unknown',
+    release: process.env.RELEASE,
+  });
+  const app = await NestFactory.create(AppModule, { bufferLogs: true, abortOnError: false });
+  configureApp(app);
+  await app.init();
+  // v5 solo resuelve por promesa; el tipo `Handler` de aws-lambda aún declara el callback.
+  return serverlessExpress({
+    app: app.getHttpAdapter().getInstance() as RequestListener,
+  }) as unknown as HttpHandler;
+}
+```
 
-3. **`/__boot` y `/__hydrate` son endpoints de diagnóstico sin autenticación.** `/__boot` dice si las variables están presentes **sin revelar su valor** (`Boolean(...)`). `/__hydrate` fuerza la lectura de SSM y devuelve el mensaje traducido si falla.
-   > ⚠️ Son públicos. Confirman la existencia del servicio y si está bien configurado. Se consideran aceptables porque no filtran valores, pero **en un despliegue nuevo conviene protegerlos** con una cabecera compartida o eliminarlos de `prod`.
+Node 24 en Lambda **no invoca** handlers de callback. El export es `async`. El contrato de `@codegenie/serverless-express` v5 es una función `(event, context) => Promise<APIGatewayProxyResultV2>` (el paquete `@vendia/serverless-express` quedó sin mantenimiento; este es su sucesor).
 
-4. **El cortocircuito de `OPTIONS`.** Se responde `204` con `CORS_HEADERS` **antes** de arrancar Nest. Motivo: un preflight CORS que cae en un arranque en frío tardaría segundos y el navegador podría abortarlo, provocando un `NetworkError` en el login que no tiene nada que ver con las credenciales. Este atajo hace que el preflight sea siempre instantáneo.
-   > ⚠️ **Consecuencia:** el preflight responde `Access-Control-Allow-Origin: *` sea cual sea el origen. Si se implementa la lista blanca de CORS (8.2), hay que construir estas cabeceras dinámicamente aquí también o la restricción será puramente decorativa.
+La promesa de arranque se cachea entre invocaciones calientes. Si el arranque **falla**, la promesa se descarta: un cold start que no pudo leer Secrets Manager no se queda envenenado hasta que Lambda mate el entorno. La respuesta de ese fallo es 503 con cuerpo JSON genérico; el detalle va al log, no al cliente.
 
-5. **`requestMethod` y `requestPath` leen tres formas distintas del evento** porque hay dos formatos de payload: v1 (REST API / `httpMethod`, `path`) y v2 (HTTP API / `requestContext.http.method`, `rawPath`). El código soporta ambos.
+El humo medido sobre este bundle (07/10/2026, PostgreSQL local, stage simulado `dev`): carga del módulo 164 ms, primera invocación 411 ms, segunda 2.1 ms.
 
-6. **`event.source === 'serverless-plugin-warmup'`** es un atajo para un plugin de *warm-up* que **no está instalado** en el `serverless.yml` del original. Es código defensivo inerte. Se puede conservar (cuesta nada) o eliminar.
-
-7. **`errorDetail` desenrolla `error.cause`.** Los errores del SDK de AWS v3 suelen envolver la causa real; sin esto, el mensaje del `503` diría solo "Could not load credentials".
-
-8. **El `callback` se pasa a `cachedServer`.** `@vendia/serverless-express` lo acepta pero el flujo real es por promesa. Es compatibilidad hacia atrás.
-
-### 8.4 `src/app.module.ts`
-
-🟩 **NÚCLEO** con la corrección **19.1** aplicada (guard JWT global).
+### 8.4 `app.module.ts`
 
 ```ts
 // src/app.module.ts
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { databaseConfigFactory } from './config/database.config';
-import { validateEnv } from './config/env.validation';
-import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
-import { RolesGuard } from './common/guards/roles.guard';
-import { AuthModule } from './modules/auth/auth.module';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { LoggerModule } from 'nestjs-pino';
+import { JwtAuthGuard } from './common/auth/jwt-auth.guard';
+import { RolesGuard } from './common/auth/roles.guard';
+import { EdgeGuardsMiddleware } from './common/http/edge-guards.middleware';
+import { IdempotencyInterceptor } from './common/idempotency/idempotency.interceptor';
+import { IdempotencyService } from './common/idempotency/idempotency.service';
+import { loggerParams } from './common/observability/logger.config';
+import { buildDataSourceOptions } from './config/database.config';
+import { type EnvConfig, validateEnv } from './config/env.validation';
+import { ENTITIES } from './database/entities';
 import { AuditModule } from './modules/audit/audit.module';
-import { DocumentModule } from './modules/documents/document.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { DocumentsModule } from './modules/documents/documents.module';
+import { HealthController } from './modules/health/health.controller';
+import { ProjectsModule } from './modules/projects/projects.module';
 import { UsersModule } from './modules/users/users.module';
-import { SeederModule } from './database/seeding/seeder.module';
 // + aquí se añaden los módulos del dominio nuevo
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      cache: true,
       validate: validateEnv,
+      // En Lambda no hay .env; en tests el entorno lo fija el propio test.
+      ignoreEnvFile:
+        Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) || process.env.NODE_ENV === 'test',
     }),
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000,
-        limit: 60,
-      },
-    ]),
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
+    LoggerModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) =>
-        databaseConfigFactory(configService),
+      useFactory: (config: ConfigService<EnvConfig, true>) =>
+        loggerParams({
+          level: config.get('LOG_LEVEL', { infer: true }),
+          stage: config.get('STAGE', { infer: true }),
+          // pino-pretty usa un worker thread: solo en desarrollo local, nunca dentro de un bundle.
+          pretty:
+            config.get('STAGE', { infer: true }) === 'local' &&
+            !process.env.AWS_LAMBDA_FUNCTION_NAME,
+        }),
     }),
-    AuthModule,
+    TypeOrmModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<EnvConfig, true>) => ({
+        ...buildDataSourceOptions({
+          DB_HOST: config.get('DB_HOST', { infer: true }),
+          DB_PORT: config.get('DB_PORT', { infer: true }),
+          DB_USERNAME: config.get('DB_USERNAME', { infer: true }),
+          DB_PASSWORD: config.get('DB_PASSWORD', { infer: true }),
+          DB_NAME: config.get('DB_NAME', { infer: true }),
+          DB_IAM_AUTH: config.get('DB_IAM_AUTH', { infer: true }),
+          DB_SSL: config.get('DB_SSL', { infer: true }),
+          DB_POOL_MAX: config.get('DB_POOL_MAX', { infer: true }),
+          AWS_REGION: config.get('AWS_REGION', { infer: true }),
+          STAGE: config.get('STAGE', { infer: true }),
+        }),
+        entities: ENTITIES,
+      }),
+    }),
     AuditModule,
-    DocumentModule,
     UsersModule,
-    SeederModule,
+    AuthModule,
+    ProjectsModule,
+    DocumentsModule,
   ],
+  controllers: [HealthController],
   providers: [
-    // El orden de los APP_GUARD define el orden de ejecución.
-    // 1. Rate limit (antes de gastar una consulta a la BD)
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
-    // 2. Autenticación: todas las rutas protegidas salvo las marcadas @Public()
+    // El orden de los APP_GUARD es el orden de ejecución.
+    // 1. Autenticación: todas las rutas salvo @Public().
     { provide: APP_GUARD, useClass: JwtAuthGuard },
-    // 3. Autorización por grupo de Cognito: solo actúa si hay @Roles(...)
+    // 2. Autorización por grupo de Cognito: solo actúa si hay @Roles(...).
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Corre después de los guards: la clave se ata al usuario ya autenticado (9.6).
+    IdempotencyService,
+    { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(EdgeGuardsMiddleware).forRoutes({ path: '*path', method: RequestMethod.ALL });
+  }
+}
 ```
 
-**Explicación de lo no obvio:**
+`JwtAuthGuard` y `RolesGuard` son globales. Toda ruta nueva nace autenticada y, si declara roles, autorizada. Hacerla pública es una decisión explícita: `@Public()`.
 
-- `ConfigModule.forRoot({ isGlobal: true })` evita tener que importar `ConfigModule` en cada módulo. `validate: validateEnv` conecta el esquema Zod.
-- `ThrottlerModule.forRoot([{ ttl: 60000, limit: 60 }])`: **60 peticiones por minuto por IP**. El array es el formato de `@nestjs/throttler` v5+ (permite varios "named throttlers"). `ttl` está en **milisegundos** (en v4 eran segundos; es un cambio de API que rompe silenciosamente).
-  > ⚠️ **Detrás de API Gateway la IP que ve el Throttler es la del cliente real** (API Gateway la pone en `X-Forwarded-For` y Express la resuelve si `trust proxy` está activo). Si se observa que el throttling agrupa a todos los usuarios, hay que llamar a `app.set('trust proxy', 1)` en los bootstraps. **El original no lo hace**, y no se pudo verificar empíricamente el comportamiento real; ver Anexo A.
-- `TypeOrmModule.forRootAsync` con `inject: [ConfigService]` es obligatorio: la config depende de valores que solo existen tras la validación.
-- `SeederModule` se importa en `AppModule` aunque solo lo usen los scripts de seed. Eso hace que `NestFactory.createApplicationContext(AppModule)` pueda resolver `SeederService` sin un módulo aparte. Cuesta un provider más en el arranque de producción; es aceptable.
-- 🟥 **El original no registra `JwtAuthGuard` ni `RolesGuard` como `APP_GUARD`**; los aplica controlador por controlador con `@UseGuards(...)`. Ver corrección **19.1**.
+`IdempotencyInterceptor` también es global, pero no hace nada en las rutas que no llevan `@Idempotent()` (9.6).
+
+`ignoreEnvFile` en Lambda y en tests. En Lambda un `.env` dentro del zip sería un secreto empaquetado; en tests el entorno lo fija `test/support/test-app.ts` y un `.env` del desarrollador no debe colarse.
+
+El módulo `ProjectsModule` es el ejemplo de la sección 12. El dominio nuevo añade sus módulos en el import marcado.
+
+### 8.5 Salud
+
+```ts
+// src/modules/health/health.controller.ts
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { InjectDataSource } from '@nestjs/typeorm';
+import type { DataSource } from 'typeorm';
+import { Public } from '../../common/auth/roles';
+import type { EnvConfig } from '../../config/env.validation';
+
+@ApiTags('Salud')
+@Controller('health')
+export class HealthController {
+  constructor(
+    @InjectDataSource() private readonly db: DataSource,
+    private readonly config: ConfigService<EnvConfig, true>,
+  ) {}
+
+  @Get()
+  @Public()
+  @ApiOperation({ summary: 'Liveness + readiness: la app arrancó y la base responde' })
+  async check() {
+    const started = Date.now();
+    try {
+      await this.db.query('SELECT 1');
+    } catch {
+      throw new ServiceUnavailableException('La base de datos no responde.');
+    }
+    return {
+      status: 'ok',
+      stage: this.config.get('STAGE', { infer: true }),
+      release: this.config.get('RELEASE', { infer: true }) ?? 'local',
+      dbLatencyMs: Date.now() - started,
+    };
+  }
+}
+```
+
+`GET /api/health` es `@Public()` y ejecuta `SELECT 1`. Un 200 sin tocar la base solo dice que el proceso arrancó; el balanceador y el smoke de CI necesitan saber que el camino hasta PostgreSQL está vivo. El cuerpo incluye `stage` y `release` (el SHA que inyecta el pipeline) para saber qué versión contestó.
+
+CloudFront no debe cachear esta ruta: el behavior de `/api/*` reenvía todo y la API manda `Cache-Control: no-store`.
 
 ---
-
 ## 9. Cross-cutting (`src/common/`)
 
-### 9.1 `src/common/filters/http-exception.filter.ts`
+🆕 **V2.** Nada de esta carpeta importa `src/modules/`.
 
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/common/filters/http-exception.filter.ts
-import {
-  ExceptionFilter,
-  Catch,
-  ArgumentsHost,
-  HttpException,
-  HttpStatus,
-  Logger,
-} from '@nestjs/common';
-import { Request, Response } from 'express';
-
-@Catch()
-export class HttpExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(HttpExceptionFilter.name);
-
-  catch(exception: unknown, host: ArgumentsHost) {
-    const ctx = host.switchToHttp();
-    const response = ctx.getResponse<Response>();
-    const request = ctx.getRequest<Request>();
-
-    let status = HttpStatus.INTERNAL_SERVER_ERROR;
-    let message: string | string[] =
-      'Ocurrió un error inesperado en el servidor.';
-
-    if (exception instanceof HttpException) {
-      status = exception.getStatus();
-      const resContent = exception.getResponse();
-
-      if (typeof resContent === 'object' && resContent !== null) {
-        message = (resContent as any).message || JSON.stringify(resContent);
-      } else if (typeof resContent === 'string') {
-        message = resContent;
-      }
-    } else {
-      // Registrar errores inesperados del sistema
-      this.logger.error(
-        `Error de sistema en [${request.method}] ${request.url}:`,
-        exception instanceof Error
-          ? exception.stack
-          : JSON.stringify(exception),
-      );
-    }
-
-    // Registrar advertencias para errores 4xx
-    if (status >= 400 && status < 500) {
-      this.logger.warn(
-        `[${status}] ${request.method} ${request.url} - Mensaje: ${JSON.stringify(message)}`,
-      );
-    }
-
-    response.status(status).json({
-      statusCode: status,
-      message,
-      timestamp: new Date().toISOString(),
-      path: request.url,
-    });
-  }
-}
-```
-
-**Formato exacto de respuesta de error.** Este es el contrato que el frontend debe consumir. **Siempre** estos cuatro campos:
-
-```jsonc
-// 404 — recurso no encontrado (NotFoundException con string)
-{
-  "statusCode": 404,
-  "message": "Documento no encontrado",
-  "timestamp": "2026-10-07T18:42:11.903Z",
-  "path": "/documents/9a1c…"
-}
-```
-
-```jsonc
-// 400 — error de validación del ValidationPipe: `message` es un ARRAY
-{
-  "statusCode": 400,
-  "message": [
-    "El correo electrónico debe tener un formato válido.",
-    "La contraseña debe tener al menos 8 caracteres."
-  ],
-  "timestamp": "2026-10-07T18:42:11.903Z",
-  "path": "/auth/signup"
-}
-```
-
-```jsonc
-// 500 — excepción no controlada: NUNCA se filtra el mensaje interno
-{
-  "statusCode": 500,
-  "message": "Ocurrió un error inesperado en el servidor.",
-  "timestamp": "2026-10-07T18:42:11.903Z",
-  "path": "/recursos"
-}
-```
-
-**Lo no obvio:**
-
-- **`@Catch()` sin argumentos captura absolutamente todo**, incluidas las excepciones que no derivan de `HttpException` (errores de TypeORM, `TypeError`, etc.). Ese es el punto: garantiza que **ninguna** respuesta de error escapa con un formato distinto.
-- `message` cambia de tipo: `string` para excepciones con mensaje simple, `string[]` para errores de validación. El cliente debe manejar ambos. Es feo pero es el comportamiento nativo de Nest y cambiarlo rompería a los consumidores.
-- Solo las excepciones **no-HTTP** se registran con `logger.error` y stack trace. Un `404` no ensucia los logs con un stack.
-- El mensaje genérico de `500` evita filtrar detalles internos (nombres de tabla, SQL, rutas de archivo) al cliente. El detalle real queda en CloudWatch.
-
-### 9.2 `src/common/interceptors/logging.interceptor.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
+### 9.1 Roles, usuario actual y guards
 
 ```ts
-// src/common/interceptors/logging.interceptor.ts
-import {
-  Injectable,
-  NestInterceptor,
-  ExecutionContext,
-  CallHandler,
-  Logger,
-} from '@nestjs/common';
-import { Observable } from 'rxjs';
-import { tap } from 'rxjs/operators';
-import { Request, Response } from 'express';
-
-@Injectable()
-export class LoggingInterceptor implements NestInterceptor {
-  private readonly logger = new Logger('HTTP');
-
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    const ctx = context.switchToHttp();
-    const request = ctx.getRequest<Request>();
-    const response = ctx.getResponse<Response>();
-
-    const method = request.method;
-    const url = request.url;
-    const now = Date.now();
-
-    return next.handle().pipe(
-      tap(() => {
-        const delay = Date.now() - now;
-        const statusCode = response.statusCode;
-        const user = (request as any).user;
-        const userIdentifier = user && user.sub ? ` (User: ${user.sub})` : '';
-
-        this.logger.log(
-          `[${method}] ${url} - Status: ${statusCode} - Duración: ${delay}ms${userIdentifier}`,
-        );
-      }),
-    );
-  }
-}
-```
-
-**Lo no obvio:**
-
-- Usa `tap()`, no `map()`: observa sin transformar la respuesta.
-- **`tap` solo se dispara en el camino feliz.** Si el handler lanza, el observable emite un error y `tap(next)` no corre: la petición fallida **no aparece en este log**. Queda cubierta por el `HttpExceptionFilter`, que sí registra 4xx y 5xx. Entre los dos cubren todo, pero el formato difiere. Si se quiere un log uniforme, añadir el segundo argumento a `tap`: `tap({ next: ..., error: ... })`.
-- Registra `user.sub` (el UUID de Cognito), **no el email**. Es deliberado: evita PII en CloudWatch.
-- En Lambda, `Logger` escribe a stdout y CloudWatch lo captura. No hace falta ningún transporte extra.
-
-### 9.3 `src/common/guards/jwt-auth.guard.ts`
-
-🟩 **NÚCLEO** con la corrección **19.1**: se añade el soporte de `@Public()`.
-
-```ts
-// src/common/guards/jwt-auth.guard.ts
-import {
-  Injectable,
-  UnauthorizedException,
-  ExecutionContext,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { AuthGuard } from '@nestjs/passport';
-import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
-
-@Injectable()
-export class JwtAuthGuard extends AuthGuard('jwt') {
-  constructor(private readonly reflector: Reflector) {
-    super();
-  }
-
-  canActivate(context: ExecutionContext) {
-    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-    if (isPublic) {
-      return true;
-    }
-    return super.canActivate(context);
-  }
-
-  handleRequest(err: any, user: any, info: any) {
-    if (err || !user) {
-      if (info && info.message === 'No auth token') {
-        throw new UnauthorizedException(
-          'No se proporcionó un token de autenticación.',
-        );
-      }
-      if (info && info.name === 'TokenExpiredError') {
-        throw new UnauthorizedException(
-          'El token de autenticación ha expirado.',
-        );
-      }
-      if (info && info.name === 'JsonWebTokenError') {
-        throw new UnauthorizedException(
-          'El token de autenticación no es válido o está mal estructurado.',
-        );
-      }
-      throw new UnauthorizedException(
-        err?.message ||
-          'Error de autenticación. El token es inválido o no pudo ser procesado.',
-      );
-    }
-    return user;
-  }
-}
-```
-
-**Lo no obvio:**
-
-- `handleRequest` sobrescribe el comportamiento de Passport, que por defecto lanza un `UnauthorizedException` genérico. Aquí se traducen los tres fallos más comunes a mensajes accionables. La diferencia entre "no hay token" y "el token expiró" es la que permite al frontend decidir si redirige al login o intenta un `POST /auth/refresh`.
-- La rama final (`err?.message`) es la que propaga los mensajes de bloqueo de `JwtStrategy.validate()` ("Tu cuenta ha sido bloqueada…"), porque ahí `err` es la `UnauthorizedException` lanzada dentro de la estrategia.
-- **`AuthGuard('jwt')` se enlaza con la estrategia por el nombre `'jwt'`**, que es el default que `PassportStrategy(Strategy)` asigna cuando se usa `passport-jwt` sin nombre explícito.
-
-### 9.4 `src/common/decorators/public.decorator.ts`
-
-🟩 **NÚCLEO** — **no existe en el original.** Añadido por la corrección **19.1**.
-
-```ts
-// src/common/decorators/public.decorator.ts
+// src/common/auth/roles.ts
 import { SetMetadata } from '@nestjs/common';
 
-export const IS_PUBLIC_KEY = 'isPublic';
+export const ROLES = ['<ROL_A>', '<ROL_B>', '<ROL_C>', '<ROL_D>'] as const;
+export type Role = (typeof ROLES)[number];
+export const ADMIN_ROLE: Role = '<ROL_B>';
+export const INVESTOR_ROLE: Role = '<ROL_A>';
+export const TREASURY_ROLE: Role = '<ROL_C>';
+export const OPERATIONS_ROLE: Role = '<ROL_D>';
 
-/**
- * Marca una ruta (o un controlador entero) como accesible sin token.
- * Solo tiene efecto porque JwtAuthGuard está registrado como APP_GUARD global.
- */
+export const ROLES_KEY = 'roles';
+export const Roles = (...roles: Role[]) => SetMetadata(ROLES_KEY, roles);
+
+export const IS_PUBLIC_KEY = 'isPublic';
+/** Ruta accesible sin sesión. Solo tiene efecto porque JwtAuthGuard es global. */
 export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
 ```
 
-### 9.5 `src/common/guards/roles.guard.ts`
-
-🟩 **NÚCLEO** — transcripción literal con los roles parametrizados.
-
 ```ts
-// src/common/guards/roles.guard.ts
-import {
-  Injectable,
-  CanActivate,
-  ExecutionContext,
-  ForbiddenException,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { ROLES_KEY } from '../decorators/roles.decorator';
+// src/common/auth/current-user.ts
+import { createParamDecorator, ExecutionContext, UnauthorizedException } from '@nestjs/common';
 
-@Injectable()
-export class RolesGuard implements CanActivate {
-  constructor(private reflector: Reflector) {}
-
-  canActivate(context: ExecutionContext): boolean {
-    const requiredRoles = this.reflector.getAllAndOverride<string[]>(
-      ROLES_KEY,
-      [context.getHandler(), context.getClass()],
-    );
-
-    if (!requiredRoles || requiredRoles.length === 0) {
-      return true;
-    }
-
-    const { user } = context.switchToHttp().getRequest();
-    if (!user) {
-      throw new ForbiddenException(
-        'No se encontraron credenciales de usuario activas.',
-      );
-    }
-
-    // Los roles se extraen del claim "cognito:groups" del token.
-    const userGroups: string[] = user['cognito:groups'] || [];
-    const hasRole = requiredRoles.some((role) => userGroups.includes(role));
-
-    if (!hasRole) {
-      throw new ForbiddenException(
-        `Acceso denegado. No tienes los permisos necesarios. Roles requeridos: ${requiredRoles.join(', ')}`,
-      );
-    }
-
-    return true;
-  }
+/** Lo que JwtStrategy.validate() deja en request.user (claims del access token). */
+export interface AccessTokenClaims {
+  sub: string;
+  username: string;
+  'cognito:groups'?: string[];
+  token_use: 'access';
+  client_id: string;
+  exp: number;
+  iat: number;
 }
-```
-
-**Lo no obvio:**
-
-- **`getAllAndOverride` (no `getAll`)**: busca primero en el handler y, si no hay, en la clase. Eso permite poner `@Roles('<ROL_A>','<ROL_B>')` en el controlador y sobrescribirlo con `@Roles('<ROL_B>')` en un método concreto.
-- **Sin `@Roles(...)` el guard deja pasar.** Es el comportamiento correcto para un guard global: la autorización es opt-in, la autenticación es opt-out (`@Public()`).
-- La semántica es **OR**: basta pertenecer a uno de los grupos. Si se necesita AND, hay que escribir otro decorador.
-- `user['cognito:groups']` es un array de strings. **Si el usuario no pertenece a ningún grupo, el claim no existe** (no es un array vacío), de ahí el `|| []`.
-- `403` (no `401`): el usuario está autenticado pero no autorizado. El frontend distingue: `401` → relogin; `403` → mensaje de permisos.
-
-### 9.6 `src/common/decorators/roles.decorator.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/common/decorators/roles.decorator.ts
-import { SetMetadata } from '@nestjs/common';
-
-export const ROLES_KEY = 'roles';
-export const Roles = (...roles: string[]) => SetMetadata(ROLES_KEY, roles);
-```
-
-> **Mejora recomendada:** tipar los roles con una unión en vez de `string[]`, para que el compilador detecte un `@Roles('Riesgo')` (singular) mal escrito:
-> ```ts
-> export const ROLES = ['<ROL_A>', '<ROL_B>'] as const;
-> export type Role = (typeof ROLES)[number];
-> export const Roles = (...roles: Role[]) => SetMetadata(ROLES_KEY, roles);
-> ```
-
-### 9.7 `src/common/decorators/current-user.decorator.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/common/decorators/current-user.decorator.ts
-import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 
 export interface CurrentUserPayload {
   sub: string;
-  email: string;
   username: string;
   groups: string[];
-  givenName?: string;
-  familyName?: string;
-  name?: string;
-}
-
-function emailFromToken(user: Record<string, unknown>): string {
-  const email = user.email;
-  if (typeof email === 'string' && email.includes('@')) {
-    return email;
-  }
-  const username = user['cognito:username'] ?? user.username;
-  if (typeof username === 'string' && username.includes('@')) {
-    return username;
-  }
-  return typeof email === 'string' ? email : '';
+  /** Expiración del access token, en segundos epoch. */
+  exp: number;
 }
 
 export const CurrentUser = createParamDecorator(
-  (data: unknown, ctx: ExecutionContext): CurrentUserPayload => {
-    const request = ctx.switchToHttp().getRequest();
-    const user = request.user;
-
+  (_data: unknown, ctx: ExecutionContext): CurrentUserPayload => {
+    const user = ctx.switchToHttp().getRequest<{ user?: AccessTokenClaims }>().user;
     if (!user) {
-      return null;
+      // Solo ocurre si se usa @CurrentUser() en una ruta @Public(): es un bug del controlador.
+      throw new UnauthorizedException('No hay una sesión activa.');
     }
-
     return {
       sub: user.sub,
-      email: emailFromToken(user),
-      username: user['cognito:username'] || user.username || user.email,
-      groups: user['cognito:groups'] || [],
-      givenName: user.given_name,
-      familyName: user.family_name,
-      name: user.name,
+      username: user.username,
+      groups: user['cognito:groups'] ?? [],
+      exp: user.exp,
     };
   },
 );
 ```
 
-**Lo no obvio:**
-
-- Es la **capa de traducción entre los claims crudos de Cognito y un objeto con nombres de TypeScript**. Sin ella, cada controlador tendría que escribir `user['cognito:groups']` y `user.given_name`.
-- **`emailFromToken` existe porque Cognito es inconsistente.** Según cómo se creó el usuario y cómo esté configurado el pool, el email puede venir en `email`, en `cognito:username`, o el `cognito:username` puede ser el `sub` (un UUID, sin `@`). La función prueba en orden y solo acepta valores que contengan `@`.
-- Devuelve `null` si no hay usuario. Eso significa que en una ruta `@Public()` con `@CurrentUser()` el parámetro llega `null`, no lanza. Hay que comprobarlo.
-- `data` no se usa: el decorador no soporta `@CurrentUser('email')`. Si se quisiera, bastaría `return data ? payload[data] : payload`.
-
-### 9.8 `src/common/utils/decimal.util.ts`
-
-🟩 **NÚCLEO** — transcripción literal. La pieza que hace que el dinero sea correcto.
-
 ```ts
-// src/common/utils/decimal.util.ts
-import Decimal from 'decimal.js';
-
-export function toDecimal(
-  value: number | string | null | undefined,
-): Decimal | null {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  return new Decimal(value);
-}
-
-export function safeDivide(
-  numerator: Decimal | null,
-  denominator: Decimal | null,
-): Decimal | null {
-  if (!numerator || !denominator || denominator.isZero()) {
-    return null;
-  }
-  return numerator.div(denominator);
-}
-
-export function decimalToNumber(value: Decimal | null): number | null {
-  if (!value) {
-    return null;
-  }
-  return value.toNumber();
-}
-
-export function parseAmount(text: string): Decimal | null {
-  const cleaned = text.replace(/[^\d.,()-]/g, '').trim();
-  if (!cleaned) {
-    return null;
-  }
-  const negative = cleaned.startsWith('(') && cleaned.endsWith(')');
-  const normalized = cleaned.replace(/[()]/g, '').replace(/,/g, '');
-  const num = toDecimal(normalized);
-  if (!num) {
-    return null;
-  }
-  return negative ? num.neg() : num;
-}
-```
-
-**Las tres reglas que codifica este archivo, y por qué son importantes:**
-
-1. **Ausencia ≠ cero.** `toDecimal(null)` devuelve `null`, no `new Decimal(0)`. Un dato que falta y un dato que vale cero son cosas distintas; confundirlos produce informes que parecen completos y están mal.
-2. **Denominador cero → `null`, no `Infinity` ni cero.** `safeDivide` es la única forma permitida de dividir. Un `Infinity` que se propaga por un cálculo es imposible de rastrear; un `null` corta en el sitio.
-3. **`decimalToNumber` solo en el borde de serialización.** Internamente todo es `Decimal`; se convierte a `number` únicamente al construir la respuesta JSON, y nunca para operar.
-
-`parseAmount` normaliza texto a número: elimina símbolos de moneda, trata `(1.234,56)` como negativo (notación contable) y quita separadores de miles. Es específico de la convención `1,234.56` (coma = miles). **Para locales que usan `1.234,56` hay que invertir la lógica**; revisarlo antes de reutilizarlo.
-
-### 9.9 `src/common/constants/`
-
-🟦 **EJEMPLO DE DOMINIO.** El original mete en `domain.constants.ts` pesos de criterios, catálogos de tipos de documento, el patrón de claves S3 y un *feature flag*. Lo único **núcleo** de ese archivo es el patrón de claves S3 y los estados de documento, que se transcriben en la sección 13.2.
-
-**Regla para el proyecto nuevo:** `src/common/constants/` solo debe contener constantes que **no** pertenezcan a ningún módulo concreto. Un catálogo de tipos de documento pertenece a `src/modules/documents/`, no a `common/`. El original lo puso en `common/` porque varios módulos lo necesitaban; eso es una señal de que debería ser un módulo exportado, no una constante global.
-
-Además, el original expone ahí una función que lee `process.env` en caliente:
-
-```ts
-// 🟥 DEUDA — NO REPLICAR
-export function getRatingCalcMode(): RatingCalcMode {
-  return process.env.RATING_CALC_MODE === 'legacy' ? 'legacy' : 'anka_2026';
-}
-```
-
-Leer `process.env` fuera de `src/config/` rompe la regla de dependencia de la sección 5.1 y hace el código intesteable sin manipular el entorno global. Si se necesita un *feature flag*, declararlo en `env.validation.ts` y leerlo por `ConfigService`.
-
----
-
-## 10. Autenticación y RBAC con Cognito, end to end
-
-Esta es la pieza más valiosa del núcleo y la que más tiempo ahorra. Se reutiliza **tal cual**.
-
-### 10.1 Modelo mental
-
-```
-┌───────────┐  1. POST /auth/signup                      ┌──────────────┐
-│  Cliente  │ ─────────────────────────────────────────► │   Backend    │
-└───────────┘                                             └──────┬───────┘
-                                                                 │ 2. SignUpCommand
-                                                                 │    (+ SecretHash(email))
-                                                                 ▼
-                                                          ┌──────────────┐
-                                                          │   Cognito    │
-                                                          └──────┬───────┘
-                                                                 │ 3. UserSub (UUID)
-                                                                 ▼
-                                                          ┌──────────────┐
-                                     4. INSERT users       │  PostgreSQL  │
-                                        id = UserSub  ───► │              │
-                                     (si falla →           └──────────────┘
-                                      AdminDeleteUser,
-                                      rollback)
-```
-
-La clave del diseño: **el `sub` de Cognito es la clave primaria de la tabla `users` local.** No hay id autogenerado, no hay tabla de mapeo. Cognito es la fuente de verdad de la identidad; PostgreSQL guarda el estado administrativo (`userStatus`) y los datos de perfil.
-
-**Qué vive dónde:**
-
-| Dato | Cognito | PostgreSQL local |
-|---|---|---|
-| Contraseña | ✅ única fuente | ❌ nunca |
-| Email, teléfono, nombre | ✅ | ✅ copia, para consultas |
-| Confirmación de cuenta | ✅ | ✅ espejo (`cognitoStatus`) |
-| Grupos / roles | ✅ única fuente (claim `cognito:groups`) | ❌ |
-| Estado administrativo (`blocked`, `observed`, `rejected`) | ❌ | ✅ única fuente |
-| Aceptación de términos (con IP y timestamp) | ❌ | ✅ única fuente |
-| Auditoría | ❌ | ✅ única fuente |
-
-### 10.2 El cálculo de `SECRET_HASH` y la regla email-vs-sub
-
-Cuando el App Client de Cognito tiene *client secret*, **toda** operación de la API pública exige un `SECRET_HASH`:
-
-```
-SECRET_HASH = Base64( HMAC-SHA256( key = <client_secret>, message = <username> + <client_id> ) )
-```
-
-En el código:
-
-```ts
-private getSecretHash(username: string): string {
-  const clientSecret = this.configService.get<string>('COGNITO_CLIENT_SECRET');
-  if (!clientSecret) return undefined;
-  return createHmac('sha256', clientSecret)
-    .update(username + this.clientId)
-    .digest('base64');
-}
-```
-
-> 🔴 **ESTA ES LA TRAMPA MÁS CARA DE TODO EL REPOSITORIO.**
->
-> El `<username>` que entra en el HMAC debe ser el **username real del usuario en el pool**, no el alias con el que inició sesión.
->
-> - En `USER_PASSWORD_AUTH` (login), `SignUp`, `ConfirmSignUp`, `ResendConfirmationCode`, `ForgotPassword` y `ConfirmForgotPassword`, el comando también lleva un campo `Username`/`USERNAME` explícito. Cognito resuelve el alias (email) a username real y valida el hash **contra lo que se le pasó**. Firmar con el email **funciona**.
-> - En **`REFRESH_TOKEN_AUTH` no hay campo `USERNAME`**: solo van `REFRESH_TOKEN` y `SECRET_HASH`. Cognito saca el username real del propio refresh token (que es el **`sub`**, cuando el pool usa email como *alias*) y valida el hash contra **ese** valor. Firmar con el email produce:
->
->   ```
->   NotAuthorizedException: Unable to verify secret hash for client <CLIENT_ID>
->   ```
->
-> **Solución implementada:** resolver el `sub` desde la tabla local por email y firmar con él, con el email como respaldo:
->
-> ```ts
-> const localUser = await this.usersService.findByEmail(email);
-> const secretHashUsername = localUser?.id || email;
-> ```
->
-> Por eso el DTO de `/auth/refresh` pide **email además del refresh token**: el backend necesita el email solo para poder buscar el `sub`.
-
-**Resumen operativo:**
-
-| Operación | Flujo Cognito | `SECRET_HASH` se firma con |
-|---|---|---|
-| `signUp` | `SignUpCommand` | **email** |
-| `confirmSignUp` | `ConfirmSignUpCommand` | **email** |
-| `resendConfirmationCode` | `ResendConfirmationCodeCommand` | **email** |
-| `forgotPassword` | `ForgotPasswordCommand` | **email** |
-| `confirmForgotPassword` | `ConfirmForgotPasswordCommand` | **email** |
-| `login` | `InitiateAuth` / `USER_PASSWORD_AUTH` | **email** |
-| `refresh` | `InitiateAuth` / `REFRESH_TOKEN_AUTH` | **`sub`** ← la excepción |
-| `logout` | `GlobalSignOut` | **no lleva** (va por `AccessToken`) |
-
-### 10.3 `src/modules/auth/auth.service.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/auth/auth.service.ts
-import {
-  Injectable,
-  BadRequestException,
-  UnauthorizedException,
-  InternalServerErrorException,
-} from '@nestjs/common';
-import { createHmac } from 'crypto';
-import {
-  CognitoIdentityProviderClient,
-  InitiateAuthCommand,
-  SignUpCommand,
-  ConfirmSignUpCommand,
-  ResendConfirmationCodeCommand,
-  ForgotPasswordCommand,
-  ConfirmForgotPasswordCommand,
-  GlobalSignOutCommand,
-  AdminDeleteUserCommand,
-} from '@aws-sdk/client-cognito-identity-provider';
-import { ConfigService } from '@nestjs/config';
-import { LoginDto } from './dto/login.dto';
-import { SignUpDto } from './dto/signup.dto';
-import { ConfirmSignUpDto } from './dto/confirm-signup.dto';
-import { ResendCodeDto } from './dto/resend-code.dto';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { ConfirmPasswordDto } from './dto/confirm-password.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { UsersService } from '../users/users.service';
-import { AuditService } from '../audit/audit.service';
-
-@Injectable()
-export class AuthService {
-  private cognitoClient: CognitoIdentityProviderClient;
-  private clientId: string;
-
-  constructor(
-    private configService: ConfigService,
-    private usersService: UsersService,
-    private auditService: AuditService,
-  ) {
-    this.clientId = this.configService.get<string>('COGNITO_CLIENT_ID');
-    this.cognitoClient = new CognitoIdentityProviderClient({
-      region: this.configService.get<string>('COGNITO_REGION') || '<REGION>',
-    });
-  }
-
-  async validateUser(payload: any) {
-    return payload;
-  }
-
-  async login(loginDto: LoginDto, ip: string) {
-    const { email, password } = loginDto;
-    try {
-      const command = new InitiateAuthCommand({
-        AuthFlow: 'USER_PASSWORD_AUTH',
-        ClientId: this.clientId,
-        AuthParameters: {
-          USERNAME: email,
-          PASSWORD: password,
-          SECRET_HASH: this.getSecretHash(email),
-        },
-      });
-
-      const response = await this.cognitoClient.send(command);
-      const authResult = response.AuthenticationResult;
-
-      // Decodificar el token para extraer el 'sub' y poder auditar.
-      let userSub = 'unknown';
-      try {
-        const idToken = authResult.IdToken;
-        const payloadBase64 = idToken.split('.')[1];
-        const payloadDecoded = JSON.parse(
-          Buffer.from(payloadBase64, 'base64').toString('utf-8'),
-        );
-        userSub = payloadDecoded.sub;
-      } catch {}
-
-      await this.auditService.logEvent(
-        userSub,
-        'USER_LOGIN',
-        ip,
-        'Inicio de sesión exitoso mediante AWS Cognito',
-      );
-
-      return {
-        accessToken: authResult.AccessToken,
-        idToken: authResult.IdToken,
-        refreshToken: authResult.RefreshToken,
-        expiresIn: authResult.ExpiresIn,
-        tokenType: authResult.TokenType,
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  async signUp(signUpDto: SignUpDto, ip: string) {
-    const { email, password, phoneNumber, firstName, lastName, acceptedTerms } =
-      signUpDto;
-    try {
-      const command = new SignUpCommand({
-        ClientId: this.clientId,
-        Username: email,
-        Password: password,
-        SecretHash: this.getSecretHash(email),
-        UserAttributes: [
-          { Name: 'email', Value: email },
-          { Name: 'phone_number', Value: phoneNumber },
-          { Name: 'given_name', Value: firstName },
-          { Name: 'family_name', Value: lastName },
-          { Name: 'name', Value: `${firstName} ${lastName}` },
-        ],
-      });
-
-      const response = await this.cognitoClient.send(command);
-
-      // Enlace de términos vigente, para dejar constancia de QUÉ se aceptó.
-      const termsLinkSetting = await this.usersService.getSetting(
-        'terms_and_conditions_url',
-      );
-      const termsDetails = termsLinkSetting || '<TERMS_URL>';
-
-      // Registro local con rollback si la BD falla.
-      try {
-        await this.usersService.create(
-          response.UserSub,
-          email,
-          firstName,
-          lastName,
-          phoneNumber,
-          acceptedTerms,
-          ip,
-          termsDetails,
-        );
-      } catch (dbError) {
-        // Rollback: eliminar el usuario de Cognito si falla la inserción local,
-        // para no dejar una identidad huérfana que impida reintentar el signup.
-        try {
-          const deleteCommand = new AdminDeleteUserCommand({
-            UserPoolId: this.configService.get<string>('COGNITO_USER_POOL_ID'),
-            Username: email,
-          });
-          await this.cognitoClient.send(deleteCommand);
-        } catch (cognitoDeleteError) {
-          console.error(
-            'Error al revertir registro en Cognito tras fallo de BD:',
-            cognitoDeleteError,
-          );
-        }
-        throw dbError;
-      }
-
-      await this.auditService.logEvent(
-        response.UserSub,
-        'USER_SIGNUP',
-        ip,
-        `Registro de usuario exitoso (email: ${email})`,
-      );
-
-      return {
-        message:
-          'Usuario registrado exitosamente. Por favor verifica tu correo.',
-        userSub: response.UserSub,
-        userConfirmed: response.UserConfirmed,
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  async confirmSignUp(confirmSignUpDto: ConfirmSignUpDto, ip: string) {
-    const { email, code } = confirmSignUpDto;
-    try {
-      const command = new ConfirmSignUpCommand({
-        ClientId: this.clientId,
-        Username: email,
-        ConfirmationCode: code,
-        SecretHash: this.getSecretHash(email),
-      });
-
-      await this.cognitoClient.send(command);
-
-      const user = await this.usersService.confirmByEmail(email);
-
-      await this.auditService.logEvent(
-        user.id,
-        'USER_CONFIRM_SIGNUP',
-        ip,
-        `Confirmación de cuenta OTP exitosa`,
-      );
-
-      return {
-        message:
-          'Cuenta confirmada de forma exitosa. Ya puedes iniciar sesión.',
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  async resendConfirmationCode(resendCodeDto: ResendCodeDto) {
-    const { email } = resendCodeDto;
-    try {
-      const command = new ResendConfirmationCodeCommand({
-        ClientId: this.clientId,
-        Username: email,
-        SecretHash: this.getSecretHash(email),
-      });
-
-      await this.cognitoClient.send(command);
-      return {
-        message: 'Código de confirmación reenviado con éxito.',
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  async forgotPassword(forgotPasswordDto: ForgotPasswordDto, ip: string) {
-    const { email } = forgotPasswordDto;
-    try {
-      const command = new ForgotPasswordCommand({
-        ClientId: this.clientId,
-        Username: email,
-        SecretHash: this.getSecretHash(email),
-      });
-
-      await this.cognitoClient.send(command);
-
-      let userSub = 'system';
-      const user = await this.usersService.findByEmail(email);
-      if (user) userSub = user.id;
-
-      await this.auditService.logEvent(
-        userSub,
-        'USER_FORGOT_PASSWORD',
-        ip,
-        `Solicitud de recuperación de contraseña enviada`,
-      );
-
-      return {
-        message:
-          'Se ha enviado un código de recuperación a tu correo electrónico.',
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  async confirmForgotPassword(
-    confirmPasswordDto: ConfirmPasswordDto,
-    ip: string,
-  ) {
-    const { email, code, newPassword } = confirmPasswordDto;
-    try {
-      const command = new ConfirmForgotPasswordCommand({
-        ClientId: this.clientId,
-        Username: email,
-        ConfirmationCode: code,
-        Password: newPassword,
-        SecretHash: this.getSecretHash(email),
-      });
-
-      await this.cognitoClient.send(command);
-
-      let userSub = 'system';
-      const user = await this.usersService.findByEmail(email);
-      if (user) userSub = user.id;
-
-      await this.auditService.logEvent(
-        userSub,
-        'USER_CONFIRM_PASSWORD',
-        ip,
-        `Contraseña restablecida de forma exitosa`,
-      );
-
-      return {
-        message:
-          'Contraseña restablecida de forma exitosa. Ya puedes iniciar sesión con tu nueva contraseña.',
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  async refresh(refreshTokenDto: RefreshTokenDto) {
-    const { email, refreshToken } = refreshTokenDto;
-    try {
-      // Para REFRESH_TOKEN_AUTH, Cognito exige que el SECRET_HASH se calcule con
-      // el username real del usuario (el `sub`), no con el alias de correo. Cuando
-      // el pool usa email como alias, el username es el `sub`, por lo que firmar con
-      // el email produce "Unable to verify secret hash". Resolvemos el `sub` desde
-      // el registro local y, si no existe, mantenemos el email como respaldo.
-      const localUser = await this.usersService.findByEmail(email);
-      const secretHashUsername = localUser?.id || email;
-      const command = new InitiateAuthCommand({
-        AuthFlow: 'REFRESH_TOKEN_AUTH',
-        ClientId: this.clientId,
-        AuthParameters: {
-          REFRESH_TOKEN: refreshToken,
-          SECRET_HASH: this.getSecretHash(secretHashUsername),
-        },
-      });
-
-      const response = await this.cognitoClient.send(command);
-      const authResult = response.AuthenticationResult;
-
-      return {
-        accessToken: authResult.AccessToken,
-        idToken: authResult.IdToken,
-        expiresIn: authResult.ExpiresIn,
-        tokenType: authResult.TokenType,
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  async logout(accessToken: string, userSub: string, ip: string) {
-    try {
-      const command = new GlobalSignOutCommand({
-        AccessToken: accessToken,
-      });
-
-      await this.cognitoClient.send(command);
-
-      await this.auditService.logEvent(
-        userSub,
-        'USER_LOGOUT',
-        ip,
-        'Cierre de sesión global exitoso (tokens revocados)',
-      );
-
-      return {
-        message: 'Cierre de sesión exitoso.',
-      };
-    } catch (error: any) {
-      this.handleCognitoError(error);
-    }
-  }
-
-  private getSecretHash(username: string): string {
-    const clientSecret = this.configService.get<string>(
-      'COGNITO_CLIENT_SECRET',
-    );
-    if (!clientSecret) return undefined;
-    return createHmac('sha256', clientSecret)
-      .update(username + this.clientId)
-      .digest('base64');
-  }
-
-  private handleCognitoError(error: any) {
-    const errorMessage = error.message || '';
-
-    if (error.name === 'UsernameExistsException') {
-      throw new BadRequestException(
-        'El correo electrónico ya se encuentra registrado.',
-      );
-    }
-    if (error.name === 'InvalidPasswordException') {
-      throw new BadRequestException(
-        'La contraseña no cumple con los requisitos de seguridad establecidos en Cognito.',
-      );
-    }
-    if (
-      error.name === 'UserNotFoundException' ||
-      error.name === 'NotAuthorizedException'
-    ) {
-      throw new UnauthorizedException(
-        'Credenciales inválidas. Correo o contraseña incorrectos.',
-      );
-    }
-    if (error.name === 'UserNotConfirmedException') {
-      throw new UnauthorizedException(
-        'El usuario no ha confirmado su cuenta. Por favor verifica tu correo.',
-      );
-    }
-    if (error.name === 'CodeMismatchException') {
-      throw new BadRequestException(
-        'El código de verificación proporcionado no es correcto.',
-      );
-    }
-    if (error.name === 'ExpiredCodeException') {
-      throw new BadRequestException(
-        'El código de verificación ha expirado. Por favor solicita uno nuevo.',
-      );
-    }
-    if (error.name === 'InvalidParameterException') {
-      throw new BadRequestException(`Parámetro inválido: ${errorMessage}`);
-    }
-
-    throw new InternalServerErrorException(
-      `Error de comunicación con el servicio de autenticación: ${errorMessage}`,
-    );
-  }
-}
-```
-
-**Puntos clave del servicio:**
-
-1. **El rollback de `signUp`** es el patrón más importante. Si Cognito crea el usuario pero la inserción local falla, el usuario queda en un limbo: existe en Cognito (así que `signUp` repetido da `UsernameExistsException`) pero no en la base local (así que el login funciona y todo lo demás falla). El `AdminDeleteUserCommand` deshace la creación.
-   - `AdminDeleteUser` es una operación **administrativa**: requiere credenciales IAM y permiso `cognito-idp:AdminDeleteUser` sobre el pool. Es la única operación admin que usa el servicio.
-   - Si el rollback *también* falla, se registra en consola y se lanza el error original. No hay reintento automático. Es una decisión deliberada: dejar constancia y que el operador intervenga.
-
-2. **Decodificación manual del `IdToken` en `login`.** El `sub` se necesita para auditar, y la respuesta de `InitiateAuth` no lo devuelve suelto. Se decodifica el payload Base64 del JWT **sin verificar la firma**. Eso es seguro aquí porque el token acaba de llegar de Cognito por TLS; **nunca** se usa esa técnica para autorizar.
-   - El `try {} catch {}` vacío es deliberado: si la decodificación falla, se audita con `'unknown'` en vez de hacer fallar un login correcto.
-
-3. **`handleCognitoError` colapsa `UserNotFoundException` y `NotAuthorizedException` en el mismo mensaje.** Es anti-enumeración: un atacante no puede distinguir "este email no existe" de "la contraseña es incorrecta".
-
-4. **`forgotPassword` siempre responde éxito**, incluso si el email no está registrado (Cognito lo gestiona así). También anti-enumeración.
-
-5. **`handleCognitoError` siempre lanza**, por eso los métodos que la llaman en el `catch` no retornan nada después. TypeScript no lo sabe (el tipo de retorno no es `never` explícito), de ahí que los métodos parezcan tener un camino que devuelve `undefined`. **Mejora recomendada:** anotar `private handleCognitoError(error: any): never`.
-
-### 10.4 `src/modules/auth/jwt.strategy.ts` — JWKS + bloqueo en caliente
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/auth/jwt.strategy.ts
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
-import { ExtractJwt, Strategy } from 'passport-jwt';
-import { passportJwtSecret } from 'jwks-rsa';
-import { UsersService } from '../users/users.service';
-
-@Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private readonly usersService: UsersService) {
-    super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      ignoreExpiration: false,
-      algorithms: ['RS256'],
-      secretOrKeyProvider: passportJwtSecret({
-        cache: true,
-        rateLimit: true,
-        jwksRequestsPerMinute: 5,
-        jwksUri: `https://cognito-idp.${process.env.COGNITO_REGION}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}/.well-known/jwks.json`,
-      }),
-    });
-  }
-
-  async validate(payload: any) {
-    if (!payload || !payload.sub) {
-      throw new UnauthorizedException('Token no válido o expirado.');
-    }
-
-    try {
-      const user = await this.usersService.findById(payload.sub);
-
-      if (user.userStatus === 'blocked') {
-        throw new UnauthorizedException(
-          'Tu cuenta ha sido bloqueada de forma administrativa. Comunícate con soporte.',
-        );
-      }
-      if (user.userStatus === 'rejected') {
-        throw new UnauthorizedException(
-          'Tu cuenta ha sido rechazada de la plataforma.',
-        );
-      }
-      if (user.userStatus === 'observed') {
-        throw new UnauthorizedException(
-          'Tu cuenta se encuentra bajo observación. Acceso suspendido temporalmente.',
-        );
-      }
-    } catch (error) {
-      if (error instanceof UnauthorizedException) {
-        throw error;
-      }
-      // Permitir continuar si no existe localmente pero sí en Cognito
-      // (evita bloquear a admins creados manualmente en la consola).
-    }
-
-    return payload;
-  }
-}
-```
-
-**Explicación detallada:**
-
-- **`passportJwtSecret` de `jwks-rsa`** descarga las claves públicas del pool desde `https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>/.well-known/jwks.json` y las usa para verificar la firma RS256. **El backend nunca ve el secreto de firma**: Cognito firma con su clave privada, el backend verifica con la pública.
-- `cache: true` guarda las claves en memoria. En Lambda, eso vive mientras viva el contenedor. `rateLimit: true` + `jwksRequestsPerMinute: 5` evita martillear el endpoint si llegan tokens con `kid` desconocido.
-- `algorithms: ['RS256']` es **obligatorio** y una defensa de seguridad real: sin esta línea, un atacante podría presentar un token firmado con `HS256` usando la clave pública como secreto (ataque de confusión de algoritmo).
-- **`validate()` recibe el payload ya verificado.** La firma, la expiración (`ignoreExpiration: false`) y el formato ya están comprobados. Lo que hace aquí es **autorización adicional**, no autenticación.
-- **El bloqueo en caliente** es la razón de ser de este método. Un token de Cognito vale una hora. Si se bloquea a un usuario, sin esta comprobación seguiría entrando hasta que expire. Consultando `userStatus` en cada petición, el bloqueo es inmediato.
-  - **Coste:** un `SELECT` a PostgreSQL por cada petición autenticada. Es una lectura por clave primaria, de 1 ms. Si se vuelve un problema, cachear con TTL corto (30 s) — pero entonces el bloqueo deja de ser instantáneo.
-- **El `catch` que no hace nada** (cuando el usuario no existe localmente) es una decisión consciente y arriesgada: permite que un usuario creado directamente en la consola de Cognito, sin registro local, acceda. Es el camino que usan los administradores iniciales. **Riesgo:** si la consulta falla por un problema de base de datos, el bloqueo deja de aplicarse silenciosamente. Para un sistema nuevo, considerar distinguir `NotFoundException` (permitir) de cualquier otro error (denegar).
-- **`validate()` devuelve el payload crudo**, que Passport asigna a `request.user`. Por eso en los controladores hay que usar `@CurrentUser()` para obtener un objeto con nombres normalizados (9.7).
-
-> **Nota sobre qué token usar.** La estrategia acepta cualquier JWT firmado por el pool: tanto el `IdToken` como el `AccessToken`. El claim `cognito:groups` está en **ambos**, pero `email`, `given_name` y `family_name` solo están en el **`IdToken`**. Como `CurrentUserPayload` los necesita, **el frontend debe enviar el `IdToken`** en la cabecera `Authorization`. El original no valida el claim `token_use` para forzarlo, lo cual significa que un `AccessToken` pasa la autenticación pero produce un perfil incompleto.
-> **Mejora recomendada:** añadir al principio de `validate()`:
-> ```ts
-> if (payload.token_use !== 'id') {
->   throw new UnauthorizedException('Se requiere el IdToken, no el AccessToken.');
-> }
-> ```
-> …y comprobar también `payload.aud === process.env.COGNITO_CLIENT_ID`.
-
-### 10.5 `src/modules/auth/auth.module.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/auth/auth.module.ts
-import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { JwtStrategy } from './jwt.strategy';
-import { UsersModule } from '../users/users.module';
-import { AuditModule } from '../audit/audit.module';
-
-@Module({
-  imports: [
-    PassportModule.register({ defaultStrategy: 'jwt' }),
-    JwtModule.register({
-      signOptions: { expiresIn: '1h' },
-    }),
-    UsersModule,
-    AuditModule,
-  ],
-  providers: [AuthService, JwtStrategy],
-  controllers: [AuthController],
-  exports: [PassportModule, JwtModule],
-})
-export class AuthModule {}
-```
-
-> **Nota honesta:** `JwtModule.register({ signOptions: { expiresIn: '1h' } })` **no se usa para nada**. Este backend no firma tokens propios: todos los emite Cognito. El módulo está registrado "por si acaso" y sin `secret`, de modo que cualquier intento real de firmar fallaría. Se puede eliminar junto con la dependencia `@nestjs/jwt`. Se transcribe tal cual porque eliminarlo requiere verificar que ningún otro módulo inyecte `JwtService`.
-
-### 10.6 `src/modules/auth/auth.controller.ts`
-
-🟩 **NÚCLEO** con la corrección **19.1** aplicada: las rutas públicas se marcan con `@Public()` y se elimina el `@UseGuards(JwtAuthGuard)` repetido (ahora es global).
-
-```ts
-// src/modules/auth/auth.controller.ts
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  HttpCode,
-  HttpStatus,
-  Ip,
-  Headers,
-  Param,
-  Patch,
-} from '@nestjs/common';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-  ApiResponse,
-} from '@nestjs/swagger';
-import {
-  CurrentUser,
-  CurrentUserPayload,
-} from '../../common/decorators/current-user.decorator';
-import { Public } from '../../common/decorators/public.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { AuthService } from './auth.service';
-import { UsersService } from '../users/users.service';
-import { AuditService } from '../audit/audit.service';
-import { LoginDto } from './dto/login.dto';
-import { SignUpDto } from './dto/signup.dto';
-import { ConfirmSignUpDto } from './dto/confirm-signup.dto';
-import { ResendCodeDto } from './dto/resend-code.dto';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { ConfirmPasswordDto } from './dto/confirm-password.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { UpdateUserStatusDto } from './dto/update-user-status.dto';
-
-@ApiTags('Autenticación y Cuentas')
-@Controller('auth')
-export class AuthController {
-  constructor(
-    private readonly authService: AuthService,
-    private readonly usersService: UsersService,
-    private readonly auditService: AuditService,
-  ) {}
-
-  @Get('terms-link')
-  @Public()
-  @ApiOperation({
-    summary: 'Obtener el enlace activo de términos y condiciones',
-  })
-  @ApiResponse({ status: 200, description: 'Enlace recuperado exitosamente.' })
-  async getTermsLink() {
-    const link = await this.usersService.getSetting('terms_and_conditions_url');
-    return {
-      url: link || '<TERMS_URL>',
-    };
-  }
-
-  @Post('login')
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Iniciar sesión de usuario' })
-  @ApiResponse({
-    status: 200,
-    description: 'Tokens de sesión emitidos exitosamente.',
-  })
-  async login(@Body() loginDto: LoginDto, @Ip() ip: string) {
-    return this.authService.login(loginDto, ip);
-  }
-
-  @Post('signup')
-  @Public()
-  @ApiOperation({ summary: 'Registrar un nuevo usuario' })
-  @ApiResponse({
-    status: 201,
-    description: 'Usuario creado exitosamente. OTP enviado por correo.',
-  })
-  async signUp(@Body() signUpDto: SignUpDto, @Ip() ip: string) {
-    return this.authService.signUp(signUpDto, ip);
-  }
-
-  @Post('confirm')
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Confirmar registro usando el código OTP' })
-  @ApiResponse({
-    status: 200,
-    description: 'Cuenta confirmada de manera exitosa.',
-  })
-  async confirmSignUp(
-    @Body() confirmSignUpDto: ConfirmSignUpDto,
-    @Ip() ip: string,
-  ) {
-    return this.authService.confirmSignUp(confirmSignUpDto, ip);
-  }
-
-  @Post('resend-code')
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Reenviar código OTP de confirmación' })
-  @ApiResponse({ status: 200, description: 'Código reenviado exitosamente.' })
-  async resendConfirmationCode(@Body() resendCodeDto: ResendCodeDto) {
-    return this.authService.resendConfirmationCode(resendCodeDto);
-  }
-
-  @Post('forgot-password')
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Solicitar código para restablecer contraseña' })
-  @ApiResponse({ status: 200, description: 'Código de recuperación enviado.' })
-  async forgotPassword(
-    @Body() forgotPasswordDto: ForgotPasswordDto,
-    @Ip() ip: string,
-  ) {
-    return this.authService.forgotPassword(forgotPasswordDto, ip);
-  }
-
-  @Post('confirm-password')
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Confirmar nueva contraseña usando el código recibido',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Contraseña cambiada exitosamente.',
-  })
-  async confirmForgotPassword(
-    @Body() confirmPasswordDto: ConfirmPasswordDto,
-    @Ip() ip: string,
-  ) {
-    return this.authService.confirmForgotPassword(confirmPasswordDto, ip);
-  }
-
-  @Post('refresh')
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Renovar sesión expirada usando Refresh Token' })
-  @ApiResponse({
-    status: 200,
-    description: 'Tokens de sesión actualizados exitosamente.',
-  })
-  async refresh(@Body() refreshTokenDto: RefreshTokenDto) {
-    return this.authService.refresh(refreshTokenDto);
-  }
-
-  @Post('logout')
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cerrar sesión globalmente' })
-  @ApiResponse({
-    status: 200,
-    description: 'Tokens revocados y sesión finalizada exitosamente.',
-  })
-  async logout(
-    @Headers('authorization') authHeader: string,
-    @CurrentUser() user: CurrentUserPayload,
-    @Ip() ip: string,
-  ) {
-    const token = authHeader.replace('Bearer ', '');
-    return this.authService.logout(token, user.sub, ip);
-  }
-
-  @Patch('users/:id/status')
-  @Roles('<ROL_B>')
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Modificar estado administrativo de un usuario (<ROL_B>)',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Estado actualizado correctamente.',
-  })
-  async updateUserStatus(
-    @Param('id') id: string,
-    @Body() updateDto: UpdateUserStatusDto,
-    @CurrentUser() admin: CurrentUserPayload,
-    @Ip() ip: string,
-  ) {
-    const user = await this.usersService.updateUserStatus(
-      id,
-      updateDto.userStatus,
-    );
-    await this.auditService.logEvent(
-      admin.sub,
-      'ADMIN_UPDATE_USER_STATUS',
-      ip,
-      `Estado del usuario ${id} modificado a ${updateDto.userStatus} por administrador`,
-    );
-    return user;
-  }
-
-  @Get('profile')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Obtener perfil del usuario autenticado' })
-  @ApiResponse({ status: 200, description: 'Perfil recuperado con éxito.' })
-  async getProfile(@CurrentUser() user: CurrentUserPayload) {
-    const dbUser =
-      (await this.usersService.findById(user.sub).catch(() => null)) ||
-      (user.email ? await this.usersService.findByEmail(user.email) : null) ||
-      (user.username
-        ? await this.usersService.findByEmail(user.username)
-        : null);
-    const nameParts = String(user.name || dbUser?.firstName || '')
-      .split(/\s+/)
-      .filter(Boolean);
-    return {
-      message: 'Autenticación exitosa con Cognito',
-      user: {
-        ...user,
-        email: dbUser?.email || user.email || '',
-        firstName: dbUser?.firstName || user.givenName || nameParts[0] || '',
-        lastName:
-          dbUser?.lastName ||
-          user.familyName ||
-          nameParts.slice(1).join(' ') ||
-          '',
-      },
-    };
-  }
-
-  @Get('admin-only')
-  @Roles('<ROL_B>')
-  @ApiBearerAuth()
-  @ApiOperation({
-    summary: 'Ruta protegida para pruebas de perfil Administrador',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Permisos de administrador validados.',
-  })
-  getAdminData(@CurrentUser() user: CurrentUserPayload) {
-    return {
-      message: 'Acceso concedido a la sección de administración',
-      user,
-    };
-  }
-}
-```
-
-**Notas:**
-
-- `@Ip()` extrae la IP del cliente. Es la que acaba en `audit_logs.ip`.
-- `getProfile` hace una **cascada de tres búsquedas** (`findById(sub)` → `findByEmail(email)` → `findByEmail(username)`) porque hay usuarios en Cognito que no existen localmente o que se crearon con un `sub` distinto. Es código defensivo acumulado; en un sistema nuevo donde **todos** los usuarios pasan por `/auth/signup`, basta con `findById(user.sub)`.
-- `logout` lee la cabecera `Authorization` cruda porque `GlobalSignOutCommand` necesita el **`AccessToken`**, no el payload decodificado.
-  > ⚠️ Esto es un **conflicto real**: la estrategia valida el token que llega en `Authorization`, y para que `@CurrentUser()` tenga email hace falta el `IdToken`; pero `GlobalSignOut` necesita el `AccessToken`. Si el frontend envía el `IdToken`, `logout` falla en Cognito con `NotAuthorizedException`. El original no resuelve esta contradicción. **Recomendación para el proyecto nuevo:** que `/auth/logout` reciba el `accessToken` en el cuerpo, en un DTO propio, en vez de reutilizar la cabecera.
-- `@Patch('users/:id/status')` vive en `AuthController` aunque conceptualmente sea de `users`. Es deuda menor del original; en un proyecto nuevo, moverlo a un `UsersController`.
-
-### 10.7 DTOs de auth
-
-🟩 **NÚCLEO** — transcripción literal de los ocho archivos.
-
-```ts
-// src/modules/auth/dto/login.dto.ts
-import { IsNotEmpty, IsString, MinLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class LoginDto {
-  @ApiProperty({
-    example: 'usuario',
-    description: 'Correo o usuario de Cognito',
-  })
-  @IsString({ message: 'El usuario debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'El usuario o correo es obligatorio.' })
-  email: string;
-
-  @ApiProperty({
-    example: 'H0lamundo!6',
-    description: 'Contraseña del usuario',
-  })
-  @IsNotEmpty({ message: 'La contraseña es obligatoria.' })
-  @MinLength(6, { message: 'La contraseña debe tener al menos 6 caracteres.' })
-  password: string;
-}
-```
-
-> **Nota:** el campo se llama `email` pero está validado con `@IsString()`, no `@IsEmail()`. Es deliberado: Cognito acepta login por username además de por email. Los demás DTOs sí usan `@IsEmail()` porque sus operaciones requieren un correo real para enviar el código.
-
-```ts
-// src/modules/auth/dto/signup.dto.ts
-import {
-  IsEmail,
-  IsNotEmpty,
-  MinLength,
-  IsString,
-  IsBoolean,
-  Equals,
-  Matches,
-} from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class SignUpDto {
-  @ApiProperty({
-    example: 'usuario@ejemplo.com',
-    description: 'Correo electrónico del usuario',
-  })
-  @IsEmail(
-    {},
-    { message: 'El correo electrónico debe tener un formato válido.' },
-  )
-  @IsNotEmpty({ message: 'El correo electrónico es obligatorio.' })
-  email: string;
-
-  @ApiProperty({
-    example: 'H0lamundo!6',
-    description:
-      'Contraseña del usuario (mínimo 8 caracteres, al menos una mayúscula, una minúscula, un número y un carácter especial)',
-  })
-  @IsNotEmpty({ message: 'La contraseña es obligatoria.' })
-  @MinLength(8, { message: 'La contraseña debe tener al menos 8 caracteres.' })
-  @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>_+\-=\[\]\\/;']).*$/,
-    {
-      message:
-        'La contraseña es muy débil. Debe incluir al menos una letra mayúscula, una letra minúscula, un número y un carácter especial (ej: !, @, #, $, %).',
-    },
-  )
-  password: string;
-
-  @ApiProperty({
-    example: '+51999999999',
-    description: 'Número de teléfono en formato E.164 (con prefijo del país)',
-  })
-  @IsString({ message: 'El número de teléfono debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'El número de teléfono es obligatorio.' })
-  phoneNumber: string;
-
-  @ApiProperty({ example: 'Ana María', description: 'Nombres del usuario' })
-  @IsString({ message: 'El nombre debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'Los nombres son obligatorios.' })
-  firstName: string;
-
-  @ApiProperty({
-    example: 'Pérez Soto',
-    description: 'Apellidos del usuario',
-  })
-  @IsString({ message: 'El apellido debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'Los apellidos son obligatorios.' })
-  lastName: string;
-
-  @ApiProperty({
-    example: true,
-    description: 'Aceptación de términos y condiciones de uso',
-  })
-  @IsBoolean({
-    message: 'El campo de aceptación de términos debe ser un booleano.',
-  })
-  @Equals(true, {
-    message: 'Debes aceptar los términos y condiciones de uso para continuar.',
-  })
-  acceptedTerms: boolean;
-}
-```
-
-> La regex de contraseña **replica la política del pool de Cognito**. Validar en el backend es redundante pero da un mensaje en español en vez del `InvalidPasswordException` genérico de Cognito. **Si se cambia la política del pool, hay que cambiar esta regex.**
-> `@Equals(true)` sobre `acceptedTerms` convierte la aceptación en un requisito técnico, no en una casilla opcional.
-
-```ts
-// src/modules/auth/dto/confirm-signup.dto.ts
-import { IsEmail, IsNotEmpty, IsString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class ConfirmSignUpDto {
-  @ApiProperty({
-    example: 'usuario@ejemplo.com',
-    description: 'Correo electrónico del usuario registrado',
-  })
-  @IsEmail(
-    {},
-    { message: 'El correo electrónico debe tener un formato válido.' },
-  )
-  @IsNotEmpty({ message: 'El correo electrónico es obligatorio.' })
-  email: string;
-
-  @ApiProperty({
-    example: '123456',
-    description: 'Código de confirmación enviado por correo',
-  })
-  @IsString({ message: 'El código debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'El código de confirmación es obligatorio.' })
-  code: string;
-}
-```
-
-```ts
-// src/modules/auth/dto/resend-code.dto.ts
-import { IsEmail, IsNotEmpty } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class ResendCodeDto {
-  @ApiProperty({
-    example: 'usuario@ejemplo.com',
-    description: 'Correo electrónico del usuario registrado',
-  })
-  @IsEmail(
-    {},
-    { message: 'El correo electrónico debe tener un formato válido.' },
-  )
-  @IsNotEmpty({ message: 'El correo electrónico es obligatorio.' })
-  email: string;
-}
-```
-
-```ts
-// src/modules/auth/dto/forgot-password.dto.ts
-import { IsEmail, IsNotEmpty } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class ForgotPasswordDto {
-  @ApiProperty({
-    example: 'usuario@ejemplo.com',
-    description: 'Correo electrónico del usuario',
-  })
-  @IsEmail(
-    {},
-    { message: 'El correo electrónico debe tener un formato válido.' },
-  )
-  @IsNotEmpty({ message: 'El correo electrónico es obligatorio.' })
-  email: string;
-}
-```
-
-```ts
-// src/modules/auth/dto/confirm-password.dto.ts
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class ConfirmPasswordDto {
-  @ApiProperty({
-    example: 'usuario@ejemplo.com',
-    description: 'Correo electrónico del usuario',
-  })
-  @IsEmail(
-    {},
-    { message: 'El correo electrónico debe tener un formato válido.' },
-  )
-  @IsNotEmpty({ message: 'El correo electrónico es obligatorio.' })
-  email: string;
-
-  @ApiProperty({
-    example: '123456',
-    description: 'Código de recuperación de contraseña enviado por correo',
-  })
-  @IsString({ message: 'El código debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'El código de recuperación es obligatorio.' })
-  code: string;
-
-  @ApiProperty({
-    example: 'NuevoH0lamundo!6',
-    description: 'Nueva contraseña para el usuario',
-  })
-  @IsNotEmpty({ message: 'La nueva contraseña es obligatoria.' })
-  @MinLength(6, {
-    message: 'La nueva contraseña debe tener al menos 6 caracteres.',
-  })
-  newPassword: string;
-}
-```
-
-> ⚠️ **Inconsistencia real del original:** `SignUpDto.password` exige 8 caracteres + regex de complejidad, pero `ConfirmPasswordDto.newPassword` solo exige 6 caracteres y ninguna regex. Cognito rechazará igualmente las contraseñas débiles, pero el usuario verá el mensaje genérico de Cognito en vez del mensaje claro en español. **Corregir en el proyecto nuevo:** aplicar las mismas reglas que en `SignUpDto`.
-
-```ts
-// src/modules/auth/dto/refresh-token.dto.ts
-import { IsEmail, IsNotEmpty, IsString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class RefreshTokenDto {
-  @ApiProperty({
-    example: 'usuario@ejemplo.com',
-    description: 'Correo electrónico del usuario',
-  })
-  @IsEmail(
-    {},
-    { message: 'El correo electrónico debe tener un formato válido.' },
-  )
-  @IsNotEmpty({ message: 'El correo electrónico es obligatorio.' })
-  email: string;
-
-  @ApiProperty({
-    example: 'eyJhbGciOi...',
-    description: 'Refresh token retornado por Cognito',
-  })
-  @IsString({ message: 'El refresh token debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'El refresh token es obligatorio.' })
-  refreshToken: string;
-}
-```
-
-```ts
-// src/modules/auth/dto/update-user-status.dto.ts
-import { IsIn, IsNotEmpty, IsString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class UpdateUserStatusDto {
-  @ApiProperty({
-    example: 'blocked',
-    description: 'Estado administrativo del usuario',
-    enum: ['active', 'blocked', 'observed', 'rejected'],
-  })
-  @IsString({ message: 'El estado del usuario debe ser una cadena de texto.' })
-  @IsNotEmpty({ message: 'El estado del usuario es obligatorio.' })
-  @IsIn(['active', 'blocked', 'observed', 'rejected'], {
-    message: 'El estado debe ser uno de: active, blocked, observed, rejected.',
-  })
-  userStatus: string;
-}
-```
-
-### 10.8 Tabla de endpoints de auth
-
-| Método | Ruta | Acceso | Roles | DTO de entrada | Respuesta |
-|---|---|---|---|---|---|
-| `GET` | `/auth/terms-link` | 🌐 público | — | — | `{ url: string }` |
-| `POST` | `/auth/login` | 🌐 público | — | `LoginDto` | `{ accessToken, idToken, refreshToken, expiresIn, tokenType }` · `200` |
-| `POST` | `/auth/signup` | 🌐 público | — | `SignUpDto` | `{ message, userSub, userConfirmed }` · `201` |
-| `POST` | `/auth/confirm` | 🌐 público | — | `ConfirmSignUpDto` | `{ message }` · `200` |
-| `POST` | `/auth/resend-code` | 🌐 público | — | `ResendCodeDto` | `{ message }` · `200` |
-| `POST` | `/auth/forgot-password` | 🌐 público | — | `ForgotPasswordDto` | `{ message }` · `200` |
-| `POST` | `/auth/confirm-password` | 🌐 público | — | `ConfirmPasswordDto` | `{ message }` · `200` |
-| `POST` | `/auth/refresh` | 🌐 público | — | `RefreshTokenDto` | `{ accessToken, idToken, expiresIn, tokenType }` · `200`. **Sin `refreshToken`**: Cognito no rota el refresh token |
-| `POST` | `/auth/logout` | 🔒 JWT | cualquiera | — (lee cabecera `Authorization`) | `{ message }` · `200` |
-| `GET` | `/auth/profile` | 🔒 JWT | cualquiera | — | `{ message, user: { sub, email, username, groups, givenName, familyName, name, firstName, lastName } }` |
-| `PATCH` | `/auth/users/:id/status` | 🔒 JWT + rol | `<ROL_B>` | `UpdateUserStatusDto` | Entidad `User` completa · `200` |
-| `GET` | `/auth/admin-only` | 🔒 JWT + rol | `<ROL_B>` | — | `{ message, user }` — endpoint de prueba de RBAC |
-
-### 10.9 Checklist de configuración de Cognito
-
-Para que todo lo anterior funcione, el pool debe estar configurado así:
-
-- [ ] Atributo `email` marcado como **alias de login** y como **requerido**.
-- [ ] Atributos `phone_number`, `given_name`, `family_name`, `name` presentes en el esquema.
-- [ ] App Client **con client secret generado**.
-- [ ] Flujos de autenticación del App Client: `ALLOW_USER_PASSWORD_AUTH` y `ALLOW_REFRESH_TOKEN_AUTH` **habilitados**.
-- [ ] Verificación de cuenta por **código** enviado a email (no por enlace).
-- [ ] Grupos `<ROL_A>` y `<ROL_B>` creados.
-- [ ] Política de contraseñas del pool **coincidente** con la regex de `SignUpDto`.
-
----
-
-## 11. Capa de datos: entidades, convenciones y migraciones
-
-### 11.1 Convenciones de entidades
-
-🟩 **NÚCLEO** — estas reglas se aplican a toda entidad nueva.
-
-| Aspecto | Regla | Ejemplo |
-|---|---|---|
-| **Nombre de archivo** | `<nombre>.entity.ts`, **siempre**. El CLI de TypeORM las encuentra por glob | `invoice.entity.ts` |
-| **Nombre de tabla** | Explícito en `@Entity('nombre')`. `snake_case` plural | `@Entity('audit_logs')` |
-| **Prefijo de tabla** | Convención del original: `dim_*` para catálogos/dimensiones, `fact_*` para hechos y tablas de staging. Opcional, pero útil si se adopta de forma consistente | `dim_company`, `fact_invoice` |
-| **PK de entidad propia** | `@PrimaryGeneratedColumn('uuid')` | `id: string` |
-| **PK de entidad espejo de un sistema externo** | `@PrimaryColumn()` con el id externo | `users.id` = `sub` de Cognito |
-| **PK de catálogo con clave natural** | `@PrimaryColumn({ length: N })` | `dim_company.ruc` |
-| **Timestamps** | `@CreateDateColumn()` siempre; `@UpdateDateColumn()` solo si la fila muta | |
-| **Dinero y cantidades exactas** | `@Column({ type: 'numeric' })` y **tipo `string` en TypeScript** | `facturado: string \| null` |
-| **Fechas sin hora** | `@Column({ type: 'date' })` y **tipo `string`** (`YYYY-MM-DD`) | `rateDate: string` |
-| **Fecha con hora** | `@Column({ type: 'timestamp' })`, tipo `Date` | `extractedAt: Date` |
-| **Datos semiestructurados** | `@Column({ type: 'jsonb', default: {} })` o `default: []` | `metadata: Record<string, any>` |
-| **Enumeraciones** | `varchar` + constante `as const` en TS. **No** usar `enum` de PostgreSQL | `status: string` |
-| **Nullable** | Explícito: `@Column({ nullable: true })` y tipo TS `X \| null` | |
-| **Índices** | `@Index()` sobre toda columna que aparezca en un `WHERE` frecuente | `@Index() email` |
-| **Relaciones** | `@ManyToOne` + `@JoinColumn({ name: 'fkColumn' })` + columna FK **explícita** declarada aparte | ver `document.entity.ts` |
-| **`onDelete`** | Siempre explícito: `'CASCADE'` para dependientes, `'SET NULL'` para referencias informativas | |
-
-**Las tres reglas críticas, explicadas:**
-
-> **1. `numeric` + `string`, nunca `float`.** PostgreSQL `numeric` es decimal exacto de precisión arbitraria. El driver `pg` lo devuelve como **string** para no perder precisión al pasar por `double` de JavaScript. Si se declara la propiedad como `number`, TypeORM la convierte y se pierde exactitud silenciosamente. La forma correcta es:
-> ```ts
-> @Column({ type: 'numeric', nullable: true })
-> monto: string | null;        // ← string, no number
-> ```
-> …y operar con `toDecimal(monto)` de `decimal.util.ts` (9.8). Solo al serializar la respuesta se convierte: `Number(monto)` o `decimalToNumber(...)`.
-
-> **2. `date` + `string`.** Una columna `date` representa un día del calendario, sin zona horaria. Mapearla a `Date` de JavaScript introduce la zona horaria del proceso y provoca desfases de un día. Mapearla a `string` (`'2026-10-07'`) elimina la clase entera de bugs.
-
-> **3. Enumeraciones como `varchar`, no como `enum` de PostgreSQL.** Añadir un valor a un `ENUM` de PostgreSQL requiere `ALTER TYPE`, que en algunas versiones no puede correr dentro de una transacción, lo que rompe las migraciones de TypeORM. Con `varchar` + constante de TypeScript se obtiene seguridad de tipos en el código y flexibilidad en el esquema:
-> ```ts
-> export const DOCUMENT_STATUS = {
->   UPLOADED: 'uploaded',
->   PROCESSING: 'processing',
->   PARSED: 'parsed',
->   FAILED: 'failed',
->   QUARANTINED: 'quarantined',
-> } as const;
-> export type DocumentStatus =
->   (typeof DOCUMENT_STATUS)[keyof typeof DOCUMENT_STATUS];
-> ```
-
-### 11.2 Entidades base reutilizables
-
-#### `src/modules/users/user.entity.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/users/user.entity.ts
-import {
-  Entity,
-  PrimaryColumn,
-  Column,
-  CreateDateColumn,
-  UpdateDateColumn,
-  Index,
-} from 'typeorm';
-
-@Entity('users')
-export class User {
-  @PrimaryColumn()
-  id: string; // AWS Cognito sub (UUID)
-
-  @Column({ unique: true })
-  @Index()
-  email: string;
-
-  @Column()
-  firstName: string;
-
-  @Column()
-  lastName: string;
-
-  @Column()
-  phoneNumber: string;
-
-  @Column({ default: 'unconfirmed' })
-  cognitoStatus: string; // 'unconfirmed' | 'confirmed'
-
-  @Column({ default: 'active' })
-  userStatus: string; // 'active' | 'blocked' | 'observed' | 'rejected'
-
-  @Column({ default: false })
-  acceptedTerms: boolean;
-
-  @Column({ nullable: true })
-  acceptedTermsAt: Date;
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
-}
-```
-
-Puntos clave:
-- `@PrimaryColumn() id: string` — **no** es generado: es el `sub` de Cognito. Esa es la decisión que hace que todo el modelo encaje.
-- `cognitoStatus` espeja el estado de Cognito; `userStatus` es **local** y es lo que lee `JwtStrategy` para el bloqueo en caliente.
-- `@Column({ unique: true }) @Index()` sobre `email` genera **dos** objetos en la base: una constraint `UNIQUE` y un índice adicional. Es redundante (la constraint ya crea un índice), pero inofensivo. Está así en la migración 00001.
-
-#### `src/modules/users/setting.entity.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/users/setting.entity.ts
-import { Entity, PrimaryColumn, Column } from 'typeorm';
-
-@Entity('settings')
-export class Setting {
-  @PrimaryColumn()
-  key: string;
-
-  @Column('text')
-  value: string;
-}
-```
-
-Tabla clave-valor para parámetros globales editables en caliente, sin redeploy: URL de términos, límites, plantillas. **Siempre `text`**, y el consumidor parsea.
-
-#### `src/modules/users/user-terms-acceptance.entity.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/users/user-terms-acceptance.entity.ts
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  ManyToOne,
-  JoinColumn,
-} from 'typeorm';
-import { User } from './user.entity';
-
-@Entity('user_terms_acceptances')
-export class UserTermsAcceptance {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column({ name: 'user_sub' })
-  userSub: string;
-
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'user_sub' })
-  user: User;
-
-  @Column({ name: 'terms_key' })
-  termsKey: string;
-
-  @Column({ type: 'boolean' })
-  accepted: boolean;
-
-  @Column()
-  ip: string;
-
-  @Column({ type: 'text', nullable: true })
-  details: string;
-
-  @CreateDateColumn({ name: 'accepted_at', type: 'timestamp' })
-  acceptedAt: Date;
-}
-```
-
-Registro **append-only** de consentimiento legal: quién, qué versión (`details` guarda la URL vigente en ese momento), desde qué IP y cuándo. No se actualiza ni se borra.
-
-> Nota: esta entidad usa `name:` explícito en `snake_case` (`user_sub`, `terms_key`, `accepted_at`) mientras que `users` y `documents` usan `camelCase` sin `name:`. **Es una inconsistencia del original.** Para el proyecto nuevo, elegir **una** convención y mantenerla. La opción más limpia: configurar una naming strategy global en `database.config.ts` (`namingStrategy: new SnakeNamingStrategy()`, paquete `typeorm-naming-strategies`) y no escribir `name:` nunca.
-
-#### `src/modules/documents/document.entity.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/documents/document.entity.ts
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  ManyToOne,
-  JoinColumn,
-} from 'typeorm';
-import { User } from '../users/user.entity';
-
-@Entity('documents')
-export class Document {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column()
-  filename: string;
-
-  @Column()
-  s3Key: string;
-
-  /** Identificador natural de la entidad de negocio dueña del documento. */
-  @Column({ length: 11 })
-  companyId: string;
-
-  @Column({ default: 'uploaded' })
-  status: string;
-
-  @Column({ nullable: true })
-  sha256: string;
-
-  @Column({ nullable: true })
-  documentType: string;
-
-  @Column({ nullable: true })
-  validationStatus: string;
-
-  @Column({ nullable: true })
-  parserVersion: string;
-
-  @Column({ type: 'timestamp', nullable: true })
-  extractedAt: Date;
-
-  @Column({ type: 'text', nullable: true })
-  errorMessage: string;
-
-  @Column({ nullable: true })
-  uploadedBySub: string;
-
-  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
-  @JoinColumn({ name: 'uploadedBySub' })
-  uploadedBy: User;
-
-  @CreateDateColumn()
-  createdAt: Date;
-}
-```
-
-> Se omitieron del original tres columnas de dominio (`fiscalYear`, `processDate`, `evaluationId`). `companyId` tiene `length: 11` porque en el original es un RUC peruano; **ajustar a la forma de `<ENTITY_ID>` del dominio nuevo**.
-
-Observar el patrón de relación, que se repite en todo el repositorio:
-
-```ts
-@Column({ nullable: true })
-uploadedBySub: string;              // ← columna FK, escribible directamente
-
-@ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
-@JoinColumn({ name: 'uploadedBySub' })
-uploadedBy: User;                   // ← relación, para cargar con `relations: [...]`
-```
-
-**Por qué declarar las dos.** Con solo la relación, asignar el dueño obliga a cargar la entidad `User` completa. Con la columna FK explícita, basta `repo.save({ ..., uploadedBySub: sub })`, que es una sola consulta. Es el patrón estándar de TypeORM y vale la pena adoptarlo en todas las relaciones.
-
-#### `src/modules/audit/audit.entity.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/audit/audit.entity.ts
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  ManyToOne,
-  JoinColumn,
-} from 'typeorm';
-import { User } from '../users/user.entity';
-
-@Entity('audit_logs')
-export class Audit {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column()
-  userSub: string;
-
-  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
-  @JoinColumn({ name: 'userSub' })
-  user: User;
-
-  @Column()
-  action: string;
-
-  @Column()
-  ip: string;
-
-  @Column('text')
-  details: string;
-
-  @CreateDateColumn()
-  timestamp: Date;
-}
-```
-
-> ⚠️ **Inconsistencia real:** `userSub` está declarado `@Column()` (NOT NULL) pero la relación es `onDelete: 'SET NULL', nullable: true`. Si se borra un usuario, PostgreSQL intenta poner `NULL` en una columna `NOT NULL` y el `DELETE` **falla**. Además, el servicio escribe valores sintéticos (`'unknown'`, `'system'`) que no existen en `users`, lo que **violaría la FK**… salvo que esos casos nunca se den en la práctica. **Corrección para el proyecto nuevo:** o se hace `userSub` nullable de verdad, o se elimina la FK (una tabla de auditoría no debería tener FK a algo que puede borrarse) y se deja `userSub` como texto libre.
-
-#### `src/modules/audit/audit.service.ts` y `audit.module.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/audit/audit.service.ts
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Audit } from './audit.entity';
-
-@Injectable()
-export class AuditService {
-  constructor(
-    @InjectRepository(Audit)
-    private readonly auditRepository: Repository<Audit>,
-  ) {}
-
-  async logEvent(userSub: string, action: string, ip: string, details: string) {
-    const log = this.auditRepository.create({
-      userSub,
-      action,
-      ip,
-      details,
-    });
-    return await this.auditRepository.save(log);
-  }
-}
-```
-
-```ts
-// src/modules/audit/audit.module.ts
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { Audit } from './audit.entity';
-import { AuditService } from './audit.service';
-
-@Module({
-  imports: [TypeOrmModule.forFeature([Audit])],
-  providers: [AuditService],
-  exports: [AuditService],
-})
-export class AuditModule {}
-```
-
-**Catálogo de acciones auditadas en el núcleo** (mantenerlo como constantes, no como strings sueltos):
-
-| `action` | Dónde se emite |
-|---|---|
-| `USER_LOGIN` | `AuthService.login` |
-| `USER_SIGNUP` | `AuthService.signUp` |
-| `USER_CONFIRM_SIGNUP` | `AuthService.confirmSignUp` |
-| `USER_FORGOT_PASSWORD` | `AuthService.forgotPassword` |
-| `USER_CONFIRM_PASSWORD` | `AuthService.confirmForgotPassword` |
-| `USER_LOGOUT` | `AuthService.logout` |
-| `ADMIN_UPDATE_USER_STATUS` | `AuthController.updateUserStatus` |
-| `GENERATE_PRESIGNED_URL` | `DocumentService.createPresignedUpload` |
-| `DOWNLOAD_DOCUMENT` | `DocumentService.getFileForDownload` |
-
-> **Mejora recomendada:** `logEvent` es `await`-eado en los caminos críticos. Si la escritura de auditoría falla, el login falla. Para acciones no críticas, considerar hacerla *fire-and-forget* con captura de error, o encolarla.
-
-#### `src/modules/users/users.service.ts` y `users.module.ts`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/modules/users/users.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, Repository } from 'typeorm';
-import { User } from './user.entity';
-import { Setting } from './setting.entity';
-import { UserTermsAcceptance } from './user-terms-acceptance.entity';
-
-@Injectable()
-export class UsersService {
-  constructor(
-    @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
-    @InjectRepository(Setting)
-    private readonly settingRepository: Repository<Setting>,
-    @InjectRepository(UserTermsAcceptance)
-    private readonly termsAcceptanceRepository: Repository<UserTermsAcceptance>,
-  ) {}
-
-  async create(
-    id: string,
-    email: string,
-    firstName: string,
-    lastName: string,
-    phoneNumber: string,
-    acceptedTerms: boolean,
-    ip: string,
-    termsDetails?: string,
-  ): Promise<User> {
-    const user = this.userRepository.create({
-      id,
-      email,
-      firstName,
-      lastName,
-      phoneNumber,
-      cognitoStatus: 'unconfirmed',
-      userStatus: 'active',
-      acceptedTerms,
-      acceptedTermsAt: acceptedTerms ? new Date() : null,
-    });
-    const savedUser = await this.userRepository.save(user);
-
-    if (acceptedTerms) {
-      await this.recordTermsAcceptance(
-        id,
-        'terms_and_conditions_url',
-        true,
-        ip,
-        termsDetails || '<TERMS_URL>',
-      );
-    }
-
-    return savedUser;
-  }
-
-  async confirm(id: string): Promise<User> {
-    const user = await this.findById(id);
-    user.cognitoStatus = 'confirmed';
-    return await this.userRepository.save(user);
-  }
-
-  async confirmByEmail(email: string): Promise<User> {
-    const user = await this.userRepository.findOne({ where: { email } });
-    if (!user) {
-      throw new NotFoundException(`Usuario con correo ${email} no encontrado.`);
-    }
-    user.cognitoStatus = 'confirmed';
-    return await this.userRepository.save(user);
-  }
-
-  async updateUserStatus(id: string, userStatus: string): Promise<User> {
-    const user = await this.findById(id);
-    user.userStatus = userStatus;
-    return await this.userRepository.save(user);
-  }
-
-  async findById(id: string): Promise<User> {
-    const user = await this.userRepository.findOne({ where: { id } });
-    if (!user) {
-      throw new NotFoundException(`Usuario con ID ${id} no encontrado.`);
-    }
-    return user;
-  }
-
-  async findByEmail(email: string): Promise<User | null> {
-    if (!email) return null;
-    return await this.userRepository.findOne({
-      where: { email: ILike(email) },
-    });
-  }
-
-  async getSetting(key: string): Promise<string | null> {
-    const setting = await this.settingRepository.findOne({ where: { key } });
-    return setting ? setting.value : null;
-  }
-
-  async recordTermsAcceptance(
-    userSub: string,
-    termsKey: string,
-    accepted: boolean,
-    ip: string,
-    details: string,
-  ): Promise<UserTermsAcceptance> {
-    const record = this.termsAcceptanceRepository.create({
-      userSub,
-      termsKey,
-      accepted,
-      ip,
-      details,
-    });
-    return await this.termsAcceptanceRepository.save(record);
-  }
-}
-```
-
-```ts
-// src/modules/users/users.module.ts
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { User } from './user.entity';
-import { Setting } from './setting.entity';
-import { UserTermsAcceptance } from './user-terms-acceptance.entity';
-import { UsersService } from './users.service';
-
-@Module({
-  imports: [TypeOrmModule.forFeature([User, Setting, UserTermsAcceptance])],
-  providers: [UsersService],
-  exports: [UsersService, TypeOrmModule],
-})
-export class UsersModule {}
-```
-
-Notas:
-- `findByEmail` usa **`ILike`** (comparación insensible a mayúsculas). Cognito trata los emails de forma insensible; la columna de PostgreSQL es sensible. Sin `ILike`, `Usuario@x.com` y `usuario@x.com` serían usuarios distintos.
-  > ⚠️ `ILike(email)` sin comodines hace una igualdad insensible a mayúsculas, lo cual es correcto, pero **no puede usar el índice B-tree estándar**. Con pocos usuarios es irrelevante; con muchos, crear un índice funcional: `CREATE INDEX idx_users_email_lower ON users (LOWER(email));` y consultar con `LOWER(email) = LOWER($1)`.
-- `findById` **lanza** `NotFoundException`; `findByEmail` **devuelve `null`**. Es una asimetría del original; hay que conocerla porque `JwtStrategy` depende de que `findById` lance.
-- `exports: [UsersService, TypeOrmModule]` — exportar `TypeOrmModule` permite que otros módulos inyecten `Repository<User>` sin volver a declarar `forFeature`.
-
-### 11.3 Flujo completo de migraciones
-
-🟩 **NÚCLEO**
-
-#### Convención de nombres
-
-```
-src/migrations/<NNNNN>-<timestamp>-<NombreEnPascalCase>.ts
-                 │         │              │
-                 │         │              └─ nombre descriptivo, sin espacios
-                 │         └──────────────── epoch en milisegundos (lo pone TypeORM)
-                 └────────────────────────── ordinal de 5 dígitos, manual
-```
-
-Ejemplo real: `00001-1782659757291-AddSettingsAndTerms.ts`
-
-**Por qué el prefijo ordinal.** TypeORM ordena las migraciones por el **timestamp del nombre de la clase** (`AddSettingsAndTerms1782659757291`), no por el nombre del archivo. El prefijo `00001-` es puramente **cosmético**: hace que `ls` y el explorador de archivos muestren las migraciones en orden cronológico real. Sin él, al pasar de 9 a 10 archivos el orden alfabético se desordena. **Conservar la convención.**
-
-#### El ciclo, paso a paso
-
-```bash
-# 1. Modificar o crear la entidad en src/modules/<x>/<y>.entity.ts
-#    Si es una entidad nueva, registrarla en TypeOrmModule.forFeature([...])
-#    de su módulo, o migration:generate no la verá correctamente.
-
-# 2. Asegurarse de que la base local está al día
-npm run migration:run
-
-# 3. Generar la migración por diff entre entidades y esquema real.
-#    La RUTA de destino es un argumento posicional, SIN la extensión .ts:
-npm run migration:generate src/migrations/00020-AddInvoiceNotes
-
-#    TypeORM crea: src/migrations/00020-<timestamp>-AddInvoiceNotes.ts
-
-# 4. LEER el SQL generado. Siempre. Sin excepción.
-#    Errores típicos que hay que cazar aquí:
-#      · DROP COLUMN inesperado  → la entidad no estaba registrada
-#      · DROP TABLE inesperado   → el archivo no cumple *.entity.ts
-#      · ALTER TYPE destructivo  → revisar si hay que migrar los datos
-
-# 5. Aplicar en local
-npm run migration:run
-
-# 6. Verificar que el rollback funciona
-npm run migration:revert
-npm run migration:run
-
-# 7. Commit del archivo de migración JUNTO con el cambio de entidad
-```
-
-#### Cómo escribir una migración a mano
-
-Cuando hay que mover datos, crear índices concurrentes o hacer algo que el generador no infiere, se escribe a mano. Esqueleto:
-
-```ts
-// src/migrations/00020-1786300000000-AddInvoiceNotes.ts
-import { MigrationInterface, QueryRunner } from 'typeorm';
-
-export class AddInvoiceNotes1786300000000 implements MigrationInterface {
-  // El `name` DEBE coincidir con el nombre de la clase, incluido el timestamp.
-  // TypeORM lo guarda en la tabla `migrations` y lo usa para decidir qué está
-  // aplicado. Si no coincide, la migración se reaplicará en cada deploy.
-  name = 'AddInvoiceNotes1786300000000';
-
-  public async up(queryRunner: QueryRunner): Promise<void> {
-    // `IF NOT EXISTS` hace la migración reentrante: si un deploy falla a mitad,
-    // el reintento no explota en la primera sentencia.
-    await queryRunner.query(`
-      ALTER TABLE "fact_invoice"
-        ADD COLUMN IF NOT EXISTS "notes" text,
-        ADD COLUMN IF NOT EXISTS "reviewedAt" TIMESTAMP
-    `);
-
-    // Backfill de datos, si aplica.
-    await queryRunner.query(`
-      UPDATE "fact_invoice" SET "notes" = '' WHERE "notes" IS NULL
-    `);
-
-    await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS "IDX_fact_invoice_reviewedAt"
-        ON "fact_invoice" ("reviewedAt")
-    `);
-  }
-
-  public async down(queryRunner: QueryRunner): Promise<void> {
-    // `down` revierte en ORDEN INVERSO a `up`.
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "public"."IDX_fact_invoice_reviewedAt"`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "fact_invoice" DROP COLUMN IF EXISTS "reviewedAt"`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "fact_invoice" DROP COLUMN IF EXISTS "notes"`,
-    );
-  }
-}
-```
-
-**Reglas para migraciones escritas a mano:**
-
-1. **`name` idéntico al nombre de la clase.** Es lo que se escribe en la tabla `migrations`.
-2. **Comillas dobles en todos los identificadores.** `"fact_invoice"`, `"reviewedAt"`. Sin comillas, PostgreSQL pasa a minúsculas y `reviewedAt` se convierte en `reviewedat`, que no es la columna que TypeORM espera.
-3. **`IF NOT EXISTS` / `IF EXISTS` siempre.** Hace la migración reentrante.
-4. **`down()` en orden inverso y completo.** Una migración sin `down` correcto no se puede revertir en producción.
-5. **Nunca editar una migración ya aplicada en cualquier entorno.** Crear una nueva.
-6. **Las migraciones destructivas van solas**, en su propio despliegue, y el `down` debe poder restaurar.
-7. **Índices en tablas grandes:** `CREATE INDEX CONCURRENTLY` no funciona dentro de la transacción que abre TypeORM. Si hace falta, usar `transaction: false` en la migración (`public transaction = false;`) y aceptar que no es atómica.
-
-#### Migración de referencia: `00001`
-
-🟩 **NÚCLEO** — transcripción literal. **Esta es la migración inicial del proyecto nuevo**: crea `users`, `documents`, `audit_logs` y `settings`, y siembra el ajuste inicial.
-
-```ts
-// src/migrations/00001-1782659757291-AddSettingsAndTerms.ts
-import { MigrationInterface, QueryRunner } from 'typeorm';
-
-export class AddSettingsAndTerms1782659757291 implements MigrationInterface {
-  name = 'AddSettingsAndTerms1782659757291';
-
-  public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `CREATE TABLE "users" ("id" character varying NOT NULL, "email" character varying NOT NULL, "firstName" character varying NOT NULL, "lastName" character varying NOT NULL, "phoneNumber" character varying NOT NULL, "cognitoStatus" character varying NOT NULL DEFAULT 'unconfirmed', "userStatus" character varying NOT NULL DEFAULT 'active', "acceptedTerms" boolean NOT NULL DEFAULT false, "acceptedTermsAt" TIMESTAMP, "createdAt" TIMESTAMP NOT NULL DEFAULT now(), "updatedAt" TIMESTAMP NOT NULL DEFAULT now(), CONSTRAINT "UQ_97672ac88f789774dd47f7c8be3" UNIQUE ("email"), CONSTRAINT "PK_a3ffb1c0c8416b9fc6f907b7433" PRIMARY KEY ("id"))`,
-    );
-    await queryRunner.query(
-      `CREATE INDEX "IDX_97672ac88f789774dd47f7c8be" ON "users" ("email") `,
-    );
-    await queryRunner.query(
-      `CREATE TABLE "documents" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "filename" character varying NOT NULL, "s3Key" character varying NOT NULL, "companyId" character varying NOT NULL, "status" character varying NOT NULL DEFAULT 'uploaded', "uploadedBySub" character varying, "createdAt" TIMESTAMP NOT NULL DEFAULT now(), CONSTRAINT "PK_ac51aa5181ee2036f5ca482857c" PRIMARY KEY ("id"))`,
-    );
-    await queryRunner.query(
-      `CREATE TABLE "audit_logs" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "userSub" character varying NOT NULL, "action" character varying NOT NULL, "ip" character varying NOT NULL, "details" text NOT NULL, "timestamp" TIMESTAMP NOT NULL DEFAULT now(), CONSTRAINT "PK_1bb179d048bbc581caa3b013439" PRIMARY KEY ("id"))`,
-    );
-    await queryRunner.query(
-      `CREATE TABLE "settings" ("key" character varying NOT NULL, "value" text NOT NULL, CONSTRAINT "PK_c8639b7626fa94ba8265628f214" PRIMARY KEY ("key"))`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "documents" ADD CONSTRAINT "FK_a588d2db8530fb6a6bb96adc660" FOREIGN KEY ("uploadedBySub") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "audit_logs" ADD CONSTRAINT "FK_94089eee0e338276c6ab237c81d" FOREIGN KEY ("userSub") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION`,
-    );
-    await queryRunner.query(
-      `INSERT INTO "settings" ("key", "value") VALUES ('terms_and_conditions_url', '<TERMS_URL>')`,
-    );
-  }
-
-  public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `ALTER TABLE "audit_logs" DROP CONSTRAINT "FK_94089eee0e338276c6ab237c81d"`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "documents" DROP CONSTRAINT "FK_a588d2db8530fb6a6bb96adc660"`,
-    );
-    await queryRunner.query(`DROP TABLE "settings"`);
-    await queryRunner.query(`DROP TABLE "audit_logs"`);
-    await queryRunner.query(`DROP TABLE "documents"`);
-    await queryRunner.query(
-      `DROP INDEX "public"."IDX_97672ac88f789774dd47f7c8be"`,
-    );
-    await queryRunner.query(`DROP TABLE "users"`);
-  }
-}
-```
-
-> 🔴 **`uuid_generate_v4()` requiere la extensión `uuid-ossp`.** La migración la usa pero **nunca la crea**. En el original funciona porque RDS la trae habilitada por defecto en la base `postgres`. En una instalación local limpia, `migration:run` falla con `function uuid_generate_v4() does not exist`.
->
-> **Corrección obligatoria para el proyecto nuevo:** la primera sentencia de la migración 00001 debe ser
-> ```sql
-> CREATE EXTENSION IF NOT EXISTS "uuid-ossp"
-> ```
-> **O**, mejor aún, usar `gen_random_uuid()`, que es nativo en PostgreSQL 13+ y no necesita extensión. Si se elige esa vía, la entidad debe declarar `@PrimaryGeneratedColumn('uuid')` igual (TypeORM genera `uuid_generate_v4()` por defecto, así que hay que editar el SQL a mano en la migración).
-
-#### Migración de referencia: `00002`
-
-🟩 **NÚCLEO** — transcripción literal.
-
-```ts
-// src/migrations/00002-1782662162617-AddUserTermsAcceptanceTable.ts
-import { MigrationInterface, QueryRunner } from 'typeorm';
-
-export class AddUserTermsAcceptanceTable1782662162617
-  implements MigrationInterface
-{
-  name = 'AddUserTermsAcceptanceTable1782662162617';
-
-  public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `CREATE TABLE "user_terms_acceptances" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "user_sub" character varying NOT NULL, "terms_key" character varying NOT NULL, "accepted" boolean NOT NULL, "ip" character varying NOT NULL, "details" text, "accepted_at" TIMESTAMP NOT NULL DEFAULT now(), CONSTRAINT "PK_4e2e665813b069bff3530d906fc" PRIMARY KEY ("id"))`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "user_terms_acceptances" ADD CONSTRAINT "FK_d3dfc323c3963a0414230da3025" FOREIGN KEY ("user_sub") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE NO ACTION`,
-    );
-  }
-
-  public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `ALTER TABLE "user_terms_acceptances" DROP CONSTRAINT "FK_d3dfc323c3963a0414230da3025"`,
-    );
-    await queryRunner.query(`DROP TABLE "user_terms_acceptances"`);
-  }
-}
-```
-
-#### Las 19 migraciones del original, en orden
-
-🟦 **EJEMPLO DE DOMINIO** — se listan para mostrar el **ritmo y el estilo** de evolución del esquema, no para copiarlas. Solo las dos primeras son núcleo.
-
-| # | Archivo | Qué hace | Núcleo |
-|---|---|---|---|
-| 1 | `00001-1782659757291-AddSettingsAndTerms.ts` | `users`, `documents`, `audit_logs`, `settings` + seed de términos | 🟩 **sí** |
-| 2 | `00002-1782662162617-AddUserTermsAcceptanceTable.ts` | `user_terms_acceptances` | 🟩 **sí** |
-| 3 | `00003-1783000000000-DomainSchema.ts` | Extiende `documents` + crea todo el esquema de dominio (catálogos, parámetros versionados, tablas de hechos) | 🟦 |
-| 4 | `00004-1783100000000-SentinelProtestFields.ts` | Columnas nuevas en una tabla de hechos | 🟦 |
-| 5 | `00005-1784000000000-CompanyGroupAndRevenue.ts` | Nueva tabla de agrupación + FK | 🟦 |
-| 6 | `00006-1784500000000-SentinelHistoryAndCredits.ts` | Dos columnas `jsonb` con default `'[]'` | 🟦 |
-| 7 | `00007-1785000000000-CompanyYearsAndRiskOperations.ts` | Tabla de series temporales + tabla de operaciones | 🟦 |
-| 8 | `00008-1785100000000-RenameRiskOperationsToEvaluations.ts` | **Renombrado** de tabla + migración de datos | 🟦 (buen ejemplo de migración no trivial) |
-| 9 | `00009-1785200000000-BackfillDocumentEvaluationId.ts` | **Solo datos**, sin DDL | 🟦 (buen ejemplo de backfill) |
-| 10 | `00010-1785300000000-TipoCambioDaily.ts` | Tabla de valores diarios con `date` único | 🟦 |
-| 11 | `00011-1785400000000-AnnualFinancialsDjSource.ts` | Columna de procedencia del dato | 🟦 |
-| 12 | `00012-1785500000000-CompanyFactsAndOcrWorkbook.ts` | Migración grande: muchas columnas `jsonb` | 🟦 |
-| 13 | `00013-1785600000000-SentinelLegalAndOverdue.ts` | Más `jsonb` | 🟦 |
-| 14 | `00014-1785700000000-SentinelSbsLastReported.ts` | Columna puntual | 🟦 |
-| 15 | `00015-1785800000000-SentinelMetadataExtraFields.ts` | Columnas de metadatos | 🟦 |
-| 16 | `00016-1785900000000-SentinelEntityDebtsHistory.ts` | `jsonb` histórico | 🟦 |
-| 17 | `00017-1786000000000-SentinelHistoricalPosition.ts` | `jsonb` histórico | 🟦 |
-| 18 | `00018-1786100000000-AddOriginToRiskOperations.ts` | Columna de origen | 🟦 |
-| 19 | `00019-1786200000000-InvoicesAndPayments.ts` | Dos tablas nuevas + relación | 🟦 |
-
-**Lecciones que se extraen de esta lista:**
-
-- **Migraciones pequeñas y frecuentes.** 17 de las 19 tocan una o dos tablas. Eso hace cada despliegue de bajo riesgo.
-- **`jsonb` para datos extraídos de fuentes externas con forma variable** (ver `00006`, `00012`, `00016`, `00017`). Es el patrón correcto: lo estable va a columnas, lo variable a `jsonb`.
-- **Los renombrados (`00008`) y los backfills (`00009`) van en migraciones separadas** del cambio de esquema. Eso permite revertir uno sin el otro.
-
-### 11.4 Seeds
-
-🟩 **NÚCLEO**
-
-```ts
-// src/database/seed.ts
-/**
- * Entrypoint de `npm run db:seed`.
- *
- * Arranca un contexto de Nest SIN servidor HTTP (createApplicationContext),
- * resuelve el SeederService y ejecuta su `seed()`. Es idempotente: se puede
- * correr tantas veces como haga falta.
- *
- * Pasos para una base nueva:
- *   1. npm run migration:run
- *   2. npm run db:seed
- */
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from '../app.module';
-import { SeederService } from './seeding/seeder.service';
-
-async function bootstrap() {
-  const app = await NestFactory.createApplicationContext(AppModule);
-  const seeder = app.get(SeederService);
-
-  try {
-    await seeder.seed();
-  } catch (error) {
-    console.error('❌ Error durante el sembrado de base de datos:', error);
-    process.exitCode = 1;
-  } finally {
-    await app.close();
-  }
-}
-bootstrap();
-```
-
-> **Diferencia con el original:** se añade `process.exitCode = 1` en el `catch`. El original registra el error y **sale con código 0**, de modo que un seed fallido en CI pasa desapercibido.
-
-```ts
-// src/database/seeding/settings.seed.ts
-export const DEFAULT_SETTINGS = [
-  {
-    key: 'terms_and_conditions_url',
-    value: '<TERMS_URL>',
-  },
-  {
-    key: 'max_login_attempts',
-    value: '5',
-  },
-  {
-    key: 'session_timeout_seconds',
-    value: '3600',
-  },
-];
-```
-
-```ts
-// src/database/seeding/seeder.service.ts
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Setting } from '../../modules/users/setting.entity';
-import { DEFAULT_SETTINGS } from './settings.seed';
-
-@Injectable()
-export class SeederService {
-  constructor(
-    @InjectRepository(Setting)
-    private readonly settingRepository: Repository<Setting>,
-    // + inyectar aquí los servicios de los módulos de dominio
-    //   que tengan datos semilla propios.
-  ) {}
-
-  async seed() {
-    console.log('🌱 Creando configuraciones por defecto...');
-    for (const setting of DEFAULT_SETTINGS) {
-      const exists = await this.settingRepository.findOneBy({
-        key: setting.key,
-      });
-      if (!exists) {
-        await this.settingRepository.save(setting);
-        console.log(`  - Configuración '${setting.key}' guardada.`);
-      } else {
-        console.log(`  - Configuración '${setting.key}' ya existe. Omitido.`);
-      }
-    }
-
-    // Patrón: delegar cada bloque de semilla al servicio del módulo dueño.
-    //   await this.parametersService.seedParameters();
-    //   await this.catalogService.seedCatalog();
-
-    console.log('✅ Sembrado completado.');
-  }
-}
-```
-
-```ts
-// src/database/seeding/seeder.module.ts
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { Setting } from '../../modules/users/setting.entity';
-import { SeederService } from './seeder.service';
-
-@Module({
-  imports: [
-    TypeOrmModule.forFeature([Setting]),
-    // + importar aquí los módulos de dominio cuyos servicios se usen
-  ],
-  providers: [SeederService],
-  exports: [SeederService],
-})
-export class SeederModule {}
-```
-
-**Reglas de los seeds:**
-
-1. **Idempotencia obligatoria.** El patrón es siempre "comprobar si existe → insertar si no". Un seed que falla al segundo intento es inútil en CI.
-2. **Delegar al servicio dueño del dato.** `SeederService` orquesta; no escribe SQL de otros módulos. Eso mantiene la lógica de validación en un solo sitio.
-3. **Registro en consola de cada paso.** Es la única salida que tiene el operador.
-4. **Seeds vs migraciones:** los datos que el **esquema** requiere para ser coherente (p. ej. la URL de términos de `00001`) van en la migración. Los datos de **arranque operativo** (catálogos, usuarios demo) van en seeds.
-
-> **Nota sobre el original:** tiene cuatro entrypoints de seed (`seed.ts`, `seed-demo.ts`, `seed-invoices.ts`, `seed-user.ts`), lo que fragmenta el proceso. Para el proyecto nuevo, mantener **un** entrypoint con sub-comandos por argumento: `npm run db:seed -- --only=catalog`.
-
----
-
-## 12. Anatomía de un módulo de feature
-
-### 12.1 Archivos de un módulo
-
-Todo módulo de dominio tiene la misma forma. Para una feature llamada `<feature>` con entidad `<Entity>`:
-
-```
-src/modules/<feature>/
-├── <feature>.module.ts         # Declaración del módulo
-├── <feature>.controller.ts     # Rutas HTTP, Swagger, guards, DTOs
-├── <feature>.service.ts        # Lógica de negocio. Única capa que toca repositorios
-├── <entity>.entity.ts          # Entidad TypeORM (una por archivo)
-├── <feature>.mapper.ts         # (opcional) entidad → DTO de respuesta
-└── dto/
-    ├── create-<entity>.dto.ts
-    ├── update-<entity>.dto.ts
-    └── query-<entity>.dto.ts
-```
-
-**Regla de capas:**
-
-```
-Controller  →  Service  →  Repository  →  PostgreSQL
-    ↑             ↑
-   DTO         Entity
-```
-
-- El **controlador** no toca repositorios. Valida (vía DTO), delega y mapea.
-- El **servicio** no conoce HTTP. Lanza excepciones de `@nestjs/common` (`NotFoundException`, `ConflictException`…), que el `HttpExceptionFilter` traduce a códigos de estado.
-- Las **entidades no salen del servicio sin mapear** cuando contienen campos internos. Para entidades simples, devolverlas directamente es aceptable.
-
-### 12.2 Plantilla completa, comentada
-
-🟩 **NÚCLEO** — esqueleto listo para instanciar.
-
-```ts
-// src/modules/<feature>/<entity>.entity.ts
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  UpdateDateColumn,
-  ManyToOne,
-  JoinColumn,
-  Index,
-} from 'typeorm';
-import { User } from '../users/user.entity';
-
-/** Estados posibles. varchar + const, nunca enum de PostgreSQL (ver 11.1). */
-export const <ENTITY>_STATUS = {
-  DRAFT: 'draft',
-  ACTIVE: 'active',
-  CLOSED: 'closed',
-} as const;
-
-export type <Entity>Status =
-  (typeof <ENTITY>_STATUS)[keyof typeof <ENTITY>_STATUS];
-
-@Entity('<tabla_snake_case>')
-export class <Entity> {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  /** Identificador natural de la entidad de negocio dueña. Indexado. */
-  @Column()
-  @Index()
-  ownerKey: string;
-
-  @Column({ length: 160 })
-  nombre: string;
-
-  /** Dinero: numeric en la base, string en TS. Operar con decimal.util.ts. */
-  @Column({ type: 'numeric', nullable: true })
-  monto: string | null;
-
-  @Column({ type: 'varchar', default: <ENTITY>_STATUS.DRAFT })
-  status: string;
-
-  /** Datos de forma variable. default: {} evita tener que comprobar null. */
-  @Column({ type: 'jsonb', default: {} })
-  metadata: Record<string, unknown>;
-
-  /** Fecha de calendario sin hora: date + string (ver 11.1). */
-  @Column({ type: 'date', nullable: true })
-  fechaVigencia: string | null;
-
-  /** Columna FK explícita + relación. Ver el patrón en 11.2. */
-  @Column({ nullable: true })
-  createdBySub: string;
-
-  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
-  @JoinColumn({ name: 'createdBySub' })
-  createdBy: User;
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
-}
-```
-
-```ts
-// src/modules/<feature>/dto/create-<entity>.dto.ts
-import {
-  IsIn,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Matches,
-  MaxLength,
-  IsNumberString,
-} from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { <ENTITY>_STATUS } from '../<entity>.entity';
-
-export class Create<Entity>Dto {
-  @ApiProperty({ example: 'CLI-00042', description: 'Clave del propietario' })
-  @IsString()
-  @IsNotEmpty()
-  @Matches(/^[A-Z]{3}-\d{5}$/, {
-    message: 'La clave debe tener el formato XXX-00000',
-  })
-  ownerKey: string;
-
-  @ApiProperty({ example: 'Contrato marco' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(160)
-  nombre: string;
-
-  @ApiPropertyOptional({
-    example: '15000.50',
-    description: 'Monto como STRING para no perder precisión decimal',
-  })
-  @IsOptional()
-  @IsNumberString({}, { message: 'El monto debe ser un número decimal válido' })
-  monto?: string;
-
-  @ApiPropertyOptional({ enum: Object.values(<ENTITY>_STATUS) })
-  @IsOptional()
-  @IsIn(Object.values(<ENTITY>_STATUS))
-  status?: string;
-}
-```
-
-```ts
-// src/modules/<feature>/dto/query-<entity>.dto.ts
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
-import { Type } from 'class-transformer';
-import { ApiPropertyOptional } from '@nestjs/swagger';
-
-export class Query<Entity>Dto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  ownerKey?: string;
-
-  // Los query params llegan SIEMPRE como string. @Type(() => Number) hace la
-  // conversión; funciona porque el ValidationPipe tiene `transform: true`.
-  @ApiPropertyOptional({ default: 20, maximum: 100 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(100)
-  limit?: number = 20;
-
-  @ApiPropertyOptional({ default: 0 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  offset?: number = 0;
-}
-```
-
-```ts
-// src/modules/<feature>/<feature>.service.ts
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  ConflictException,
-} from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { <Entity>, <ENTITY>_STATUS } from './<entity>.entity';
-import { Create<Entity>Dto } from './dto/create-<entity>.dto';
-import { Query<Entity>Dto } from './dto/query-<entity>.dto';
-import { AuditService } from '../audit/audit.service';
-
-@Injectable()
-export class <Feature>Service {
-  private readonly logger = new Logger(<Feature>Service.name);
-
-  constructor(
-    @InjectRepository(<Entity>)
-    private readonly repo: Repository<<Entity>>,
-    private readonly auditService: AuditService,
-  ) {}
-
-  async create(
-    dto: Create<Entity>Dto,
-    userSub: string,
-    ip: string,
-  ): Promise<<Entity>> {
-    const existing = await this.repo.findOneBy({
-      ownerKey: dto.ownerKey,
-      nombre: dto.nombre,
-    });
-    if (existing) {
-      // ConflictException → 409. El HttpExceptionFilter lo formatea.
-      throw new ConflictException(
-        `Ya existe un registro "${dto.nombre}" para ${dto.ownerKey}.`,
-      );
-    }
-
-    const saved = await this.repo.save(
-      this.repo.create({
-        ...dto,
-        status: dto.status ?? <ENTITY>_STATUS.DRAFT,
-        createdBySub: userSub,
-      }),
-    );
-
-    await this.auditService.logEvent(
-      userSub,
-      'CREATE_<ENTITY>',
-      ip,
-      `Registro ${saved.id} creado para ${dto.ownerKey}`,
-    );
-
-    return saved;
-  }
-
-  async findById(id: string): Promise<<Entity>> {
-    const row = await this.repo.findOne({ where: { id } });
-    if (!row) {
-      throw new NotFoundException(`Registro ${id} no encontrado.`);
-    }
-    return row;
-  }
-
-  async list(
-    query: Query<Entity>Dto,
-  ): Promise<{ data: <Entity>[]; count: number }> {
-    const [data, count] = await this.repo.findAndCount({
-      where: query.ownerKey ? { ownerKey: query.ownerKey } : {},
-      order: { createdAt: 'DESC' },
-      take: query.limit ?? 20,
-      skip: query.offset ?? 0,
-    });
-    return { data, count };
-  }
-
-  async close(id: string, userSub: string, ip: string): Promise<<Entity>> {
-    const row = await this.findById(id);
-    if (row.status === <ENTITY>_STATUS.CLOSED) {
-      throw new ConflictException('El registro ya está cerrado.');
-    }
-    row.status = <ENTITY>_STATUS.CLOSED;
-    const saved = await this.repo.save(row);
-    await this.auditService.logEvent(
-      userSub,
-      'CLOSE_<ENTITY>',
-      ip,
-      `Registro ${id} cerrado`,
-    );
-    return saved;
-  }
-}
-```
-
-```ts
-// src/modules/<feature>/<feature>.controller.ts
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Ip,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
-import {
-  CurrentUser,
-  CurrentUserPayload,
-} from '../../common/decorators/current-user.decorator';
-import { <Feature>Service } from './<feature>.service';
-import { Create<Entity>Dto } from './dto/create-<entity>.dto';
-import { Query<Entity>Dto } from './dto/query-<entity>.dto';
-
-// @ApiTags agrupa las rutas en la UI de Swagger.
-@ApiTags('<Feature>')
-// El prefijo de todas las rutas del controlador.
-@Controller('<feature>')
-// @ApiBearerAuth hace que Swagger muestre el candado y mande el token.
-// NO protege nada por sí solo: la protección viene del APP_GUARD global.
-@ApiBearerAuth()
-// @Roles a nivel de clase: default para todos los métodos.
-// Cualquier método puede sobrescribirlo con su propio @Roles.
-@Roles('<ROL_A>', '<ROL_B>')
-export class <Feature>Controller {
-  constructor(private readonly service: <Feature>Service) {}
-
-  @Get()
-  @ApiOperation({ summary: 'Listar registros con filtro y paginación' })
-  @ApiResponse({ status: 200, description: 'Listado paginado.' })
-  async list(@Query() query: Query<Entity>Dto) {
-    return this.service.list(query);
-  }
-
-  @Get(':id')
-  @ApiOperation({ summary: 'Obtener un registro por id' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.service.findById(id);
-  }
-
-  @Post()
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Crear un registro' })
-  async create(
-    @Body() dto: Create<Entity>Dto,
-    @CurrentUser() user: CurrentUserPayload,
-    @Ip() ip: string,
-  ) {
-    return this.service.create(dto, user.sub, ip);
-  }
-
-  @Patch(':id/close')
-  // Sobrescribe el @Roles de la clase: cerrar es solo de administradores.
-  @Roles('<ROL_B>')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cerrar un registro (<ROL_B>)' })
-  async close(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: CurrentUserPayload,
-    @Ip() ip: string,
-  ) {
-    return this.service.close(id, user.sub, ip);
-  }
-}
-```
-
-```ts
-// src/modules/<feature>/<feature>.module.ts
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { <Entity> } from './<entity>.entity';
-import { <Feature>Service } from './<feature>.service';
-import { <Feature>Controller } from './<feature>.controller';
-import { AuditModule } from '../audit/audit.module';
-
-@Module({
-  // forFeature registra la entidad en el DataSource (gracias a
-  // autoLoadEntities) y hace inyectable Repository<<Entity>>.
-  imports: [TypeOrmModule.forFeature([<Entity>]), AuditModule],
-  controllers: [<Feature>Controller],
-  providers: [<Feature>Service],
-  // Exportar el servicio permite que otros módulos lo inyecten.
-  // Exportar TypeOrmModule permite que otros inyecten Repository<<Entity>>
-  // sin repetir forFeature.
-  exports: [<Feature>Service, TypeOrmModule],
-})
-export class <Feature>Module {}
-```
-
-### 12.3 Cómo registrar el módulo
-
-Añadirlo al array `imports` de `src/app.module.ts`:
-
-```ts
-// src/app.module.ts (fragmento)
-import { <Feature>Module } from './modules/<feature>/<feature>.module';
-
-@Module({
-  imports: [
-    // ... módulos existentes
-    <Feature>Module,
-  ],
-})
-export class AppModule {}
-```
-
-**Dependencias circulares.** Si `A` importa `B` y `B` importa `A`, Nest falla con `Nest can't resolve dependencies`. La solución es `forwardRef` **en los dos lados**:
-
-```ts
-// módulo A
-imports: [forwardRef(() => BModule)]
-// módulo B
-imports: [forwardRef(() => AModule)]
-// y en el constructor del servicio que inyecta al otro:
-constructor(@Inject(forwardRef(() => BService)) private b: BService) {}
-```
-
-> El original tiene ciclos entre `DocumentModule` ↔ `ExtractionModule` y `ExtractionModule` ↔ `EvaluationsModule`. Funcionan, pero **un ciclo es una señal de que las responsabilidades están mal repartidas**. En el proyecto nuevo, preferir extraer la parte compartida a un tercer módulo antes de usar `forwardRef`.
-
-### 12.4 Cómo proteger rutas
-
-Con el `JwtAuthGuard` global (corrección **19.1**), la tabla de decisión es:
-
-| Lo que se quiere | Cómo se escribe |
-|---|---|
-| Ruta pública | `@Public()` sobre el método o el controlador |
-| Solo autenticado, cualquier rol | nada (es el default) |
-| Un rol específico | `@Roles('<ROL_B>')` |
-| Varios roles (OR) | `@Roles('<ROL_A>', '<ROL_B>')` |
-| Default de controlador + excepción | `@Roles(...)` en la clase y `@Roles(...)` en el método |
-| Saltarse el rate limit | `@SkipThrottle()` de `@nestjs/throttler` |
-| Rate limit distinto | `@Throttle({ default: { limit: 5, ttl: 60000 } })` |
-
-> ⚠️ **Advertencia crítica.** Con guards globales, **`@UseGuards(JwtAuthGuard)` en un controlador NO es necesario y puede ser dañino**: el guard se instanciaría dos veces, la estrategia correría dos veces y la consulta de bloqueo se duplicaría. Si se adopta la corrección 19.1, eliminar **todos** los `@UseGuards(JwtAuthGuard, RolesGuard)` del código.
-
-### 12.5 Cómo documentar con Swagger
-
-| Decorador | Dónde | Para qué |
-|---|---|---|
-| `@ApiTags('Grupo')` | clase | Agrupa en la UI |
-| `@ApiBearerAuth()` | clase o método | Muestra el candado y envía el token desde la UI |
-| `@ApiOperation({ summary })` | método | Título de la operación |
-| `@ApiResponse({ status, description })` | método | Documenta cada código de respuesta |
-| `@ApiQuery({ name, required })` | método | Query params que no vienen de un DTO |
-| `@ApiProperty({ example, description })` | propiedad de DTO | Campo obligatorio |
-| `@ApiPropertyOptional({ ... })` | propiedad de DTO | Campo opcional |
-
-**Reglas:**
-- Todo campo de un DTO lleva `@ApiProperty` o `@ApiPropertyOptional` con un `example` **realista**. Los ejemplos son lo que la gente copia.
-- Toda ruta lleva `@ApiOperation` con `summary` en español.
-- Swagger vive en `/api` y **solo en local** (no se monta en Lambda, ver 8.2).
-
-### 12.6 Cómo validar DTOs
-
-La validación la hace el `ValidationPipe` global configurado así:
-
-```ts
-new ValidationPipe({
-  whitelist: true,            // elimina del payload lo que no está en el DTO
-  forbidNonWhitelisted: true, // y además responde 400 si llega algo de más
-  transform: true,            // instancia el DTO y aplica @Type()
-})
-```
-
-Consecuencias que hay que conocer:
-
-1. **`forbidNonWhitelisted: true` rechaza campos desconocidos con `400`.** Es estricto a propósito: detecta errores de tipeo del cliente. Pero implica que **añadir un campo al frontend antes que al DTO rompe la petición entera**. Coordinar los cambios.
-2. **`transform: true` es lo que hace funcionar `@Type(() => Number)`** en los query params. Sin él, `limit` llegaría como `"20"` y `@IsInt()` fallaría.
-3. **Las propiedades sin ningún decorador de `class-validator` se eliminan** por `whitelist: true`. Un campo del DTO sin decorador nunca llega al controlador. Es la causa más común de "mi campo llega `undefined`".
-
-Decoradores más usados:
-
-| Decorador | Uso |
-|---|---|
-| `@IsString()` `@IsInt()` `@IsBoolean()` `@IsNumber()` | Tipo |
-| `@IsNotEmpty()` | No vacío |
-| `@IsOptional()` | Campo opcional. **Debe ir antes** de los demás validadores |
-| `@IsEmail()` | Correo |
-| `@IsUUID()` | UUID |
-| `@IsIn([...])` | Enumeración |
-| `@Matches(/regex/, { message })` | Formato |
-| `@MinLength` `@MaxLength` `@Min` `@Max` | Rangos |
-| `@IsNumberString()` | **Decimal como string** (para dinero) |
-| `@IsDateString()` | Fecha ISO |
-| `@ValidateNested()` + `@Type(() => Dto)` | Objetos anidados |
-| `@Type(() => Number)` | Conversión de query param |
-
-**Todo mensaje de error va en español**, como `{ message: '...' }` en el segundo argumento del decorador. Es lo que acaba en el array `message` de la respuesta de error (9.1).
-
-### 12.7 Ejemplo real tomado del repositorio
-
-🟦 **EJEMPLO DE DOMINIO** — se incluye para ver el patrón aplicado de verdad, con todos los decoradores en su sitio. **No copiar la lógica; copiar la forma.**
-
-> Este bloque es la **única** transcripción del documento que conserva los nombres propios del original sin sustituir, precisamente para que se vea cómo es el código real. `'Riesgos'` es el valor de `<ROL_A>` y `'Admin'` el de `<ROL_B>`. En tu proyecto, usa tus propios nombres de grupo.
-
-```ts
-// EJEMPLO — src/modules/companies/companies.controller.ts del repositorio original
-import {
-  Controller, Get, Post, Body, Query, Param,
-  UseGuards, HttpCode, HttpStatus,
-} from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { CompaniesService } from './companies.service';
-import { CreateCompanyDto } from './dto/create-company.dto';
-import { toCompanySummary } from '../evaluations/evaluations.mapper';
-
-@ApiTags('Empresas')
-@Controller('companies')
-@UseGuards(JwtAuthGuard, RolesGuard)   // 🟥 eliminar con la corrección 19.1
-@ApiBearerAuth()
-export class CompaniesController {
-  constructor(private readonly companiesService: CompaniesService) {}
-
-  @Get('portfolio')
-  @Roles('Riesgos', 'Admin')
-  @ApiOperation({ summary: 'Cartera: última evaluación por empresa' })
-  async portfolio() {
-    return this.companiesService.listPortfolio();
-  }
-
-  @Get('search')
-  @Roles('Riesgos', 'Admin')
-  @ApiOperation({ summary: 'Buscar empresas por RUC o razón social' })
-  @ApiQuery({ name: 'q', required: true })
-  @ApiQuery({ name: 'limit', required: false })
-  async search(@Query('q') q: string, @Query('limit') limit?: string) {
-    const parsedLimit = limit ? parseInt(limit, 10) : 20;
-    const companies = await this.companiesService.search(q, parsedLimit);
-    return companies.map(toCompanySummary);   // ← mapper entidad → DTO
-  }
-
-  @Post()
-  @Roles('Riesgos', 'Admin')
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Registrar una empresa' })
-  async create(@Body() dto: CreateCompanyDto) {
-    const company = await this.companiesService.create({ /* ... */ });
-    return toCompanySummary(company);
-  }
-
-  @Post('seed-top10')
-  @Roles('Admin')                        // ← sobrescribe el default del método hermano
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Sembrar catálogo (Admin)' })
-  async seedTop10() {
-    return this.companiesService.seedTopCompanies(20000);
-  }
-}
-```
-
-**Qué imitar de este ejemplo:**
-- Un `@Roles` por método, con `'Admin'` solo donde la operación es destructiva o masiva.
-- `@ApiQuery` para params que no vienen de un DTO.
-- Un **mapper** (`toCompanySummary`) para no filtrar columnas internas de la entidad.
-
-**Qué NO imitar:**
-- `@UseGuards(JwtAuthGuard, RolesGuard)` repetido (corrección 19.1).
-- `@Query('q') q: string` sin DTO ni validación: `parseInt(limit, 10)` a mano, sin `@Min`/`@Max`, acepta `limit=NaN`. Usar un `QueryDto` como en 12.2.
-
-Y el servicio correspondiente, por el patrón de consulta:
-
-```ts
-// EJEMPLO — fragmento de src/modules/companies/companies.service.ts
-async search(query: string, limit = 20): Promise<Company[]> {
-  const q = query.trim();
-  if (!q) {
-    return [];
-  }
-
-  // Si parece una clave exacta, buscar por PK (una consulta indexada).
-  if (/^\d{11}$/.test(q)) {
-    const exact = await this.companyRepo.findOne({
-      where: { ruc: q },
-      relations: ['economicGroup'],
-    });
-    return exact ? [exact] : [];
-  }
-
-  // Si no, búsqueda por texto, SIEMPRE con `take` acotado.
-  return this.companyRepo.find({
-    where: { razonSocial: ILike(`%${q}%`) },
-    take: Math.min(limit, 20),
-    order: { rankingTop10Mil: 'ASC' },
-    relations: ['economicGroup'],
-  });
-}
-```
-
-Lo que vale la pena imitar: **detectar la clave exacta antes de hacer un `LIKE`**, y **acotar siempre el `take`** con un tope duro en el servidor (`Math.min(limit, 20)`), no confiar en el cliente.
-
----
-
-## 13. Documentos y S3
-
-### 13.1 El flujo completo
-
-```
-┌────────┐                                         ┌────────┐      ┌────┐
-│Frontend│                                         │  API   │      │ S3 │
-└───┬────┘                                         └───┬────┘      └─┬──┘
-    │ 1. calcular SHA-256 del archivo en el navegador  │             │
-    │────────────────────────────────────────────────► │             │
-    │    POST /documents/presign                        │             │
-    │    { ownerKey, documentType, fileName, sha256 }   │             │
-    │                                                   │             │
-    │                       2. construir clave canónica │             │
-    │                          raw/{ownerKey}/{tipo}/   │             │
-    │                              {sha256}-{sufijo}.pdf│             │
-    │                       3. ¿ya existe ese sha256?   │             │
-    │                          → sí: devolver el doc    │             │
-    │                            existente, reused=true │             │
-    │                       4. firmar PUT (900 s)       │─────────────►
-    │                       5. INSERT documents          │             │
-    │ ◄─────────────────────────────────────────────────│             │
-    │    { uploadUrl, key, documentId, storage, reused } │             │
-    │                                                   │             │
-    │ 6. PUT uploadUrl  (el binario va DIRECTO a S3,    │             │
-    │    nunca pasa por la Lambda)                       │────────────►
-    │                                                   │             │
-    │                                           7. evento s3:ObjectCreated:*
-    │                                              sobre el prefijo raw/
-    │                                                   │             ▼
-    │                                          ┌────────────────────────┐
-    │                                          │ Lambda ingestWorker    │
-    │                                          │ · findByS3Key(key)     │
-    │                                          │ · descarga y procesa   │
-    │                                          │ · UPDATE status        │
-    │                                          └────────────────────────┘
-    │ 8. GET /documents?ownerKey=…  (polling del estado)│
-    │────────────────────────────────────────────────► │
-```
-
-**Las tres decisiones de diseño que importan:**
-
-1. **El binario nunca pasa por la Lambda.** Una URL prefirmada permite que el navegador suba directo a S3. Eso evita el límite de 6 MB de payload de Lambda, el timeout de 30 s de API Gateway y el coste de transferir el archivo dos veces.
-2. **El SHA-256 lo calcula el cliente y es parte de la clave.** Convierte el almacenamiento en *content-addressed*: el mismo archivo produce siempre la misma clave, la deduplicación es una consulta por índice, y se puede verificar la integridad al recibirlo.
-3. **El procesamiento es asíncrono, disparado por evento S3.** La Lambda HTTP solo orquesta; el trabajo pesado lo hace un worker con 900 s de timeout.
-
-### 13.2 Convención de claves S3
-
-🟩 **NÚCLEO** — adaptado del original, con la validación parametrizada.
-
-```ts
-// src/modules/documents/document-keys.ts
-/**
- * Clave canónica de un documento en S3.
- *
- *   raw/{ownerKey}/{tipo}/{sha256}-{sufijo}.pdf
- *
- * · raw/        → original inmutable. Nunca se sobrescribe.
- * · quarantine/ → archivos rechazados (clave inválida, duplicado, parser roto).
- *
- * El `sufijo` aleatorio de 8 hex permite subir el MISMO archivo asociado a dos
- * propietarios distintos sin colisión de clave, manteniendo la deduplicación
- * por (ownerKey, sha256) en la base de datos.
- */
-
-export const DOCUMENT_STATUS = {
-  UPLOADED: 'uploaded',
-  PROCESSING: 'processing',
-  PARSED: 'parsed',
-  FAILED: 'failed',
-  QUARANTINED: 'quarantined',
-} as const;
-
-export type DocumentStatus =
-  (typeof DOCUMENT_STATUS)[keyof typeof DOCUMENT_STATUS];
-
-export const DOCUMENT_TYPES = {
-  TIPO_1: '<DOC_TIPO_1>',
-  TIPO_2: '<DOC_TIPO_2>',
-  TIPO_3: '<DOC_TIPO_3>',
-} as const;
-
-/** Prefijo usado hasta que el worker clasifique el archivo. */
-export const S3_PENDING_DOCUMENT_TYPE = 'pending';
-
-export const PARSER_VERSION = '1.0.0';
-
-/**
- * Ajustar `[A-Z0-9-]{3,32}` a la forma real de <ENTITY_ID> del dominio.
- * En el original era `\d{11}` (RUC peruano).
- */
-export const S3_KEY_PATTERN = new RegExp(
-  `^raw/([A-Z0-9-]{3,32})/(${Object.values(DOCUMENT_TYPES).join('|')}|${S3_PENDING_DOCUMENT_TYPE})/([a-f0-9]{64})(?:-[a-f0-9]{8})?\\.pdf$`,
-);
-
-const UPLOAD_TYPE_ALIASES: Record<string, string> = {
-  '<DOC_TIPO_1>': DOCUMENT_TYPES.TIPO_1,
-  '<DOC_TIPO_2>': DOCUMENT_TYPES.TIPO_2,
-  '<DOC_TIPO_3>': DOCUMENT_TYPES.TIPO_3,
-  pending: S3_PENDING_DOCUMENT_TYPE,
-};
-
-export function normalizeUploadDocumentType(input: string): string {
-  const key = input.trim().toLowerCase();
-  const mapped = UPLOAD_TYPE_ALIASES[key];
-  if (!mapped) {
-    throw new Error(`Tipo de documento no soportado: ${input}`);
-  }
-  return mapped;
-}
-
-export function buildDocumentS3Key(
-  ownerKey: string,
-  documentType: string | null | undefined,
-  sha256: string,
-  uniqueSuffix?: string,
-): string {
-  const tipo = documentType?.trim()
-    ? normalizeUploadDocumentType(documentType)
-    : S3_PENDING_DOCUMENT_TYPE;
-  const suffix =
-    uniqueSuffix ?? Math.random().toString(16).slice(2, 10).padEnd(8, '0');
-  return `raw/${ownerKey}/${tipo}/${sha256}-${suffix}.pdf`;
-}
-
-export function toDocumentEntityType(s3Tipo: string): string | null {
-  if (s3Tipo === S3_PENDING_DOCUMENT_TYPE) {
-    return null;
-  }
-  return s3Tipo;
-}
-```
-
-**Lo no obvio:**
-
-- **El tipo `pending` existe** para el caso en que el cliente no sabe qué clase de documento está subiendo. El worker lo clasifica después. La entidad guarda `documentType = null` hasta entonces (`toDocumentEntityType`).
-- **El servidor construye la clave, no el cliente.** El cliente envía `ownerKey`, `documentType` y `sha256`; el servidor compone la clave y la valida contra `S3_KEY_PATTERN`. Eso impide que un cliente malicioso escriba en `raw/../../otro-sitio/`.
-- `Math.random().toString(16)` **no es criptográficamente seguro.** Para un sufijo anticolisión es suficiente, pero si se quiere rigor, usar `crypto.randomBytes(4).toString('hex')`.
-
-### 13.3 `DocumentService` — presign y deduplicación
-
-🟩 **NÚCLEO** — transcripción del original, con la lógica de dominio (evaluaciones) eliminada.
-
-```ts
-// src/modules/documents/document.service.ts
-import {
-  Injectable,
-  BadRequestException,
-  NotFoundException,
-  Logger,
-  ServiceUnavailableException,
-} from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import * as crypto from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
-import { Document } from './document.entity';
-import { AuditService } from '../audit/audit.service';
-import {
-  DOCUMENT_STATUS,
-  S3_KEY_PATTERN,
-  toDocumentEntityType,
-} from './document-keys';
-import {
-  createS3Client,
-  localUploadPath,
-  shouldUseLocalDocumentStorage,
-} from '../../config/aws-s3.client';
-
-@Injectable()
-export class DocumentService {
-  private readonly logger = new Logger(DocumentService.name);
-  private readonly s3 = createS3Client();
-  private readonly useLocalStorage = shouldUseLocalDocumentStorage();
-
-  constructor(
-    @InjectRepository(Document)
-    private readonly documentRepository: Repository<Document>,
-    private readonly auditService: AuditService,
-  ) {}
-
-  /** Única puerta de entrada de una clave S3. Rechaza cualquier otra forma. */
-  validateS3Key(key: string): { ownerKey: string; tipo: string; sha256: string } {
-    const match = key.match(S3_KEY_PATTERN);
-    if (!match) {
-      throw new BadRequestException(
-        'Clave S3 inválida. Formato: raw/{ownerKey}/{tipo}/{sha256}.pdf',
-      );
-    }
-    return { ownerKey: match[1], tipo: match[2], sha256: match[3] };
-  }
-
-  async createPresignedUpload(
-    key: string,
-    filename: string,
-    userSub: string,
-    ip: string,
-  ): Promise<{
-    url: string;
-    document: Document;
-    storage: 's3' | 'local';
-    reused?: boolean;
-  }> {
-    const { ownerKey, tipo, sha256 } = this.validateS3Key(key);
-
-    // Deduplicación por (propietario, hash): si el mismo archivo ya se subió
-    // para el mismo propietario, se devuelve el registro existente y una URL
-    // vacía. El cliente ve `reused: true` y se salta el PUT.
-    const existing = await this.documentRepository.findOne({
-      where: { companyId: ownerKey, sha256 },
-    });
-    if (existing) {
-      return {
-        url: '',
-        document: existing,
-        storage: this.useLocalStorage ? 'local' : 's3',
-        reused: true,
-      };
-    }
-
-    let url = '';
-    let storage: 's3' | 'local' = 'local';
-
-    if (this.useLocalStorage) {
-      this.logger.warn(
-        `Sin credenciales AWS: carga local para ${key} (no se firma S3)`,
-      );
-    } else {
-      try {
-        const command = new PutObjectCommand({
-          Bucket: process.env.AWS_S3_BUCKET_NAME,
-          Key: key,
-        });
-        // 900 s = 15 min. Suficiente para una subida lenta, corto para que una
-        // URL filtrada no sea útil mucho tiempo.
-        url = await getSignedUrl(this.s3, command, { expiresIn: 900 });
-        storage = 's3';
-      } catch (error) {
-        // En local y dev, caer a almacenamiento en disco en vez de fallar.
-        // En Lambda o en prod, fallar en voz alta.
-        if (
-          !process.env.AWS_LAMBDA_FUNCTION_NAME &&
-          process.env.NODE_ENV !== 'prod'
-        ) {
-          this.logger.warn(
-            `No se pudo firmar la carga a S3 (${error instanceof Error ? error.message : error}). Fallback automático a almacenamiento local en disco para ${key}.`,
-          );
-          storage = 'local';
-          url = '';
-        } else {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new ServiceUnavailableException(
-            `No se pudo firmar la carga a S3 (${detail}). En local, configurá un perfil AWS o usá el modo de almacenamiento en disco.`,
-          );
-        }
-      }
-    }
-
-    const document = await this.documentRepository.save({
-      filename,
-      s3Key: key,
-      companyId: ownerKey,
-      sha256,
-      documentType: toDocumentEntityType(tipo),
-      status: DOCUMENT_STATUS.UPLOADED,
-      uploadedBySub: userSub,
-    });
-
-    await this.auditService.logEvent(
-      userSub,
-      'GENERATE_PRESIGNED_URL',
-      ip,
-      `Archivo: ${key}`,
-    );
-
-    return { url, document, storage };
-  }
-
-  /** Camino de desarrollo local: el binario llega por PUT al backend. */
-  async storeLocalUpload(id: string, buffer: Buffer): Promise<Document> {
-    if (process.env.AWS_LAMBDA_FUNCTION_NAME) {
-      throw new BadRequestException(
-        'Carga local no disponible en Lambda: usá la URL prefirmada de S3',
-      );
-    }
-    const document = await this.findById(id);
-    if (!buffer.length) {
-      throw new BadRequestException('El archivo está vacío');
-    }
-    // Verificación de integridad: el hash recibido debe coincidir con el
-    // declarado al presignar. Si no, el cliente mintió o el archivo se corrompió.
-    const digest = crypto.createHash('sha256').update(buffer).digest('hex');
-    if (document.sha256 && digest !== document.sha256) {
-      throw new BadRequestException(
-        'El SHA-256 del archivo no coincide con el declarado al presignar',
-      );
-    }
-    const dest = localUploadPath(document.s3Key);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, buffer);
-    return document;
-  }
-
-  async listByOwner(ownerKey: string): Promise<Document[]> {
-    return this.documentRepository.find({
-      where: { companyId: ownerKey },
-      order: { createdAt: 'DESC' },
-    });
-  }
-
-  async findById(id: string): Promise<Document> {
-    const doc = await this.documentRepository.findOne({ where: { id } });
-    if (!doc) {
-      throw new NotFoundException('Documento no encontrado');
-    }
-    return doc;
-  }
-
-  async findBySha256(sha256: string): Promise<Document | null> {
-    return this.documentRepository.findOne({ where: { sha256 } });
-  }
-
-  /** Lo usa el worker: traduce la clave del evento S3 a un registro. */
-  async findByS3Key(s3Key: string): Promise<Document | null> {
-    return this.documentRepository.findOne({ where: { s3Key } });
-  }
-
-  async updateDocument(id: string, data: Partial<Document>): Promise<Document> {
-    await this.documentRepository.update(id, data);
-    return this.findById(id);
-  }
-
-  /** Lee de disco si existe (dev), y si no de S3. Unifica los dos caminos. */
-  async downloadBuffer(s3Key: string): Promise<Buffer> {
-    const localPath = localUploadPath(s3Key);
-    if (fs.existsSync(localPath)) {
-      return fs.readFileSync(localPath);
-    }
-
-    const command = new GetObjectCommand({
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
-      Key: s3Key,
-    });
-    const response = await this.s3.send(command);
-    const bytes = await response.Body?.transformToByteArray();
-    if (!bytes) {
-      throw new BadRequestException('No se pudo descargar el documento de S3');
-    }
-    return Buffer.from(bytes);
-  }
-
-  async getFileForDownload(
-    id: string,
-    userSub: string,
-    ip: string,
-  ): Promise<{ buffer: Buffer; filename: string; contentType: string }> {
-    const document = await this.findById(id);
-    let buffer: Buffer;
-    try {
-      buffer = await this.downloadBuffer(document.s3Key);
-    } catch {
-      throw new NotFoundException('No hay archivo para descargar.');
-    }
-    if (!buffer.length) {
-      throw new NotFoundException('El archivo está vacío');
-    }
-
-    // Toda descarga del binario original queda auditada. Requisito de PII.
-    await this.auditService.logEvent(
-      userSub,
-      'DOWNLOAD_DOCUMENT',
-      ip,
-      `Documento ${document.id} (${document.filename})`,
-    );
-
-    return {
-      buffer,
-      filename: this.downloadFilename(document.filename),
-      contentType: 'application/pdf',
-    };
-  }
-
-  /** Sanea el nombre para la cabecera Content-Disposition. */
-  private downloadFilename(raw: string): string {
-    const base = (raw || 'documento').replace(/[/\\?%*:|"<>]/g, '_').trim();
-    if (/\.pdf$/i.test(base)) {
-      return base;
-    }
-    return `${base}.pdf`;
-  }
-
-  async quarantineDocument(id: string): Promise<Document> {
-    await this.findById(id);
-    return this.updateDocument(id, {
-      status: DOCUMENT_STATUS.QUARANTINED,
-      validationStatus: 'MANUAL_REVIEW',
-      errorMessage: 'Documento enviado a cuarentena manualmente',
-    });
-  }
-}
-```
-
-> ⚠️ **Carrera en la deduplicación.** `findOne` + `save` no es atómico: dos peticiones simultáneas con el mismo `(ownerKey, sha256)` crean dos filas. **Corrección:** añadir una constraint única en la migración —
-> ```sql
-> CREATE UNIQUE INDEX IF NOT EXISTS "UQ_documents_owner_sha"
->   ON "documents" ("companyId", "sha256")
->   WHERE "sha256" IS NOT NULL;
-> ```
-> — y capturar el error `23505` de PostgreSQL en el `save` para devolver el registro existente.
-
-### 13.4 `DocumentModule` y el middleware `raw`
-
-🟩 **NÚCLEO** — transcripción del original, sin las dependencias de dominio.
-
-```ts
-// src/modules/documents/document.module.ts
-import {
-  MiddlewareConsumer,
-  Module,
-  NestModule,
-  RequestMethod,
-} from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { raw } from 'express';
-import { Document } from './document.entity';
-import { DocumentService } from './document.service';
-import { DocumentController } from './document.controller';
-import { AuditModule } from '../audit/audit.module';
-
-@Module({
-  imports: [TypeOrmModule.forFeature([Document]), AuditModule],
-  controllers: [DocumentController],
-  providers: [DocumentService],
-  exports: [DocumentService, TypeOrmModule],
-})
-export class DocumentModule implements NestModule {
-  configure(consumer: MiddlewareConsumer) {
-    // El parser JSON por defecto de Nest destrozaría un PDF. Este middleware
-    // lo sustituye por `express.raw` SOLO en las rutas que reciben binario,
-    // dejando el Buffer en `req.body`.
-    //
-    // `type: '*/*'` acepta cualquier Content-Type, porque el navegador manda
-    // `application/pdf` y curl manda `application/octet-stream`.
-    // `limit: '50mb'` sube el tope por defecto de Express (100 kb).
-    consumer.apply(raw({ type: '*/*', limit: '50mb' })).forRoutes({
-      path: 'documents/:id/content',
-      method: RequestMethod.PUT,
-    });
-  }
-}
-```
-
-```ts
-// src/modules/documents/dto/presign-document.dto.ts
-import { IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-
-export class PresignDocumentDto {
-  @ApiProperty({ example: 'CLI-00042' })
-  @IsString()
-  @IsNotEmpty()
-  @Matches(/^[A-Z0-9-]{3,32}$/)   // ← ajustar a la forma de <ENTITY_ID>
-  ownerKey: string;
-
-  @ApiPropertyOptional({
-    example: '<DOC_TIPO_1>',
-    description:
-      'Opcional. Si se omite, la clave usa pending/ y el worker clasifica.',
-  })
-  @IsOptional()
-  @IsString()
-  documentType?: string;
-
-  @ApiProperty({ example: 'contrato.pdf' })
-  @IsString()
-  @IsNotEmpty()
-  fileName: string;
-
-  @ApiProperty({ example: 'a'.repeat(64) })
-  @IsString()
-  @IsNotEmpty()
-  @Matches(/^[a-f0-9]{64}$/)
-  sha256: string;
-}
-```
-
-```ts
-// src/modules/documents/document.controller.ts
-import {
-  Controller, Get, Post, Put, Body, Param, Query, Req, Res,
-  Ip, HttpCode, HttpStatus, BadRequestException, StreamableFile,
-} from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
-import {
-  CurrentUser,
-  CurrentUserPayload,
-} from '../../common/decorators/current-user.decorator';
-import { DocumentService } from './document.service';
-import { PresignDocumentDto } from './dto/presign-document.dto';
-import { buildDocumentS3Key } from './document-keys';
-import type { Response } from 'express';
-
-@ApiTags('Documentos')
-@Controller('documents')
-@ApiBearerAuth()
-@Roles('<ROL_A>', '<ROL_B>')
-export class DocumentController {
-  constructor(private readonly documentService: DocumentService) {}
-
-  @Post('presign')
-  @ApiOperation({ summary: 'Generar URL prefirmada para carga' })
-  async presign(
-    @Body() dto: PresignDocumentDto,
-    @CurrentUser() user: CurrentUserPayload,
-    @Ip() ip: string,
-  ) {
-    let key: string;
-    try {
-      key = buildDocumentS3Key(
-        dto.ownerKey,
-        dto.documentType,
-        dto.sha256.toLowerCase(),
-      );
-    } catch {
-      throw new BadRequestException(
-        `Tipo de documento no soportado: ${dto.documentType}`,
-      );
-    }
-    const result = await this.documentService.createPresignedUpload(
-      key,
-      dto.fileName,
-      user.sub,
-      ip,
-    );
-    return {
-      uploadUrl: result.url,
-      key,
-      documentId: result.document.id,
-      storage: result.storage,
-      reused: result.reused ?? false,
-    };
-  }
-
-  @Put(':id/content')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Subir el binario al backend (desarrollo local)' })
-  async uploadContent(
-    @Param('id') id: string,
-    // `req.body` lo llena el middleware `raw` del módulo; `req.rawBody` lo
-    // llena `NestFactory.create(..., { rawBody: true })`. Se leen los dos
-    // porque según el camino de arranque está uno u otro.
-    @Req() req: { body?: Buffer; rawBody?: Buffer },
-  ) {
-    const payload = req.body ?? req.rawBody;
-    if (!payload?.length) {
-      throw new BadRequestException(
-        'No se recibió el archivo. Enviá el binario en el cuerpo de la petición.',
-      );
-    }
-    await this.documentService.storeLocalUpload(id, Buffer.from(payload));
-  }
-
-  @Get()
-  @ApiOperation({ summary: 'Listar documentos por propietario' })
-  @ApiQuery({ name: 'ownerKey', required: true })
-  async list(@Query('ownerKey') ownerKey?: string) {
-    if (!ownerKey) {
-      return { data: [], count: 0 };
-    }
-    const documents = await this.documentService.listByOwner(ownerKey);
-    return { data: documents, count: documents.length };
-  }
-
-  @Get(':id/content')
-  // Descarga del binario original: SOLO roles con permiso sobre PII.
-  @Roles('<ROL_A>', '<ROL_B>')
-  @ApiOperation({ summary: 'Descargar el archivo original' })
-  async downloadContent(
-    @Param('id') id: string,
-    @CurrentUser() user: CurrentUserPayload,
-    @Ip() ip: string,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const file = await this.documentService.getFileForDownload(
-      id,
-      user.sub,
-      ip,
-    );
-    res.set({
-      'Content-Type': file.contentType,
-      'Content-Disposition': `attachment; filename="${file.filename}"`,
-    });
-    // StreamableFile evita cargar el Buffer entero en memoria en la respuesta.
-    return new StreamableFile(file.buffer);
-  }
-
-  @Post(':id/quarantine')
-  @Roles('<ROL_B>')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Enviar documento a cuarentena' })
-  async quarantine(@Param('id') id: string) {
-    return this.documentService.quarantineDocument(id);
-  }
-}
-```
-
-**`@Res({ passthrough: true })`** es la forma correcta de fijar cabeceras sin tomar el control de la respuesta: Nest sigue encargándose de serializar el valor devuelto. Sin `passthrough: true`, devolver un valor no haría nada y la petición quedaría colgada.
-
-### 13.5 Diseño del worker asíncrono
-
-🟩 **NÚCLEO** — adaptado del original.
-
-```ts
-// src/lambda-ingest.ts
-import { NestFactory } from '@nestjs/core';
-import { hydrateSsmSecrets } from './config/hydrate-ssm-secrets';
-import { AppModule } from './app.module';
-import { IngestService } from './modules/ingest/ingest.service';
-import { DocumentService } from './modules/documents/document.service';
-import type { S3Event, Handler } from 'aws-lambda';
-
-// Igual que en lambda.ts: la caché a nivel de módulo evita reconstruir el
-// contexto de Nest en cada invocación del mismo contenedor.
-let cachedHandler: ((event: S3Event) => Promise<void>) | null = null;
-
-async function bootstrapIngestHandler() {
-  await hydrateSsmSecrets();
-  // createApplicationContext: contexto de DI SIN servidor HTTP. Es lo correcto
-  // para un worker: no hay rutas, controladores ni middleware que montar.
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    logger: ['error', 'warn', 'log'],
-  });
-
-  // NOTA: aquí NO se corren migraciones (corrección 19.2).
-
-  const ingestService = app.get(IngestService);
-  const documentService = app.get(DocumentService);
-
-  return async (event: S3Event) => {
-    for (const record of event.Records) {
-      // S3 entrega la clave URL-encoded y con '+' en lugar de espacio.
-      // Sin esta normalización, cualquier clave con caracteres especiales
-      // no encuentra su registro en la base.
-      const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
-      console.log(`Procesando objeto S3: ${key}`);
-
-      const document = await documentService.findByS3Key(key);
-      if (!document) {
-        // Un objeto subido fuera del flujo de presign no tiene registro.
-        // Se avisa y se sigue, en vez de hacer fallar el lote entero.
-        console.warn(`Documento no registrado para clave ${key}`);
-        continue;
-      }
-
-      await ingestService.processDocument(document.id);
-    }
-  };
-}
-
-export const handler: Handler = async (event: S3Event) => {
-  if (!cachedHandler) {
-    cachedHandler = await bootstrapIngestHandler();
-  }
-  await cachedHandler(event);
-  return { statusCode: 200, body: 'OK' };
-};
-```
-
-**Esqueleto del `IngestService`:**
-
-```ts
-// src/modules/ingest/ingest.service.ts
-import { Injectable, Logger } from '@nestjs/common';
-import * as crypto from 'crypto';
-import { DocumentService } from '../documents/document.service';
-import { DOCUMENT_STATUS, PARSER_VERSION } from '../documents/document-keys';
-
-@Injectable()
-export class IngestService {
-  private readonly logger = new Logger(IngestService.name);
-
-  constructor(private readonly documents: DocumentService) {}
-
-  async processDocument(documentId: string) {
-    const doc = await this.documents.findById(documentId);
-
-    // Idempotencia: el mismo evento S3 puede entregarse más de una vez.
-    if (doc.status === DOCUMENT_STATUS.PARSED) {
-      this.logger.log(`Documento ${documentId} ya procesado. Omitido.`);
-      return doc;
-    }
-
-    await this.documents.updateDocument(documentId, {
-      status: DOCUMENT_STATUS.PROCESSING,
-    });
-
-    try {
-      const buffer = await this.documents.downloadBuffer(doc.s3Key);
-
-      // Verificación de integridad contra el hash declarado al presignar.
-      const digest = crypto.createHash('sha256').update(buffer).digest('hex');
-      if (doc.sha256 && digest !== doc.sha256) {
-        return this.documents.updateDocument(documentId, {
-          status: DOCUMENT_STATUS.QUARANTINED,
-          validationStatus: 'HASH_MISMATCH',
-          errorMessage: `Hash recibido ${digest} ≠ declarado ${doc.sha256}`,
-        });
-      }
-
-      // ---- Aquí va el procesamiento específico del dominio ----
-      // const parsed = await this.parser.parse(buffer);
-      // await this.staging.persist(documentId, parsed);
-      // ---------------------------------------------------------
-
-      return this.documents.updateDocument(documentId, {
-        status: DOCUMENT_STATUS.PARSED,
-        validationStatus: 'OK',
-        parserVersion: PARSER_VERSION,
-        extractedAt: new Date(),
-        errorMessage: null,
-      });
-    } catch (error) {
-      // Un fallo NUNCA deja el documento en 'processing': quedaría colgado.
-      const detail = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Fallo procesando ${documentId}: ${detail}`);
-      return this.documents.updateDocument(documentId, {
-        status: DOCUMENT_STATUS.FAILED,
-        validationStatus: 'PARSER_ERROR',
-        errorMessage: detail.slice(0, 2000),
-      });
-    }
-  }
-}
-```
-
-**Reglas del worker:**
-
-1. **Idempotencia.** S3 garantiza entrega *al menos una vez*. El mismo evento puede llegar dos veces. Comprobar el estado antes de procesar.
-2. **Nunca dejar el estado en `processing`.** Todo camino de salida (éxito, fallo, cuarentena) escribe un estado final. Un documento colgado en `processing` es invisible para el operador.
-3. **El error se guarda en la fila, no solo en el log.** `errorMessage` truncado a 2000 caracteres es lo que la interfaz muestra al usuario.
-4. **Máquina de estados:**
-   ```
-   uploaded ──► processing ──► parsed
-                    │
-                    ├──► failed       (reintentable)
-                    └──► quarantined  (requiere intervención humana)
-   ```
-5. **Trazabilidad por valor.** Si el dominio extrae campos de un documento, guardar por cada valor: `documentId`, `pageNumber`, `fieldAnchor`, `rawText`, `normalizedValue`, `validationStatus`, `parserVersion`. El original tiene una tabla dedicada para eso:
-
-```ts
-// EJEMPLO DE PATRÓN — tabla de trazabilidad por campo extraído
-@Entity('fact_field_extractions')
-export class FactFieldExtraction {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column()
-  documentId: string;
-
-  @Column()
-  fieldAnchor: string;      // qué campo es
-
-  @Column({ type: 'int', nullable: true })
-  pageNumber: number;       // dónde estaba
-
-  @Column({ type: 'text', nullable: true })
-  rawText: string;          // qué decía literalmente
-
-  @Column({ type: 'text', nullable: true })
-  normalizedValue: string;  // en qué se convirtió
-
-  @Column({ default: 'OK' })
-  validationStatus: string;
-
-  @Column({ nullable: true })
-  parserVersion: string;    // con qué versión de parser
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @ManyToOne(() => Document, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'documentId' })
-  document: Document;
-}
-```
-
-Este patrón permite responder "¿de dónde salió este número?" sin volver a abrir el archivo original. Vale la pena replicarlo en cualquier dominio que extraiga datos de documentos.
-
-### 13.6 Configuración del bucket
-
-- **Un bucket por stage.** No crear buckets adicionales por tipo de documento; usar prefijos.
-- **Versioning activado.** Un `PUT` sobre una clave existente no destruye la versión anterior.
-- **SSE-KMS.** Cifrado en reposo con clave gestionada. Si los documentos contienen PII, es un requisito, no una opción.
-- **Bloqueo de acceso público total.** El acceso es exclusivamente por URL prefirmada.
-- **Política de ciclo de vida** sobre `quarantine/` para que no crezca indefinidamente.
-- **CORS del bucket**, necesario para que el navegador pueda hacer el `PUT` directo:
-  ```json
-  [
-    {
-      "AllowedHeaders": ["*"],
-      "AllowedMethods": ["PUT", "GET"],
-      "AllowedOrigins": ["https://<DOMINIO_APP>", "http://localhost:4200"],
-      "ExposeHeaders": ["ETag"],
-      "MaxAgeSeconds": 3000
-    }
-  ]
-  ```
-  > Olvidar esto produce un error de CORS en el navegador durante el `PUT` que **no** se ve en los logs del backend, porque el backend no interviene.
-
----
-
-## 14. Jobs programados (cron Lambda)
-
-🟩 **NÚCLEO** — patrón extraído del `lambda-tc-sync.ts` del original.
-
-### 14.1 Plantilla del handler
-
-```ts
-// src/lambda-<job>.ts
-import type { Handler } from 'aws-lambda';
-import { NestFactory } from '@nestjs/core';
-import { hydrateSsmSecrets } from './config/hydrate-ssm-secrets';
-import { AppModule } from './app.module';
-import { <Job>Service } from './modules/<feature>/<job>.service';
-
-// Mismo patrón de caché que lambda.ts y lambda-ingest.ts.
-let cached: (() => Promise<{ processed: number }>) | null = null;
-
-async function bootstrap() {
-  await hydrateSsmSecrets();
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    logger: ['error', 'warn', 'log'],
-  });
-
-  // NOTA: aquí NO se corren migraciones (corrección 19.2).
-
-  const service = app.get(<Job>Service);
-  return async () => {
-    const result = await service.run();
-    // El log es la única observabilidad del job. Que diga qué pasó, con números.
-    console.log(`<job>: ${result.processed} registros procesados`);
-    return result;
-  };
-}
-
-export const handler: Handler = async () => {
-  if (!cached) {
-    cached = await bootstrap();
-  }
-  return cached();
-};
-```
-
-### 14.2 Declaración en `serverless.yml`
-
-```yaml
-# serverless.yml (fragmento)
-functions:
-  <job>Sync:
-    handler: dist/lambda-<job>.handler
-    timeout: 30
-    memorySize: 256
-    description: Descripción legible de lo que hace el job
-    events:
-      - schedule:
-          # EventBridge SIEMPRE evalúa el cron en UTC. Si el job tiene que
-          # correr a las 08:00 hora local y el huso es UTC-5, hay que
-          # escribir 13:00 UTC. Dejarlo documentado en `description`.
-          rate: cron(0 13 ? * MON-FRI *)
-          enabled: true
-          description: Ejecución 08:00 hora local (UTC-5), lunes a viernes
-```
-
-**Sintaxis de `cron()` en EventBridge:** `cron(minutos horas día-del-mes mes día-de-la-semana año)`.
-Son **seis** campos (no cinco como el cron de Unix) y exactamente uno de `día-del-mes` / `día-de-la-semana` debe ser `?`.
-
-### 14.3 Reglas para jobs programados
-
-1. **Idempotencia.** Una regla de EventBridge puede dispararse más de una vez. El job debe poder correr dos veces sin duplicar efectos (usar `upsert` con clave natural, no `insert`).
-2. **Acotar el trabajo.** Un job de `timeout: 30` que procesa "todo lo pendiente" acabará fallando cuando lo pendiente crezca. Procesar en lotes con tope, o subir el timeout y la memoria.
-3. **Un `console.log` final con cifras.** Es lo que se busca en CloudWatch cuando alguien pregunta si corrió.
-4. **Exponer el mismo trabajo también como endpoint manual**, protegido por rol. Permite forzar la ejecución sin esperar al cron y facilita las pruebas:
-   ```ts
-   @Post('<job>/sync')
-   @Roles('<ROL_B>')
-   @ApiOperation({ summary: 'Forzar ejecución del job' })
-   async sync() {
-     return this.service.run();
-   }
-   ```
-5. **Alarma de CloudWatch sobre `Errors` de la función.** Un cron que falla en silencio es peor que no tenerlo.
-6. **Incluir la función en el script de despliegue.** Es un error real del original: `deploy-functions.sh` solo publica `main` e `ingestWorker`, de modo que el código del cron **nunca se actualiza** (corrección **19.7**).
-
----
-
-## 15. Testing
-
-### 15.1 Qué existe hoy en el original
-
-🟥 **DEUDA — NO REPLICAR.** El original **no tiene framework de test**. No hay `jest`, ni `jest.config.js`, ni archivos `*.spec.ts`. Lo que hay son **nueve scripts de `ts-node`** que imprimen a consola y salen con código 1 si algo falla:
-
-| Script | Qué hace |
-|---|---|
-| `test:domain` | Corre parsers sobre archivos de muestra e imprime resultados |
-| `test:rating` | Fixture del motor de cálculo |
-| `test:ssm-secrets` | Comprueba `formatSsmSecretError` con aserciones a mano |
-| `test:e2e-local` | Arranca la app completa, ingiere documentos y verifica el resultado |
-| `test:credit-report`, `test:tc`, `test:sentinel-debt`, `test:rt` | Fixtures de dominio |
-
-Ejemplo del "framework" casero (`src/test/test-ssm-secret-error.ts`):
-
-```ts
-// 🟥 PATRÓN A NO REPLICAR — reimplementa assert sin reporter ni agregación
-function expect(cond: boolean, label: string) {
-  if (!cond) {
-    throw new Error(`FAIL ${label}`);
-  }
-  console.log('OK', label);
-}
-
-const denied = formatSsmSecretError('/path/db_password', {
-  name: 'AccessDeniedException',
-  message: 'User is not authorized',
-});
-expect(denied.includes('Sin permiso'), 'access denied is explicit');
-expect(denied.includes('kms:Decrypt'), 'mentions kms');
-```
-
-**Por qué no replicarlo:** no hay reporter, no hay agregación de resultados, no hay cobertura, no hay `beforeEach`/`afterEach`, no hay mocks, y **ninguno de estos scripts corre en CI**. Son útiles como *smoke tests* manuales; no son una suite.
-
-### 15.2 El patrón que SÍ vale la pena conservar: `createApplicationContext`
-
-🟩 **NÚCLEO**
-
-```ts
-// Patrón reutilizable: arrancar el grafo COMPLETO de dependencias sin
-// servidor HTTP. Útil para seeds, scripts de mantenimiento, workers y
-// pruebas de integración contra la base real.
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from '../app.module';
-import { MiServicio } from '../modules/x/mi.service';
-
-async function main() {
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    logger: ['error', 'warn', 'log'],
-  });
-
-  const servicio = app.get(MiServicio);
-  const resultado = await servicio.hacerAlgo();
-  console.log(JSON.stringify(resultado, null, 2));
-
-  await app.close();   // ← imprescindible: cierra el pool de PostgreSQL
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);     // ← imprescindible: sin esto, un fallo sale con 0
-});
-```
-
-Los dos detalles que la gente olvida: **`await app.close()`** (si no, el proceso queda colgado con el pool abierto) y **`process.exit(1)`** en el `catch` (si no, CI ve un éxito).
-
-### 15.3 Qué añadir: pirámide de pruebas con Jest
-
-🟩 **NÚCLEO** — configuración concreta.
-
-#### Nivel 1 — Unitarias de funciones puras
-
-Las más baratas y las que más valen. Candidatas inmediatas del núcleo: `formatSsmSecretError`, `buildS3ClientConfig`, `decimal.util.ts`, `buildDocumentS3Key`, `validateEnv`.
-
-```ts
-// src/config/ssm-secret-error.spec.ts
-import { formatSsmSecretError } from './ssm-secret-error';
-
-describe('formatSsmSecretError', () => {
-  const PARAM = '/<org>/<app>/dev/db_password';
-
-  it('explica el permiso que falta ante AccessDeniedException', () => {
-    const msg = formatSsmSecretError(PARAM, {
-      name: 'AccessDeniedException',
-      message: 'User is not authorized',
-    });
-    expect(msg).toContain('Sin permiso');
-    expect(msg).toContain('ssm:GetParameter');
-    expect(msg).toContain('kms:Decrypt');
-  });
-
-  it('identifica un parámetro inexistente', () => {
-    const msg = formatSsmSecretError(PARAM, { name: 'ParameterNotFound' });
-    expect(msg).toContain('No existe');
-    expect(msg).toContain(PARAM);
-  });
-
-  it('da la pista del alias ante un fallo de KMS', () => {
-    const msg = formatSsmSecretError(PARAM, {
-      name: 'KMSAccessDeniedException',
-      message: 'decrypt failed',
-    });
-    expect(msg).toContain('descifrar');
-    expect(msg).toContain('alias/aws/ssm');
-  });
-
-  it('cae a un mensaje genérico con el código y el detalle', () => {
-    const msg = formatSsmSecretError(PARAM, {
-      name: 'ThrottlingException',
-      message: 'Rate exceeded',
-    });
-    expect(msg).toContain('ThrottlingException');
-    expect(msg).toContain('Rate exceeded');
-  });
-});
-```
-
-```ts
-// src/common/utils/decimal.util.spec.ts
-import { toDecimal, safeDivide, parseAmount } from './decimal.util';
-
-describe('decimal.util', () => {
-  describe('toDecimal', () => {
-    it.each([null, undefined, ''])('devuelve null para %p', (v) => {
-      expect(toDecimal(v as any)).toBeNull();
-    });
-
-    it('conserva precisión que un float perdería', () => {
-      expect(toDecimal('0.1').plus(toDecimal('0.2')).toString()).toBe('0.3');
-    });
-  });
-
-  describe('safeDivide', () => {
-    it('devuelve null si el denominador es cero', () => {
-      expect(safeDivide(toDecimal(10), toDecimal(0))).toBeNull();
-    });
-
-    it('devuelve null si falta cualquier operando', () => {
-      expect(safeDivide(null, toDecimal(5))).toBeNull();
-      expect(safeDivide(toDecimal(5), null)).toBeNull();
-    });
-
-    it('divide con precisión decimal', () => {
-      expect(safeDivide(toDecimal(1), toDecimal(8)).toString()).toBe('0.125');
-    });
-  });
-
-  describe('parseAmount', () => {
-    it('quita símbolos y separadores de miles', () => {
-      expect(parseAmount('S/ 1,234.56').toString()).toBe('1234.56');
-    });
-
-    it('trata los paréntesis como negativo', () => {
-      expect(parseAmount('(1,000.00)').toString()).toBe('-1000');
-    });
-
-    it('devuelve null para texto sin números', () => {
-      expect(parseAmount('n/a')).toBeNull();
-    });
-  });
-});
-```
-
-#### Nivel 2 — Unitarias de servicios con repositorio mockeado
-
-```ts
-// src/modules/documents/document.service.spec.ts
-import { Test } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { BadRequestException } from '@nestjs/common';
-import { DocumentService } from './document.service';
-import { Document } from './document.entity';
-import { AuditService } from '../audit/audit.service';
-
-describe('DocumentService', () => {
-  let service: DocumentService;
-  const repo = {
-    findOne: jest.fn(),
-    find: jest.fn(),
-    save: jest.fn(),
-    update: jest.fn(),
-  };
-  const audit = { logEvent: jest.fn() };
-
-  beforeEach(async () => {
-    jest.clearAllMocks();
-    const moduleRef = await Test.createTestingModule({
-      providers: [
-        DocumentService,
-        { provide: getRepositoryToken(Document), useValue: repo },
-        { provide: AuditService, useValue: audit },
-      ],
-    }).compile();
-    service = moduleRef.get(DocumentService);
-  });
-
-  describe('validateS3Key', () => {
-    it('acepta una clave canónica', () => {
-      const sha = 'a'.repeat(64);
-      const parsed = service.validateS3Key(
-        `raw/CLI-00042/<DOC_TIPO_1>/${sha}-deadbeef.pdf`,
-      );
-      expect(parsed).toEqual({
-        ownerKey: 'CLI-00042',
-        tipo: '<DOC_TIPO_1>',
-        sha256: sha,
-      });
-    });
-
-    it.each([
-      'raw/CLI-00042/otro/aaa.pdf',
-      '../../etc/passwd',
-      'raw/CLI-00042/<DOC_TIPO_1>/NOHEX.pdf',
-    ])('rechaza la clave inválida %s', (key) => {
-      expect(() => service.validateS3Key(key)).toThrow(BadRequestException);
-    });
-  });
-
-  describe('createPresignedUpload', () => {
-    it('reutiliza el documento existente ante un hash duplicado', async () => {
-      const sha = 'b'.repeat(64);
-      repo.findOne.mockResolvedValue({ id: 'doc-1', sha256: sha });
-      const result = await service.createPresignedUpload(
-        `raw/CLI-00042/<DOC_TIPO_1>/${sha}-cafebabe.pdf`,
-        'x.pdf',
-        'sub-1',
-        '1.2.3.4',
-      );
-      expect(result.reused).toBe(true);
-      expect(result.url).toBe('');
-      expect(repo.save).not.toHaveBeenCalled();
-    });
-  });
-});
-```
-
-#### Nivel 3 — E2E con `supertest`
-
-```ts
-// test/auth.e2e-spec.ts
-import { Test } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import * as request from 'supertest';
-import { AppModule } from '../src/app.module';
-import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
-
-describe('Auth (e2e)', () => {
-  let app: INestApplication;
-
-  beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleRef.createNestApplication();
-    // Replicar la configuración global de main.ts, o los tests no
-    // ejercitan el mismo pipeline que producción.
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        transform: true,
-      }),
-    );
-    app.useGlobalFilters(new HttpExceptionFilter());
-    await app.init();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  it('GET /auth/terms-link es público y devuelve una URL', () => {
-    return request(app.getHttpServer())
-      .get('/auth/terms-link')
-      .expect(200)
-      .expect((res) => {
-        expect(typeof res.body.url).toBe('string');
-      });
-  });
-
-  it('GET /auth/profile sin token responde 401', () => {
-    return request(app.getHttpServer())
-      .get('/auth/profile')
-      .expect(401)
-      .expect((res) => {
-        expect(res.body.statusCode).toBe(401);
-        expect(res.body.message).toContain('token');
-        expect(res.body).toHaveProperty('timestamp');
-        expect(res.body).toHaveProperty('path', '/auth/profile');
-      });
-  });
-
-  it('POST /auth/signup rechaza campos desconocidos con 400', () => {
-    return request(app.getHttpServer())
-      .post('/auth/signup')
-      .send({ email: 'a@b.com', campoInventado: 1 })
-      .expect(400)
-      .expect((res) => {
-        expect(Array.isArray(res.body.message)).toBe(true);
-      });
-  });
-
-  it('POST /auth/signup valida la fortaleza de la contraseña', () => {
-    return request(app.getHttpServer())
-      .post('/auth/signup')
-      .send({
-        email: 'a@b.com',
-        password: 'debil',
-        phoneNumber: '+51999999999',
-        firstName: 'A',
-        lastName: 'B',
-        acceptedTerms: true,
-      })
-      .expect(400)
-      .expect((res) => {
-        expect(res.body.message.join(' ')).toContain('8 caracteres');
-      });
-  });
-});
-```
-
-**Requisito para los E2E:** una base de datos real. Opciones, de más simple a más robusta:
-1. PostgreSQL local con una base `<DB_NAME>_test` dedicada y `migration:run` antes de la suite.
-2. `testcontainers` levantando un PostgreSQL 16 efímero por ejecución (más lento pero aislado de verdad).
-
-Un `.env.test` con `DB_NAME=<app>_test` y `NODE_ENV=test` mantiene los E2E lejos de la base de desarrollo.
-
-### 15.4 Qué testear y qué no
-
-| Testear siempre | No vale la pena |
-|---|---|
-| Funciones puras de `common/utils` y `config/` | Getters triviales |
-| Validación de claves S3 y construcción de rutas | El framework (Nest, TypeORM) |
-| Reglas de deduplicación e idempotencia | Mapeos uno a uno sin lógica |
-| Transiciones de la máquina de estados del worker | El SDK de AWS |
-| Guards: `@Public()`, `@Roles()`, usuario bloqueado | |
-| Formato exacto de respuesta de error | |
-| El esquema de `env.validation.ts` (qué falta, qué se coerciona) | |
-| Toda lógica de negocio del dominio nuevo | |
-
-### 15.5 Enganche en CI
-
-Añadir al workflow (sección 17), entre `lint` y `build`:
-
-```yaml
-      - name: Run Unit Tests
-        run: npm test
-```
-
-Los E2E requieren una base de datos, así que se añaden como un *service container*:
-
-```yaml
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: <app>_test
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-```
-
-```yaml
-      - name: Run E2E Tests
-        env:
-          NODE_ENV: test
-          DB_HOST: localhost
-          DB_PORT: 5432
-          DB_USERNAME: postgres
-          DB_PASSWORD: postgres
-          DB_NAME: <app>_test
-          AWS_S3_BUCKET_NAME: test-bucket
-          COGNITO_USER_POOL_ID: test-pool
-          COGNITO_CLIENT_ID: test-client
-          COGNITO_CLIENT_SECRET: test-secret
-        run: |
-          npm run migration:run
-          npm run test:e2e
-```
-
-> ⚠️ El `service container` de PostgreSQL **no tiene SSL**. `database.config.ts` fuerza `ssl: {...}`, así que la conexión fallará con `The server does not support SSL connections`. **Hay que hacer el SSL condicional** — es la corrección **19.10**:
-> ```ts
-> ssl:
->   process.env.DB_SSL === 'false'
->     ? false
->     : { rejectUnauthorized: false },
-> ```
-> …y poner `DB_SSL: 'false'` en el entorno del paso de E2E.
-
----
-
-## 16. Infraestructura (`serverless.yml`, SSM, IAM)
-
-### 16.1 `serverless.yml` completo y parametrizado
-
-🟩 **NÚCLEO** — transcripción del original con marcadores aplicados, el evento S3 **descomentado** (en el original está comentado, de modo que el worker de ingesta nunca se dispara solo) y comentarios explicativos.
-
-```yaml
-# serverless.yml
-service: <app>
-
-# Carga .env automáticamente en comandos locales de serverless (package, info).
-# En CI no hay .env; las variables se resuelven desde SSM.
-useDotenv: true
-
-provider:
-  name: aws
-  # DEBE coincidir con engines.node del package.json y con node-version del CI.
-  runtime: nodejs20.x
-  stage: ${opt:stage, 'dev'}
-  region: ${opt:region, '<REGION>'}
-  environment:
-    # NODE_ENV = stage. Es el eslabón que permite a hydrate-ssm-secrets.ts
-    # construir la ruta /<org>/<app>/<stage>/... sin configuración extra.
-    NODE_ENV: ${self:provider.stage}
-    # DB_PASSWORD y COGNITO_CLIENT_SECRET NO van aquí: la Lambda los lee de
-    # SSM SecureString al arrancar (src/config/hydrate-ssm-secrets.ts).
-    # Ponerlos aquí los haría visibles en la consola de Lambda.
-    DB_HOST: ${ssm:/<org>/<app>/${self:provider.stage}/db_host}
-    DB_PORT: ${ssm:/<org>/<app>/${self:provider.stage}/db_port}
-    DB_USERNAME: ${ssm:/<org>/<app>/${self:provider.stage}/db_username}
-    DB_NAME: ${ssm:/<org>/<app>/${self:provider.stage}/db_name}
-    COGNITO_USER_POOL_ID: ${ssm:/<org>/<app>/${self:provider.stage}/cognito_user_pool_id}
-    COGNITO_CLIENT_ID: ${ssm:/<org>/<app>/${self:provider.stage}/cognito_client_id}
-    COGNITO_REGION: ${ssm:/<org>/<app>/${self:provider.stage}/cognito_region}
-    AWS_S3_BUCKET_NAME: ${ssm:/<org>/<app>/${self:provider.stage}/aws_s3_bucket_name}
-    ALLOWED_ORIGINS: ${ssm:/<org>/<app>/${self:provider.stage}/allowed_origins}
-
-  # Permisos del ROL DE EJECUCIÓN de las Lambdas. No confundir con los
-  # permisos de despliegue (16.5), que son del rol OIDC de GitHub Actions.
-  iam:
-    role:
-      statements:
-        # S3: solo el bucket del stage. Dos ARNs porque las acciones sobre el
-        # bucket (ListBucket) y sobre los objetos (GetObject) usan ARNs distintos.
-        - Effect: Allow
-          Action:
-            - s3:PutObject
-            - s3:GetObject
-            - s3:DeleteObject
-          Resource:
-            - arn:aws:s3:::${ssm:/<org>/<app>/${self:provider.stage}/aws_s3_bucket_name}
-            - arn:aws:s3:::${ssm:/<org>/<app>/${self:provider.stage}/aws_s3_bucket_name}/*
-
-        # Cognito: acciones puntuales, NUNCA cognito-idp:*.
-        # Esta lista es exactamente lo que usa AuthService (sección 10.3).
-        - Effect: Allow
-          Action:
-            - cognito-idp:InitiateAuth
-            - cognito-idp:SignUp
-            - cognito-idp:ConfirmSignUp
-            - cognito-idp:ResendConfirmationCode
-            - cognito-idp:ForgotPassword
-            - cognito-idp:ConfirmForgotPassword
-            - cognito-idp:GlobalSignOut
-            - cognito-idp:AdminDeleteUser   # solo para el rollback de signUp
-          Resource:
-            - arn:aws:cognito-idp:${ssm:/<org>/<app>/${self:provider.stage}/cognito_region, '<REGION>'}:*:userpool/${ssm:/<org>/<app>/${self:provider.stage}/cognito_user_pool_id}
-
-        # SSM: SOLO los dos parámetros de secreto. Los demás ya vienen como
-        # variables de entorno y no hacen falta en runtime.
-        - Effect: Allow
-          Action:
-            - ssm:GetParameter
-            - ssm:GetParameters
-          Resource:
-            - arn:aws:ssm:${self:provider.region}:*:parameter/<org>/<app>/${self:provider.stage}/db_password
-            - arn:aws:ssm:${self:provider.region}:*:parameter/<org>/<app>/${self:provider.stage}/cognito_client_secret
-
-        # KMS: necesario para WithDecryption sobre los SecureString.
-        # Resource '*' acotado por condición a llamadas que vengan de SSM.
-        # (El original usa Resource '*' sin condición; esto es más estricto.)
-        - Effect: Allow
-          Action:
-            - kms:Decrypt
-          Resource: '*'
-          Condition:
-            StringEquals:
-              kms:ViaService: ssm.${self:provider.region}.amazonaws.com
-
-# Empaquetado. `individually: true` genera un zip POR FUNCIÓN, lo que
-# permitiría patrones distintos por función. Aquí todas comparten los mismos.
-package:
-  individually: true
-  patterns:
-    # Exclusiones de node_modules. Cada una resuelve un problema real:
-    - '!node_modules/aws-sdk/**'          # SDK v2: el runtime ya lo trae, y pesa ~50 MB
-    - '!node_modules/typescript/**'       # compilador, innecesario en runtime
-    - '!node_modules/@types/**'           # solo tipos
-    - '!node_modules/swagger-ui-dist/**'  # ~10 MB de assets; Swagger no se monta en Lambda
-    - '!node_modules/**/{test,tests,__tests__,docs,doc,example,examples,.github}/**'
-    - '!node_modules/**/*.md'
-    - '!node_modules/**/*.map'
-    - '!node_modules/**/README*'
-    # Exclusiones del repositorio
-    - '!src/**'                           # el código fuente TS no va al paquete
-    - '!test/**'
-    - '!docs/**'
-    - '!infra/**'
-    - '!scripts/**'
-    - '!tsconfig*.json'
-    # Lo único que SÍ se incluye explícitamente
-    - 'dist/**'
-
-functions:
-  # ── API HTTP ──────────────────────────────────────────────────────────
-  main:
-    handler: dist/lambda.handler
-    # 30 s es el MÁXIMO de API Gateway. Subirlo aquí no sirve de nada:
-    # API Gateway cortará igual. Todo lo que tarde más va al worker.
-    timeout: 30
-    memorySize: 1024
-    events:
-      # Catch-all: API Gateway enruta TODO a la Lambda, y Nest decide.
-      # No se declara ruta por ruta: eso duplicaría el enrutamiento.
-      - httpApi: '*'
-
-  # ── Worker de ingesta, disparado por S3 ───────────────────────────────
-  ingestWorker:
-    handler: dist/lambda-ingest.handler
-    timeout: 900          # 15 min, el máximo de Lambda
-    memorySize: 512
-    events:
-      - s3:
-          bucket: ${ssm:/<org>/<app>/${self:provider.stage}/aws_s3_bucket_name}
-          event: s3:ObjectCreated:*
-          rules:
-            - prefix: raw/
-          # `existing: true` es OBLIGATORIO cuando el bucket NO lo crea este
-          # stack. Sin él, CloudFormation intenta CREAR el bucket y falla con
-          # "already exists". Con él, Serverless despliega una Lambda custom
-          # resource que añade la notificación al bucket existente.
-          existing: true
-
-  # ── Job programado ────────────────────────────────────────────────────
-  # <job>Sync:
-  #   handler: dist/lambda-<job>.handler
-  #   timeout: 30
-  #   memorySize: 256
-  #   description: Descripción legible
-  #   events:
-  #     - schedule:
-  #         rate: cron(0 13 ? * MON-FRI *)   # EventBridge evalúa en UTC
-  #         enabled: true
-  #         description: 08:00 hora local (UTC-5), lunes a viernes
-
-plugins:
-  - serverless-offline
-```
-
-### 16.2 Explicación bloque por bloque
-
-| Bloque | Qué hace | Por qué está así |
-|---|---|---|
-| `service:` | Nombre del stack y prefijo de todos los recursos físicos | Es el ancla de la convención de nombres (1.2). Cambiarlo renombra todo |
-| `useDotenv: true` | Carga `.env` en comandos locales | Permite `npx serverless offline` sin exportar variables a mano |
-| `provider.runtime` | Runtime de Node de la Lambda | **Debe coincidir** con `engines.node` y con `node-version` del CI (19.6) |
-| `provider.stage` | `${opt:stage, 'dev'}` → del flag `--stage`, con `dev` por defecto | Evita desplegar a producción por descuido |
-| `provider.environment` | Variables **no secretas** inyectadas en la Lambda | Todo valor aquí es visible en la consola. Por eso los secretos no están |
-| `${ssm:...}` | Resolución **en tiempo de empaquetado**, en la máquina que corre `serverless package` | Requiere que el rol de CI tenga `ssm:GetParameter` sobre esas rutas. **Si un parámetro no existe, el package falla**, lo cual es bueno: falla pronto |
-| `provider.iam.role.statements` | Permisos del rol de **ejecución** | Mínimo privilegio: solo el bucket del stage, solo el pool del stage, solo los dos parámetros de secreto |
-| `package.individually` | Un zip por función | Permite afinar patrones por función si una necesita menos dependencias |
-| `package.patterns` | Lista de exclusión/inclusión, evaluada en orden | Las cuatro exclusiones grandes (`aws-sdk`, `typescript`, `@types`, `swagger-ui-dist`) son lo que mantiene el paquete bajo el límite de 250 MB descomprimido |
-| `functions.main` | La API | `httpApi: '*'` es el catch-all. `timeout: 30` es el techo de API Gateway |
-| `functions.ingestWorker` | El worker | `existing: true` en el evento S3 es el detalle crítico |
-| `plugins: serverless-offline` | Emulación local de API Gateway | Útil para probar el camino de Lambda sin desplegar: `npx serverless offline` |
-
-**Sobre `${ssm:...}` y `${opt:...}`:** Serverless resuelve estas variables **en la máquina que ejecuta el comando**, no en AWS. Implicaciones:
-- El rol que corre `serverless package` necesita `ssm:GetParameter` sobre `/<org>/<app>/<stage>/*`.
-- Los valores quedan **literalmente escritos** en el `cloudformation-template-update-stack.json` dentro de `.serverless/`. No poner secretos ahí.
-- El segundo argumento es un default: `${ssm:/ruta, 'valor'}`.
-
-### 16.3 Tabla de parámetros SSM
-
-🟩 **NÚCLEO** — hay que crear estos **11 parámetros por cada stage** antes del primer despliegue.
-
-| Nombre completo | Tipo | Propósito | Ejemplo de valor |
-|---|---|---|---|
-| `/<org>/<app>/<stage>/db_host` | `String` | Endpoint de PostgreSQL. **Con RDS Proxy, el del proxy**, no el de la instancia | `<app>-<stage>-proxy.proxy-xxxx.<REGION>.rds.amazonaws.com` |
-| `/<org>/<app>/<stage>/db_port` | `String` | Puerto | `5432` |
-| `/<org>/<app>/<stage>/db_username` | `String` | Usuario | `postgres` |
-| `/<org>/<app>/<stage>/db_name` | `String` | Base de datos del stage | `<app_snake>_<stage>` |
-| `/<org>/<app>/<stage>/db_password` | **`SecureString`** | Contraseña. **Nunca** sale como variable de entorno | — |
-| `/<org>/<app>/<stage>/cognito_user_pool_id` | `String` | Pool del stage | `<REGION>_XXXXXXXXX` |
-| `/<org>/<app>/<stage>/cognito_client_id` | `String` | App Client | 26 caracteres |
-| `/<org>/<app>/<stage>/cognito_client_secret` | **`SecureString`** | Secreto del App Client. Entra en el `SECRET_HASH` | — |
-| `/<org>/<app>/<stage>/cognito_region` | `String` | Región del pool | `<REGION>` |
-| `/<org>/<app>/<stage>/aws_s3_bucket_name` | `String` | Bucket de documentos | `<BUCKET_DOCS>` |
-| `/<org>/<app>/<stage>/allowed_origins` | `String` | CSV de orígenes permitidos | `https://<DOMINIO_APP>` |
-
-Parámetros del frontend, en su propio prefijo (consumidos por el pipeline del repositorio del frontend):
-
-| Nombre | Tipo | Propósito |
-|---|---|---|
-| `/<org>/<app-frontend>/<stage>/api-base-url` | `String` | URL del API Gateway del stage |
-| `/<org>/<app-frontend>/<stage>/s3-bucket-name` | `String` | `<BUCKET_FRONTEND>` |
-| `/<org>/<app-frontend>/<stage>/cloudfront-dist-id` | `String` | `<CF_DIST_ID>` |
-
-**Creación (una vez por stage):**
-
-```bash
-STAGE=dev
-ORG=<org>
-APP=<app>
-REGION=<REGION>
-PREFIX="/${ORG}/${APP}/${STAGE}"
-
-# Parámetros no secretos
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/db_host"  --value "<DB_HOST>"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/db_port"  --value "5432"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/db_username" --value "postgres"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/db_name"  --value "<DB_NAME>"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/cognito_user_pool_id" --value "<USER_POOL_ID>"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/cognito_client_id" --value "<CLIENT_ID>"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/cognito_region" --value "<REGION>"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/aws_s3_bucket_name" --value "<BUCKET_DOCS>"
-aws ssm put-parameter --region "$REGION" --type String --overwrite \
-  --name "${PREFIX}/allowed_origins" --value "https://<DOMINIO_APP>"
-
-# Secretos: SecureString. Leer el valor de stdin para que no quede en el
-# historial del shell.
-read -rs DB_PASS && aws ssm put-parameter --region "$REGION" \
-  --type SecureString --overwrite \
-  --name "${PREFIX}/db_password" --value "$DB_PASS" && unset DB_PASS
-read -rs COG_SECRET && aws ssm put-parameter --region "$REGION" \
-  --type SecureString --overwrite \
-  --name "${PREFIX}/cognito_client_secret" --value "$COG_SECRET" && unset COG_SECRET
-```
-
-**Verificación de que no falta ninguno:**
-
-```bash
-aws ssm get-parameters-by-path \
-  --path "/<org>/<app>/<stage>" \
-  --region <REGION> \
-  --query 'Parameters[].Name' --output table
-# Debe listar 11 parámetros.
-```
-
-> ⚠️ **Al montar un stage nuevo, el fallo más común es olvidar un parámetro.** El síntoma es `serverless package` fallando con `Cannot resolve variable at "provider.environment.X"`, o el script de despliegue abortando con `Faltan parámetros SSM bajo /<org>/<app>/<stage>`.
-
-### 16.4 RDS Proxy (corrección obligatoria 19.3)
-
-El original **no usa RDS Proxy**. Es la deuda de infraestructura más grave.
-
-**El problema:** cada contenedor concurrente de Lambda abre su propio pool de TypeORM. Con el pool por defecto de `node-postgres` (10 conexiones), 50 Lambdas concurrentes intentan abrir 500 conexiones. Una `db.t3.micro` admite ~85. El resultado es `remaining connection slots are reserved` y caída total — y el pico que la causa suele ser precisamente el momento de más tráfico.
-
-**La solución correcta: RDS Proxy.**
-
-```
-Lambda ×N  ──►  RDS Proxy  ──►  RDS PostgreSQL
-                   │
-                   └─ multiplexa cientos de conexiones de cliente
-                      sobre un puñado de conexiones reales a la base
-```
-
-Configuración:
-1. Crear el proxy apuntando a la instancia, con la contraseña en **Secrets Manager** (RDS Proxy no lee de SSM Parameter Store).
-2. Apuntar `/<org>/<app>/<stage>/db_host` **al endpoint del proxy**.
-3. En el proxy, activar `Require Transport Layer Security`.
-4. La Lambda debe estar en la misma VPC/subredes que el proxy, con un security group que lo permita.
-
-> ⚠️ **Poner la Lambda en una VPC tiene consecuencias**: pierde acceso a internet salvo que haya NAT Gateway, y necesita **VPC endpoints** para SSM, KMS, S3 y Cognito, o `hydrateSsmSecrets()` se colgará hasta agotar el timeout. Es un cambio de infraestructura real, no una casilla.
-
-**Mitigación mínima si RDS Proxy no es viable todavía:** limitar el pool a una conexión por contenedor.
-
-```ts
-// src/config/database.config.ts (fragmento)
-export const databaseConfigFactory = (
-  configService: ConfigService,
-): TypeOrmModuleOptions => ({
-  // ... resto igual
-  extra: {
-    // Una conexión por contenedor Lambda. El contenedor atiende un request a
-    // la vez, así que un pool mayor no aporta nada y sí multiplica el riesgo.
-    max: process.env.AWS_LAMBDA_FUNCTION_NAME ? 1 : 10,
-    // Cerrar conexiones ociosas antes de que el contenedor se congele.
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 5000,
-  },
-});
-```
-
-Esto no elimina el problema (N contenedores siguen siendo N conexiones), pero lo reduce en un orden de magnitud. **Hay que documentarlo como mitigación temporal, no como solución.**
-
-### 16.5 Políticas IAM del despliegue
-
-🟩 **NÚCLEO** — transcripción del original con marcadores aplicados.
-
-El rol `<DEPLOY_ROLE>`, asumido por GitHub Actions vía OIDC, lleva **dos** políticas con propósitos distintos.
-
-#### A) Managed — `<app>GitHubDeployLeastPrivilege`
-
-Hace el trabajo real del despliegue. **No tiene ninguna acción de IAM.**
-
-```json
-// infra/iam/github-actions-deploy-least-privilege.json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "SsmBackendRead",
-      "Effect": "Allow",
-      "Action": ["ssm:GetParameter", "ssm:GetParameters"],
-      "Resource": [
-        "arn:aws:ssm:<REGION>:<AWS_ACCOUNT_ID>:parameter/<org>/<app>/dev/*",
-        "arn:aws:ssm:<REGION>:<AWS_ACCOUNT_ID>:parameter/<org>/<app>/qa/*",
-        "arn:aws:ssm:<REGION>:<AWS_ACCOUNT_ID>:parameter/<org>/<app>/prod/*"
-      ]
-    },
-    {
-      "Sid": "SsmFrontendRead",
-      "Effect": "Allow",
-      "Action": ["ssm:GetParameter", "ssm:GetParameters"],
-      "Resource": [
-        "arn:aws:ssm:<REGION>:<AWS_ACCOUNT_ID>:parameter/<org>/<app-frontend>/dev/*",
-        "arn:aws:ssm:<REGION>:<AWS_ACCOUNT_ID>:parameter/<org>/<app-frontend>/qa/*",
-        "arn:aws:ssm:<REGION>:<AWS_ACCOUNT_ID>:parameter/<org>/<app-frontend>/prod/*"
-      ]
-    },
-    {
-      "Sid": "FrontendS3List",
-      "Effect": "Allow",
-      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
-      "Resource": [
-        "arn:aws:s3:::<BUCKET_FRONTEND>-dev",
-        "arn:aws:s3:::<BUCKET_FRONTEND>-qa",
-        "arn:aws:s3:::<BUCKET_FRONTEND>-prod"
-      ]
-    },
-    {
-      "Sid": "FrontendS3Objects",
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-      "Resource": [
-        "arn:aws:s3:::<BUCKET_FRONTEND>-dev/*",
-        "arn:aws:s3:::<BUCKET_FRONTEND>-qa/*",
-        "arn:aws:s3:::<BUCKET_FRONTEND>-prod/*"
-      ]
-    },
-    {
-      "Sid": "CloudFrontInvalidate",
-      "Effect": "Allow",
-      "Action": [
-        "cloudfront:CreateInvalidation",
-        "cloudfront:GetInvalidation",
-        "cloudfront:GetDistribution"
-      ],
-      "Resource": [
-        "arn:aws:cloudfront::<AWS_ACCOUNT_ID>:distribution/<CF_DIST_ID_DEV>",
-        "arn:aws:cloudfront::<AWS_ACCOUNT_ID>:distribution/<CF_DIST_ID_QA>",
-        "arn:aws:cloudfront::<AWS_ACCOUNT_ID>:distribution/<CF_DIST_ID_PROD>"
-      ]
-    },
-    {
-      "Sid": "CloudFormationReadAndRecover",
-      "Effect": "Allow",
-      "Action": [
-        "cloudformation:DescribeStacks",
-        "cloudformation:DescribeStackResource",
-        "cloudformation:DescribeStackResources",
-        "cloudformation:ListStackResources",
-        "cloudformation:GetTemplate",
-        "cloudformation:ContinueUpdateRollback"
-      ],
-      "Resource": [
-        "arn:aws:cloudformation:<REGION>:<AWS_ACCOUNT_ID>:stack/<app>-dev/*",
-        "arn:aws:cloudformation:<REGION>:<AWS_ACCOUNT_ID>:stack/<app>-qa/*",
-        "arn:aws:cloudformation:<REGION>:<AWS_ACCOUNT_ID>:stack/<app>-prod/*"
-      ]
-    },
-    {
-      "Sid": "ServerlessDeployBucketList",
-      "Effect": "Allow",
-      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
-      "Resource": "arn:aws:s3:::<BUCKET_DEPLOY>"
-    },
-    {
-      "Sid": "ServerlessDeployBucketObjects",
-      "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": "arn:aws:s3:::<BUCKET_DEPLOY>/*"
-    },
-    {
-      "Sid": "LambdaUpdateCode",
-      "Effect": "Allow",
-      "Action": [
-        "lambda:GetFunction",
-        "lambda:GetFunctionConfiguration",
-        "lambda:UpdateFunctionCode",
-        "lambda:UpdateFunctionConfiguration"
-      ],
-      "Resource": [
-        "arn:aws:lambda:<REGION>:<AWS_ACCOUNT_ID>:function:<app>-dev-*",
-        "arn:aws:lambda:<REGION>:<AWS_ACCOUNT_ID>:function:<app>-qa-*",
-        "arn:aws:lambda:<REGION>:<AWS_ACCOUNT_ID>:function:<app>-prod-*"
-      ]
-    },
-    {
-      "Sid": "ApiGatewayReadForServerlessInfo",
-      "Effect": "Allow",
-      "Action": ["apigateway:GET"],
-      "Resource": [
-        "arn:aws:apigateway:<REGION>::/apis",
-        "arn:aws:apigateway:<REGION>::/apis/*"
-      ]
-    },
-    {
-      "Sid": "DecryptSsmSecureStringForMigrations",
-      "Effect": "Allow",
-      "Action": "kms:Decrypt",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "kms:ViaService": "ssm.<REGION>.amazonaws.com"
-        }
-      }
-    }
-  ]
-}
-```
-
-**Puntos que merecen atención:**
-
-- **`DecryptSsmSecureStringForMigrations`** permite `kms:Decrypt` sobre `Resource: "*"`, pero la condición `kms:ViaService` lo restringe a llamadas que llegan **a través de SSM**. Es la forma correcta: no se puede poner `alias/aws/ssm` como `Resource` (los alias no son ARNs válidos ahí), y enumerar el ARN de la clave gestionada por AWS es frágil.
-- **`cloudformation:ContinueUpdateRollback`** existe para que el preflight pueda recuperar un stack atascado en `UPDATE_ROLLBACK_FAILED` sin intervención manual.
-- **`apigateway:GET` sobre `/apis` y `/apis/*`** permite resolver la URL de la API tras el despliegue sin leer el stack.
-- La policy **no** tiene `lambda:CreateFunction` ni `cloudformation:UpdateStack`. Eso es deliberado: **el CI no crea infraestructura**, solo actualiza código y configuración de funciones que ya existen. Crear infraestructura nueva requiere un `serverless deploy` manual con credenciales de más privilegio.
-
-#### B) Inline — `ServerlessLambdaRoleRead`
-
-🟦 Esta política existe por un motivo muy concreto.
-
-```json
-// infra/iam/github-actions-serverless-deploy.json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ServerlessLambdaRole",
-      "Effect": "Allow",
-      "Action": ["iam:GetRole", "iam:PassRole", "iam:GetRolePolicy", "iam:TagRole"],
-      "Resource": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/<app>-dev-*"
-    }
-  ]
-}
-```
-
-**Por qué está separada de la managed.** CloudFormation necesita leer el rol de ejecución de la Lambda para resolver su ARN. Sin `iam:GetRole`, un despliegue de stack completo falla con:
-
-```
-Unable to retrieve Arn attribute for AWS::IAM::Role ... iam:GetRole ... 403
-```
-
-En el original, solo `dev` tiene stack de CloudFormation (`qa` y `prod` se crearon a mano), así que la inline se limitó a `<app>-dev-*`.
-
-> 🟥 **DEUDA.** Que solo un stage tenga stack es la decisión más costosa de todo el repositorio de infraestructura: obliga a los scripts de CI a soportar **dos topologías**, duplicando la lógica de resolución de nombres y de buckets. Ver corrección **19.5**. **En el proyecto nuevo, los tres stages tienen stack**, y entonces esta política inline debe cubrir `<app>-dev-*`, `<app>-qa-*` y `<app>-prod-*` — o, mejor, fusionarse con la managed, ya que la razón de separarlas desaparece.
-
-#### `infra/iam/README.md`
-
-🟩 **NÚCLEO** — el patrón de documentar la infraestructura IAM en el repositorio es excelente y hay que replicarlo. Plantilla:
-
-```markdown
-<!-- infra/iam/README.md -->
-# Permisos IAM del despliegue
-
-Los repositorios `<app>` y `<app-frontend>` despliegan con el **mismo** rol,
-asumido por GitHub Actions vía OIDC. No hay access keys estáticas en ningún secret:
-
-    arn:aws:iam::<AWS_ACCOUNT_ID>:role/<DEPLOY_ROLE>
-
-| Archivo | Nombre en AWS | Tipo | Alcance |
-|---|---|---|---|
-| `github-actions-deploy-least-privilege.json` | `<app>GitHubDeployLeastPrivilege` | Managed | dev, qa, prod |
-| `github-actions-serverless-deploy.json` | `ServerlessLambdaRoleRead` | Inline | dev, qa, prod |
-
-Los dos archivos son **copias literales** de lo que hay vivo en la cuenta.
-Si cambiás uno, el cambio NO se aplica solo: hay que subirlo a mano.
-
-## Cómo aplicar un cambio
-
-**Managed** — crea una versión nueva y la marca por defecto:
-
-    aws iam create-policy-version \
-      --policy-arn arn:aws:iam::<AWS_ACCOUNT_ID>:policy/<app>GitHubDeployLeastPrivilege \
-      --policy-document file://infra/iam/github-actions-deploy-least-privilege.json \
-      --set-as-default
-
-IAM admite **5 versiones** por policy. Si falla por límite, listar y borrar una
-vieja (no asumir la numeración):
-
-    aws iam list-policy-versions \
-      --policy-arn arn:aws:iam::<AWS_ACCOUNT_ID>:policy/<app>GitHubDeployLeastPrivilege \
-      --output table --no-cli-pager
-
-**Inline** — se sobrescribe, no versiona:
-
-    aws iam put-role-policy \
-      --role-name <DEPLOY_ROLE> \
-      --policy-name ServerlessLambdaRoleRead \
-      --policy-document file://infra/iam/github-actions-serverless-deploy.json
-
-## Cómo verificar que el repo y AWS coinciden
-
-    V=$(aws iam get-policy --policy-arn arn:aws:iam::<AWS_ACCOUNT_ID>:policy/<app>GitHubDeployLeastPrivilege --query 'Policy.DefaultVersionId' --output text --no-cli-pager)
-    aws iam get-policy-version --policy-arn arn:aws:iam::<AWS_ACCOUNT_ID>:policy/<app>GitHubDeployLeastPrivilege --version-id "$V" --query 'PolicyVersion.Document' --output json --no-cli-pager
-    aws iam get-role-policy --role-name <DEPLOY_ROLE> --policy-name ServerlessLambdaRoleRead --query 'PolicyDocument' --output json --no-cli-pager
-
-Y para detectar una policy que nadie documentó:
-
-    aws iam list-attached-role-policies --role-name <DEPLOY_ROLE> --output table --no-cli-pager
-    aws iam list-role-policies --role-name <DEPLOY_ROLE> --output table --no-cli-pager
-```
-
-#### Trust policy del rol OIDC
-
-No está en el repositorio original, pero es necesaria. Documentarla también:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-        },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": [
-            "repo:<org-github>/<app>:ref:refs/heads/dev",
-            "repo:<org-github>/<app>:ref:refs/heads/qa",
-            "repo:<org-github>/<app>:ref:refs/heads/master",
-            "repo:<org-github>/<app-frontend>:ref:refs/heads/dev",
-            "repo:<org-github>/<app-frontend>:ref:refs/heads/qa",
-            "repo:<org-github>/<app-frontend>:ref:refs/heads/master"
-          ]
-        }
-      }
-    }
-  ]
-}
-```
-
-> 🔴 **La condición `sub` debe enumerar ramas concretas.** Un `repo:<org>/<app>:*` permitiría que **cualquier rama, incluida una de un pull request de un fork**, asuma el rol y despliegue. Es un error de seguridad frecuente y grave.
-
----
-
-## 17. CI/CD
-
-### 17.1 El workflow completo
-
-🟩 **NÚCLEO** — transcripción del original con marcadores aplicados y los pasos de test añadidos.
-
-```yaml
-# .github/workflows/ci.yml
-name: CI/CD Pipeline
-
-on:
-  pull_request:
-    branches:
-      - dev
-      - qa
-      - master
-  push:
-    branches:
-      - dev     # → stage dev
-      - qa      # → stage qa
-      - master  # → stage prod
-
-permissions:
-  # Imprescindible para OIDC: permite al job pedir un token a GitHub
-  # y canjearlo por credenciales temporales en STS.
-  id-token: write
-  contents: read
-
-jobs:
-  validate-and-deploy:
-    runs-on: ubuntu-latest
-    # Un deploy sano tarda ~5 min. Si CloudFormation se cuelga, cortar antes
-    # de quemar los 360 min por defecto.
-    timeout-minutes: 20
-    # Evita dos deploys simultáneos sobre el mismo stage, que es la causa
-    # habitual de stacks atascados en UPDATE_IN_PROGRESS.
-    concurrency:
-      group: <app>-deploy-${{ github.ref_name }}
-      cancel-in-progress: true
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: <app_snake>_test
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          # DEBE coincidir con provider.runtime de serverless.yml
-          # y con engines.node de package.json (corrección 19.6).
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install Dependencies
-        run: npm ci
-
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::<AWS_ACCOUNT_ID>:role/<DEPLOY_ROLE>
-          aws-region: <REGION>
-
-      - name: Run Linter
-        run: npm run lint
-
-      - name: Run Unit Tests
-        run: npm test
-
-      - name: Run Build
-        run: npm run build
-
-      - name: Run E2E Tests
-        env:
-          NODE_ENV: test
-          DB_SSL: 'false'          # el contenedor de PostgreSQL no tiene SSL
-          DB_HOST: localhost
-          DB_PORT: 5432
-          DB_USERNAME: postgres
-          DB_PASSWORD: postgres
-          DB_NAME: <app_snake>_test
-          AWS_S3_BUCKET_NAME: test-bucket
-          COGNITO_USER_POOL_ID: test-pool
-          COGNITO_CLIENT_ID: test-client
-          COGNITO_CLIENT_SECRET: test-secret
-        run: |
-          npm run migration:run
-          npm run test:e2e
-
-      # ── A partir de aquí, SOLO en push (no en pull_request) ──────────────
-
-      - name: Resolve deploy stage
-        if: github.event_name == 'push'
-        run: |
-          case "${{ github.ref_name }}" in
-            master) STAGE=prod ;;
-            *) STAGE="${{ github.ref_name }}" ;;
-          esac
-          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
-          echo "Rama ${{ github.ref_name }} -> stage $STAGE"
-
-      - name: Preflight deploy (stack + IAM)
-        if: github.event_name == 'push'
-        run: bash scripts/ci/preflight-deploy.sh "$STAGE"
-
-      # Antes de publicar el código: si una migración falla, el deploy se
-      # detiene en rojo y el esquema viejo sigue sirviendo, en vez de quedar
-      # con código nuevo contra un esquema desactualizado.
-      - name: Apply DB migrations
-        if: github.event_name == 'push'
-        run: bash scripts/ci/run-migrations.sh "$STAGE"
-
-      - name: Deploy to AWS Lambda
-        if: github.event_name == 'push'
-        timeout-minutes: 8
-        run: bash scripts/ci/deploy-functions.sh "$STAGE"
-
-      - name: Smoke test
-        if: github.event_name == 'push'
-        run: bash scripts/ci/verify-deploy.sh "$API_URL" "$STAGE"
-
-      # Calienta la Lambda para que el primer usuario real no pague el
-      # arranque en frío (que incluye la lectura de SSM).
-      - name: Warm up Lambda
-        if: github.event_name == 'push'
-        run: |
-          echo "Warming Lambda at ${API_URL}/auth/terms-link..."
-          curl -fsS "${API_URL}/auth/terms-link" -o /dev/null || true
-```
-
-> **Diferencias con el original:** `npm ci` sin `--legacy-peer-deps` (ver 22.9), `node-version: '20'`, se añaden los pasos de test y el servicio de PostgreSQL, y el *warm-up* apunta a una ruta pública real en vez de a `/api` (Swagger no se monta en Lambda, así que esa ruta devolvía 404).
-
-### 17.2 El mapeo rama → stage
-
-```
-rama dev    ──► stage dev    ──► <app>-dev-main,    https://<DOMINIO_APP> = app-dev.<dominio>
-rama qa     ──► stage qa     ──► <app>-qa-main,     app-qa.<dominio>
-rama master ──► stage prod   ──► <app>-prod-main,   app.<dominio>
-```
-
-La traducción vive en un único sitio, el paso `Resolve deploy stage`:
-
-```bash
-case "${{ github.ref_name }}" in
-  master) STAGE=prod ;;
-  *) STAGE="${{ github.ref_name }}" ;;
-esac
-```
-
-**Por qué `master` → `prod` y no `master` → `master`:** el nombre de la rama es una convención de git; el nombre del stage es una convención de infraestructura. Mezclarlos produciría un stack llamado `<app>-master`, que no dice nada a quien mira la consola de AWS.
-
-**`if: github.event_name == 'push'`** es lo que hace que los pull requests ejecuten lint, test y build pero **nunca** desplieguen.
-
-### 17.3 Los cuatro scripts de CI
-
-#### 17.3.1 `scripts/ci/preflight-deploy.sh`
-
-🟩 **NÚCLEO** — simplificado respecto al original (asume stack en los tres stages, corrección **19.5**).
-
-```bash
-#!/usr/bin/env bash
-# scripts/ci/preflight-deploy.sh
-# Comprueba que el stack y los permisos IAM permiten un deploy en ~5 min, no en 1 h.
-# Uso: bash scripts/ci/preflight-deploy.sh [stage]   (default: dev)
-set -euo pipefail
-
-STAGE="${1:-dev}"
-REGION="${AWS_REGION:-<REGION>}"
-SERVICE=<app>
-STACK="${SERVICE}-${STAGE}"
-LAMBDA_ROLE="${SERVICE}-${STAGE}-${REGION}-lambdaRole"
-
-echo "=== Preflight deploy ($STACK) ==="
-
-if ! aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" >/dev/null 2>&1; then
-  echo "::error::No existe el stack $STACK. Crearlo con un 'serverless deploy --stage $STAGE' manual antes del primer deploy de CI."
-  exit 1
-fi
-
-STATUS=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK" \
-  --region "$REGION" \
-  --query 'Stacks[0].StackStatus' \
-  --output text 2>/dev/null || echo "UNKNOWN")
-echo "CloudFormation status: $STATUS"
-
-case "$STATUS" in
-  UPDATE_IN_PROGRESS | UPDATE_ROLLBACK_IN_PROGRESS | UPDATE_COMPLETE_CLEANUP_IN_PROGRESS)
-    # Desplegar sobre un stack en transición lo deja atascado una hora.
-    echo "::error::Stack en $STATUS. Espera a que termine o cancela el update en CloudFormation antes de redeploy."
-    exit 1
-    ;;
-  UPDATE_ROLLBACK_FAILED)
-    # Estado recuperable: se intenta automáticamente.
-    echo "Recovering stack from UPDATE_ROLLBACK_FAILED..."
-    aws cloudformation continue-update-rollback --stack-name "$STACK" --region "$REGION"
-    aws cloudformation wait stack-rollback-complete --stack-name "$STACK" --region "$REGION"
-    STATUS=$(aws cloudformation describe-stacks \
-      --stack-name "$STACK" \
-      --region "$REGION" \
-      --query 'Stacks[0].StackStatus' \
-      --output text)
-    echo "CloudFormation status after recovery: $STATUS"
-    ;;
-  UPDATE_ROLLBACK_COMPLETE | UPDATE_COMPLETE | CREATE_COMPLETE)
-    echo "Stack listo para deploy."
-    ;;
-  *)
-    echo "::warning::Estado inesperado: $STATUS"
-    ;;
-esac
-
-# iam:GetRole NO viene de la policy managed (que no tiene acciones de IAM),
-# sino de la inline ServerlessLambdaRoleRead. Ver infra/iam/README.md.
-echo "Comprobando iam:GetRole sobre $LAMBDA_ROLE..."
-if ! aws iam get-role --role-name "$LAMBDA_ROLE" --region "$REGION" >/dev/null 2>&1; then
-  echo "::error::El rol <DEPLOY_ROLE> no puede iam:GetRole sobre $LAMBDA_ROLE."
-  echo "Falta la inline policy ServerlessLambdaRoleRead. Cómo reponerla: infra/iam/README.md."
-  exit 1
-fi
-
-echo "Preflight OK."
-```
-
-**Qué comprueba y por qué:**
-1. **Que el stack existe.** Si no, el despliegue de código no tiene sobre qué actuar.
-2. **Que el stack no está en transición.** Lanzar un despliegue sobre un stack en `UPDATE_IN_PROGRESS` lo deja atascado hasta que CloudFormation agota su propio timeout (una hora). Abortar en 5 segundos ahorra esa hora.
-3. **Recuperación automática de `UPDATE_ROLLBACK_FAILED`.** Es el único estado del que se puede salir sin intervención humana.
-4. **Que el permiso `iam:GetRole` existe.** Falla con un mensaje que apunta a la documentación, en vez de dejar que CloudFormation falle a los dos minutos con un error críptico.
-
-**`::error::` y `::warning::`** son *workflow commands* de GitHub Actions: el mensaje aparece destacado en la interfaz y en el resumen del job.
-
-#### 17.3.2 `scripts/ci/run-migrations.sh`
-
-🟩 **NÚCLEO** — transcripción con marcadores.
-
-```bash
-#!/usr/bin/env bash
-# scripts/ci/run-migrations.sh
-# Aplica las migraciones pendientes del stage ANTES de publicar el código nuevo.
-# Uso: bash scripts/ci/run-migrations.sh [stage]   (default: dev)
-#
-# Por qué aquí y no en el arranque de la Lambda:
-#   · Migrar en el cold start significa enterarse de un fallo por una petición
-#     de usuario y no por un deploy en rojo.
-#   · Compite con el timeout de 30 s de API Gateway.
-#   · Varios contenedores pueden migrar en paralelo sobre la misma base.
-#
-# Este script debe correr ANTES de actualizar el código: al revés dejaría
-# código nuevo apuntando a un esquema viejo. También necesita las
-# devDependencies (usa ts-node), así que tiene que ir antes del
-# `npm prune --production` que hace deploy-functions.sh.
-set -euo pipefail
-
-STAGE="${1:-dev}"
-REGION="${AWS_REGION:-<REGION>}"
-PREFIX="/<org>/<app>/${STAGE}"
-
-echo "=== Migraciones (${STAGE}) ==="
-
-ssm_get() {
-  aws ssm get-parameter --name "$1" --query 'Parameter.Value' --output text --region "$REGION"
-}
-
-DB_HOST=$(ssm_get "${PREFIX}/db_host")
-DB_PORT=$(ssm_get "${PREFIX}/db_port")
-DB_USERNAME=$(ssm_get "${PREFIX}/db_username")
-DB_NAME=$(ssm_get "${PREFIX}/db_name")
-DB_PASSWORD=$(aws ssm get-parameter --name "${PREFIX}/db_password" --with-decryption --query 'Parameter.Value' --output text --region "$REGION")
-
-# Enmascara el password en el log si algo lo imprime por accidente.
-# GitHub Actions lo sustituye por *** en toda la salida posterior.
-echo "::add-mask::${DB_PASSWORD}"
-
-export DB_HOST DB_PORT DB_USERNAME DB_NAME DB_PASSWORD
-
-echo "Base de datos: ${DB_NAME} en ${DB_HOST}"
-
-npm run migration:run
-
-echo "Migraciones aplicadas."
-```
-
-**Puntos clave:**
-- **`::add-mask::`** debe ejecutarse **inmediatamente después** de obtener el secreto y **antes** de cualquier comando que pueda imprimirlo. A partir de ese momento GitHub lo censura en todo el log.
-- `export` sin `.env`: `typeorm.config.ts` llama a `dotenv.config()`, que **no sobrescribe** variables ya presentes en `process.env`. Las exportadas ganan.
-- **Falla el job si la migración falla** (`set -e`), que es exactamente lo que se quiere: el despliegue se detiene y el esquema anterior sigue sirviendo.
-
-#### 17.3.3 `scripts/ci/deploy-functions.sh`
-
-🟩 **NÚCLEO** — simplificado (una sola topología, corrección **19.5**) y con todas las funciones incluidas (corrección **19.7**).
-
-```bash
-#!/usr/bin/env bash
-# scripts/ci/deploy-functions.sh
-# Publica código Lambda vía S3 + UpdateFunctionCode (sin CloudFormation) y
-# sincroniza las variables de entorno desde SSM.
-# Uso: bash scripts/ci/deploy-functions.sh [stage]   (default: dev)
-#
-# Por qué NO `serverless deploy`:
-#   · `serverless deploy` actualiza el stack entero de CloudFormation: 5-15 min,
-#     y puede atascarse. `update-function-code` tarda segundos.
-#   · El CI solo cambia CÓDIGO. Los cambios de INFRAESTRUCTURA (eventos, IAM,
-#     funciones nuevas) requieren un `serverless deploy --stage X` manual.
-set -euo pipefail
-
-STAGE="${1:-dev}"
-REGION="${AWS_REGION:-<REGION>}"
-SERVICE=<app>
-STACK="${SERVICE}-${STAGE}"
-# Límite duro de AWS: 250 MB descomprimidos por paquete de función.
-MAX_UNZIPPED_BYTES=262144000
-
-if ! aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" >/dev/null 2>&1; then
-  echo "::error::No existe el stack $STACK."
-  exit 1
-fi
-
-echo "=== Slim node_modules (solo runtime) ==="
-# Quita las devDependencies del árbol ANTES de empaquetar. Sin esto, el zip
-# incluiría typescript, eslint, jest y el CLI de Nest: cientos de MB.
-npm prune --production --no-audit --no-fund
-# serverless es devDependency, así que `prune` acaba de borrarlo. Se reinstala
-# sin guardarlo en package.json, solo para esta ejecución.
-npm install --no-save --no-audit --no-fund "serverless@^3.40.0"
-
-echo "=== Package (${STAGE}) ==="
-# `serverless package` genera los zips en .serverless/ sin tocar AWS.
-npx serverless package --stage "$STAGE"
-
-validate_zip() {
-  local zip=$1
-  local unzipped
-  unzipped=$(unzip -l "$zip" | tail -1 | awk '{print $1}')
-  local size_h
-  size_h=$(du -h "$zip" | cut -f1)
-  echo "Artifact $zip: zip=$size_h, unzipped=${unzipped} bytes (max ${MAX_UNZIPPED_BYTES})"
-  # Validar ANTES de subir: evita esperar a que AWS rechace el upload.
-  if [ "$unzipped" -gt "$MAX_UNZIPPED_BYTES" ]; then
-    echo "::error::Paquete Lambda demasiado grande descomprimido. Quitar dependencias innecesarias o revisar serverless.yml package.patterns."
-    exit 1
-  fi
-}
-
-BUCKET=$(aws cloudformation describe-stack-resource \
-  --stack-name "$STACK" \
-  --logical-resource-id ServerlessDeploymentBucket \
-  --region "$REGION" \
-  --query 'StackResourceDetail.PhysicalResourceId' \
-  --output text)
-KEY_PREFIX="ci-deploy"
-
-echo "Deployment bucket: $BUCKET (prefijo ${KEY_PREFIX}/)"
-
-resolve_physical() {
-  local logical=$1
-  aws cloudformation describe-stack-resource \
-    --stack-name "$STACK" \
-    --logical-resource-id "$logical" \
-    --region "$REGION" \
-    --query 'StackResourceDetail.PhysicalResourceId' \
-    --output text 2>/dev/null
-}
-
-# Variables de entorno de la Lambda, tomadas de SSM en cada deploy.
-# `update-function-code` NO toca la configuración, así que sin este paso
-# cualquier cambio en SSM que alimente `environment:` de serverless.yml
-# quedaría sin efecto sobre la Lambda.
-# DB_PASSWORD y COGNITO_CLIENT_SECRET quedan fuera a propósito: la Lambda los
-# lee de SSM al arrancar (src/config/hydrate-ssm-secrets.ts).
-sync_env() {
-  local physical=$1
-  local prefix="/<org>/${SERVICE}/${STAGE}"
-  local env_json
-
-  env_json=$(aws ssm get-parameters \
-    --names \
-      "${prefix}/db_host" \
-      "${prefix}/db_port" \
-      "${prefix}/db_username" \
-      "${prefix}/db_name" \
-      "${prefix}/cognito_region" \
-      "${prefix}/cognito_client_id" \
-      "${prefix}/cognito_user_pool_id" \
-      "${prefix}/aws_s3_bucket_name" \
-      "${prefix}/allowed_origins" \
-    --region "$REGION" \
-    --query 'Parameters[].[Name,Value]' \
-    --output json \
-    | jq -c --arg stage "$STAGE" '
-        reduce .[] as $p (
-          {};
-          . + { ($p[0] | split("/") | last | ascii_upcase): $p[1] }
-        )
-        | { DB_HOST, DB_PORT, DB_USERNAME, DB_NAME, COGNITO_REGION, COGNITO_CLIENT_ID,
-            COGNITO_USER_POOL_ID, AWS_S3_BUCKET_NAME, ALLOWED_ORIGINS }
-        + { NODE_ENV: $stage }
-      ')
-
-  # get-parameters omite en silencio los que no existen, dejándolos como null
-  # en el objeto construido por jq. Este chequeo convierte ese silencio en error.
-  if echo "$env_json" | jq -e 'to_entries | map(select(.value == null)) | length > 0' >/dev/null; then
-    echo "::error::Faltan parámetros SSM bajo ${prefix}. Variables resueltas: $env_json"
-    exit 1
-  fi
-
-  echo "Sincronizando variables de entorno desde ${prefix}"
-  aws lambda update-function-configuration \
-    --function-name "$physical" \
-    --environment "{\"Variables\":${env_json}}" \
-    --region "$REGION" \
-    --output text >/dev/null
-  # Esperar: las actualizaciones de Lambda son asíncronas y dos operaciones
-  # encadenadas sin esperar fallan con ResourceConflictException.
-  aws lambda wait function-updated-v2 --function-name "$physical" --region "$REGION"
-}
-
-deploy_fn() {
-  local fn=$1
-  local logical=$2
-  local zip
-  zip=$(find .serverless -maxdepth 1 -type f -name "*${fn}*.zip" 2>/dev/null | head -1)
-
-  if [ -z "$zip" ] || [ ! -f "$zip" ]; then
-    echo "::error::No se encontró zip para función $fn en .serverless/"
-    ls -la .serverless/ || true
-    exit 1
-  fi
-
-  local physical
-  if ! physical=$(resolve_physical "$logical"); then
-    echo "::error::No se pudo resolver el nombre físico de $fn ($logical) en $STACK."
-    exit 1
-  fi
-
-  validate_zip "$zip"
-
-  # Timestamp en la clave: cada deploy es un objeto nuevo, y el bucket
-  # funciona como historial de artefactos para rollback manual.
-  local key="${KEY_PREFIX}/$(date +%Y%m%d-%H%M%S)-${fn}.zip"
-  echo "=== $fn -> $physical ==="
-  aws s3 cp "$zip" "s3://${BUCKET}/${key}" --region "$REGION"
-  aws lambda update-function-code \
-    --function-name "$physical" \
-    --s3-bucket "$BUCKET" \
-    --s3-key "$key" \
-    --region "$REGION" \
-    --output text >/dev/null
-  aws lambda wait function-updated-v2 --function-name "$physical" --region "$REGION"
-  echo "Updated $physical"
-
-  sync_env "$physical"
-}
-
-# TODAS las funciones del serverless.yml deben estar aquí (corrección 19.7).
-# El nombre lógico es <NombreFuncion en PascalCase>LambdaFunction.
-deploy_fn main          MainLambdaFunction
-deploy_fn ingestWorker  IngestWorkerLambdaFunction
-# deploy_fn <job>Sync   <Job>SyncLambdaFunction
-
-# URL de la API: Serverless nombra la HTTP API como <stage>-<service>.
-API_URL=$(aws apigatewayv2 get-apis \
-  --region "$REGION" \
-  --query "Items[?Name=='${STAGE}-${SERVICE}'].ApiEndpoint | [0]" \
-  --output text 2>/dev/null || echo "")
-
-if [ -z "$API_URL" ] || [ "$API_URL" = "None" ]; then
-  API_URL=$(npx serverless info --stage "$STAGE" 2>/dev/null \
-    | grep -Eo 'https://[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com' \
-    | head -1)
-fi
-
-if [ -z "$API_URL" ]; then
-  echo "::error::No se resolvió URL de API Gateway tras update-function-code."
-  exit 1
-fi
-
-echo "API desplegada: $API_URL"
-# Exportar al workflow para que el paso siguiente (smoke test) la use.
-if [ -n "${GITHUB_ENV:-}" ]; then
-  echo "API_URL=$API_URL" >> "$GITHUB_ENV"
-fi
-```
-
-**Las seis decisiones de este script, explicadas:**
-
-1. **`npm prune --production` + reinstalar `serverless`.** `serverless package` empaqueta `node_modules` tal como está en disco. Sin el `prune`, el zip llevaría `typescript`, `eslint`, `jest` y `@nestjs/cli`. Pero `prune` borra `serverless`, que es devDependency, así que hay que reinstalarlo con `--no-save` para que `package.json` no cambie.
-   > ⚠️ **El orden es crítico:** `run-migrations.sh` usa `ts-node` (devDependency) y **debe ir antes** de este script.
-
-2. **`update-function-code` en vez de `serverless deploy`.** Segundos en vez de minutos, sin riesgo de atascar el stack. El precio es que **los cambios de infraestructura no se despliegan por CI**: eventos nuevos, permisos IAM nuevos o funciones nuevas requieren un `serverless deploy --stage X` manual.
-
-3. **`sync_env` después de `update-function-code`.** `update-function-code` solo cambia el binario; la configuración (incluidas las variables de entorno) queda como estaba. Sin este paso, cambiar un parámetro SSM no tendría ningún efecto hasta el siguiente `serverless deploy` completo.
-
-4. **La validación de tamaño antes de subir.** 250 MB descomprimidos es un límite duro de AWS. Validar localmente da un mensaje accionable en vez del rechazo opaco del servicio.
-
-5. **`aws lambda wait function-updated-v2` tras cada operación.** Las actualizaciones de Lambda son asíncronas; encadenar dos sin esperar produce `ResourceConflictException: The operation cannot be performed at this time`.
-
-6. **El chequeo de `null` en `env_json`.** `aws ssm get-parameters` **no falla** si un parámetro no existe: lo devuelve en `InvalidParameters` y lo omite del resultado. Sin este chequeo, la Lambda se desplegaría con `DB_HOST` ausente y fallaría en el primer request.
-
-**Nombres lógicos de CloudFormation.** Serverless los deriva del nombre de la función en el YAML: `main` → `MainLambdaFunction`, `ingestWorker` → `IngestWorkerLambdaFunction`. Para verificarlos:
-
-```bash
-aws cloudformation list-stack-resources --stack-name <app>-dev \
-  --query "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function'].[LogicalResourceId,PhysicalResourceId]" \
-  --output table
-```
-
-#### 17.3.4 `scripts/ci/verify-deploy.sh`
-
-🟩 **NÚCLEO** — adaptado: la ruta de prueba y el origen se parametrizan.
-
-```bash
-#!/usr/bin/env bash
-# scripts/ci/verify-deploy.sh
-# Tras el deploy, confirma que la API publicada responde y que CORS funciona.
-# Uso: bash scripts/ci/verify-deploy.sh [api_url] [stage]   (default stage: dev)
-set -euo pipefail
-
-API_URL="${1:-}"
-STAGE="${2:-dev}"
-
-if [ -z "$API_URL" ]; then
-  API_URL=$(npx serverless info --stage "$STAGE" 2>/dev/null \
-    | grep -Eo 'https://[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com' \
-    | head -1)
-fi
-
-if [ -z "$API_URL" ]; then
-  echo "::error::No se encontró URL de API Gateway."
-  exit 1
-fi
-
-# Origin del preflight CORS según el stage.
-case "$STAGE" in
-  prod) ORIGIN="https://app.<dominio>" ;;
-  *)    ORIGIN="https://app-${STAGE}.<dominio>" ;;
-esac
-
-echo "API URL: $API_URL"
-
-# ── 1. ¿Arranca la Lambda y están los secretos? ──────────────────────────
-# /__boot NO toca el grafo de Nest: responde aunque la app no arranque.
-BOOT=$(curl -s -o /tmp/boot.json -w "%{http_code}" "${API_URL}/__boot")
-echo "GET /__boot → HTTP $BOOT"
-cat /tmp/boot.json; echo
-
-# ── 2. ¿Está registrada una ruta protegida del dominio? ──────────────────
-# Se espera 401/403 (ruta existe, auth requerida).
-#   404 → la Lambda no tiene el código nuevo
-#   5xx → la API no arranca
-SMOKE_PATH="${SMOKE_PATH:-/auth/profile}"
-CODE=$(curl -s -o /tmp/smoke.json -w "%{http_code}" "${API_URL}${SMOKE_PATH}")
-echo "GET ${SMOKE_PATH} → HTTP $CODE"
-
-if [ "$CODE" = "404" ]; then
-  echo "::error::La ruta ${SMOKE_PATH} no existe (404). La Lambda no tiene el código nuevo."
-  cat /tmp/smoke.json
-  exit 1
-fi
-
-if [ "$CODE" = "500" ] || [ "$CODE" = "502" ] || [ "$CODE" = "503" ]; then
-  echo "::error::La API no arranca (HTTP $CODE). Login y CORS quedan rotos."
-  cat /tmp/smoke.json
-  exit 1
-fi
-
-# ── 3. ¿Funciona el preflight CORS? ──────────────────────────────────────
-# Si falla, el login del frontend muestra NetworkError aunque el backend
-# esté sano. Es un fallo invisible desde el backend.
-OPT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X OPTIONS \
-  "${API_URL}/auth/login" \
-  -H "Origin: ${ORIGIN}" \
-  -H 'Access-Control-Request-Method: POST' \
-  -H 'Access-Control-Request-Headers: content-type')
-echo "OPTIONS /auth/login (Origin: ${ORIGIN}) → HTTP $OPT_CODE"
-if [ "$OPT_CODE" != "204" ] && [ "$OPT_CODE" != "200" ]; then
-  echo "::error::Preflight CORS falló (HTTP $OPT_CODE). El login en el frontend mostrará NetworkError."
-  exit 1
-fi
-
-# ── 4. ¿Responde una ruta pública real? ──────────────────────────────────
-PUB=$(curl -s -o /tmp/pub.json -w "%{http_code}" "${API_URL}/auth/terms-link")
-echo "GET /auth/terms-link → HTTP $PUB"
-if [ "$PUB" != "200" ]; then
-  echo "::error::La ruta pública /auth/terms-link no responde 200 (HTTP $PUB)."
-  cat /tmp/pub.json
-  exit 1
-fi
-
-if [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; then
-  echo "Smoke test OK (auth requerida, ruta registrada; CORS y ruta pública OK)."
-  exit 0
-fi
-
-echo "::warning::Respuesta inesperada HTTP $CODE en ${SMOKE_PATH} (esperado 401/403 sin token)."
-cat /tmp/smoke.json
-```
-
-**Qué valida y por qué cada cosa:**
-
-| Comprobación | Fallo que detecta |
-|---|---|
-| `GET /__boot` | Secretos ausentes, arranque imposible. Responde incluso si Nest no arranca |
-| `GET <ruta protegida>` → `401/403` | **`404`**: la Lambda tiene código viejo. **`5xx`**: la app no arranca (migración pendiente, secreto que no resuelve, base inalcanzable) |
-| `OPTIONS /auth/login` con `Origin` → `200/204` | CORS mal configurado. **Es invisible desde el backend**: el backend responde bien, pero el navegador bloquea y el usuario ve `NetworkError` |
-| `GET /auth/terms-link` → `200` | La app arranca pero la base de datos no responde (este endpoint hace una consulta real) |
-
-**La lógica de `401/403` como éxito es contraintuitiva pero correcta:** un `401` prueba que la ruta existe, que la Lambda arrancó, que el guard corrió y que el filtro de excepciones formateó la respuesta. Es la señal más informativa que se puede obtener sin credenciales.
-
-### 17.4 Orden exacto de operaciones y por qué
-
-```
-1. Checkout                      ─┐
-2. Setup Node 20 (+ caché npm)    │
-3. npm ci                         │ Validación: corre también en PR
-4. Credenciales AWS vía OIDC      │
-5. npm run lint                   │
-6. npm test                       │
-7. npm run build                  │
-8. npm run test:e2e              ─┘
-   ─────────── a partir de aquí, solo en push ───────────
-9.  Resolve stage                 rama → stage
-10. preflight-deploy.sh           ¿se puede desplegar? (5 s)
-11. run-migrations.sh             ⚠️ ANTES del código, ⚠️ ANTES del prune
-12. deploy-functions.sh           prune → package → S3 → update-code → sync-env
-13. verify-deploy.sh              smoke test
-14. Warm up                       curl a una ruta pública
-```
-
-**Las tres restricciones de orden que no se pueden violar:**
-
-> **1. Migraciones ANTES de publicar código.**
-> Si se publica primero el código y la migración falla, queda **código nuevo contra esquema viejo**: errores `column does not exist` en producción, para usuarios reales. Migrando primero, un fallo detiene el despliegue en rojo y el código antiguo sigue funcionando contra el esquema antiguo.
-> **Corolario:** las migraciones deben ser **compatibles hacia atrás** durante el despliegue. Añadir columnas es seguro; borrarlas o renombrarlas requiere dos despliegues (expand/contract).
-
-> **2. Migraciones ANTES de `npm prune --production`.**
-> `migration:run` usa `ts-node`, que es devDependency. Tras el `prune` ya no existe. Invertir el orden produce `ts-node: not found`.
-
-> **3. `sync_env` DESPUÉS de `update-function-code`.**
-> El orden inverso también funciona, pero dejaría una ventana en la que la función tiene configuración nueva y código viejo. El orden actual (código, luego config) minimiza esa ventana.
-
-### 17.5 Qué se despliega por CI y qué no
-
-| Tipo de cambio | Cómo llega a AWS |
-|---|---|
-| Código NestJS (rutas, lógica, servicios) | **CI**: `update-function-code` |
-| Variables de entorno de la Lambda | **CI**: `sync_env` las lee de SSM en cada despliegue |
-| Migraciones de base de datos | **CI**: `run-migrations.sh` |
-| **Función Lambda nueva** | ❌ **Manual**: `npx serverless deploy --stage <stage>` |
-| **Evento nuevo** (S3, EventBridge) | ❌ **Manual**: `npx serverless deploy --stage <stage>` |
-| **Permiso IAM nuevo del rol de ejecución** | ❌ **Manual**: `npx serverless deploy --stage <stage>` |
-| **Cambios de `timeout`/`memorySize`** | ❌ **Manual** (`sync_env` solo toca `environment`) |
-| **Políticas IAM del rol de despliegue** | ❌ **Manual**: `aws iam create-policy-version` (ver `infra/iam/README.md`) |
-| **Parámetros SSM** | ❌ **Manual**: `aws ssm put-parameter` |
-
-> Esta separación es deliberada: el CI tiene permisos mínimos y **no puede crear infraestructura**. Un despliegue de infraestructura es una operación consciente, con credenciales de más privilegio, y debería ir en su propio pull request, separado del código.
-
----
-
-## 18. Entorno de desarrollo local y Cursor Cloud
-
-🟩 **NÚCLEO REUTILIZABLE** — esta sección se copia casi tal cual, cambiando nombres.
-
-### 18.1 Las tres formas de correr el backend
-
-| Modo | Base de datos | Secretos | Cuándo usarlo |
-|---|---|---|---|
-| **Local puro** | PostgreSQL en `localhost:5432` | Placeholders; Cognito real opcional | Desarrollo de dominio, migraciones, tests |
-| **Local contra dev** | RDS de `<stage>=dev` | Reales (`.env`) | Reproducir un bug que solo aparece con datos reales |
-| **Cursor Cloud Agent** | PostgreSQL 16 dentro del contenedor | Placeholders (o Cursor Secrets) | Agentes autónomos |
-
-> ⚠️ **Regla**: el modo "local contra dev" **no debe correr migraciones ni seeds**, porque escribe sobre una base compartida. El `setup-local.sh` del repo original deja esas dos líneas comentadas a propósito. Respétalo.
-
-### 18.2 `.cursor/environment.json`
-
-El entorno de Cursor Cloud se define con tres archivos: un JSON declarativo, un script de instalación (se ejecuta una vez al construir la imagen) y un script de arranque (se ejecuta en cada boot de la VM).
-
-```jsonc
-// .cursor/environment.json
-{
-  "name": "<app> (backend + frontend)",
-  "user": "ubuntu",
-  "install": "bash /agent/repos/<app>/.cursor/install.sh",
-  "start": "bash /agent/repos/<app>/.cursor/start.sh",
-  "terminals": [
-    {
-      "name": "backend (NestJS :3000)",
-      "command": "cd /agent/repos/<app> && npm run start:dev"
-    },
-    {
-      "name": "frontend (Nuxt :4200)",
-      "command": "if [ -d /agent/repos/<app>-frontend ]; then cd /agent/repos/<app>-frontend && pnpm dev; else echo '<app>-frontend not checked out; skipping frontend dev server'; fi"
-    }
-  ],
-  "ports": [3000, 4200],
-  "repositoryDependencies": ["github.com/<org-github>/<app>-frontend"]
-}
-```
-
-Claves no obvias:
-
-| Campo | Qué hace | Trampa |
-|---|---|---|
-| `install` | Se ejecuta **una vez** al construir el snapshot. Debe ser **idempotente**. | Si falla, la VM arranca igual pero sin dependencias. Siempre `set -euo pipefail`. |
-| `start` | Se ejecuta en **cada boot**, en background y **detached**. Nadie espera su salida. | Si falla, nadie te avisa. Revisa `/tmp/cursor/start-user/start-user.log`. |
-| `terminals` | Terminales persistentes que se abren al iniciar. | El comando del frontend está envuelto en un `if` porque el repo hermano puede no estar clonado. |
-| `ports` | Puertos que Cursor expone hacia fuera. | Si no lo declaras, el preview del navegador no funciona. |
-| `repositoryDependencies` | Repos hermanos a clonar en `/agent/repos/`. | Usa la URL sin `https://`. |
-
-### 18.3 `.cursor/install.sh`
-
-```bash
-#!/usr/bin/env bash
-# Bootstrap idempotente del entorno de Cloud Agent de <app>.
-# Prepara paquetes del sistema e instala dependencias del backend NestJS y,
-# cuando existe como checkout hermano, del frontend Nuxt (<app>-frontend).
-set -euo pipefail
-
-BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRONTEND_DIR="$(cd "$BACKEND_DIR/../<app>-frontend" 2>/dev/null && pwd || true)"
-
-echo "==> Ensuring PostgreSQL 16 is installed"
-if ! command -v pg_ctlcluster >/dev/null 2>&1; then
-  sudo apt-get update -y
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib
-fi
-
-echo "==> Ensuring pnpm is available"
-if ! command -v pnpm >/dev/null 2>&1; then
-  corepack enable >/dev/null 2>&1 || npm install -g pnpm
-fi
-
-echo "==> Installing backend dependencies"
-cd "$BACKEND_DIR"
-npm ci
-
-if [ ! -f "$BACKEND_DIR/.env" ]; then
-  echo "==> Writing backend .env with local defaults (AWS/Cognito are placeholders)"
-  cat > "$BACKEND_DIR/.env" <<'EOF'
-NODE_ENV=dev
-PORT=3000
-ALLOWED_ORIGINS=http://localhost:4200,http://localhost:3000
-
-# AWS / Cognito.
-# Los placeholders permiten que la API arranque en local. Para ejercitar flujos
-# de autenticación reales, provee valores reales como Cursor Secrets (se
-# inyectan como variables de entorno, que tienen precedencia sobre estos).
-AWS_REGION=<REGION>
-AWS_S3_BUCKET_NAME=local-dev-placeholder
-COGNITO_USER_POOL_ID=local-dev-placeholder
-COGNITO_CLIENT_ID=local-dev-placeholder
-COGNITO_CLIENT_SECRET=local-dev-placeholder
-COGNITO_REGION=<REGION>
-
-# PostgreSQL local
-DB_HOST=localhost
-DB_PORT=5432
-DB_USERNAME=postgres
-DB_PASSWORD=postgres
-DB_NAME=<db_name>
-DB_SSL=false
-EOF
-fi
-
-if [ -n "$FRONTEND_DIR" ] && [ -f "$FRONTEND_DIR/package.json" ]; then
-  echo "==> Installing frontend dependencies ($FRONTEND_DIR)"
-  cd "$FRONTEND_DIR"
-  pnpm install --frozen-lockfile
-  if [ ! -f "$FRONTEND_DIR/.env" ]; then
-    echo "==> Writing frontend .env"
-    echo "NUXT_PUBLIC_API_BASE_URL=http://localhost:3000" > "$FRONTEND_DIR/.env"
-  fi
-else
-  echo "==> Frontend repo (<app>-frontend) not found alongside backend; skipping frontend setup"
-fi
-
-echo "==> install.sh complete"
-```
-
-**Dos diferencias respecto al original que debes aplicar:**
-
-1. El original escribe `AWS_ACCESS_KEY_ID=local-dev-placeholder` y `AWS_SECRET_ACCESS_KEY=local-dev-placeholder`. **No lo hagas.** Credenciales falsas hacen que el SDK de AWS las tome como válidas e intente firmar peticiones, fallando con `InvalidAccessKeyId` en vez de caer limpiamente al fallback local. El `.env.example` del propio repo lo documenta: *"No pongas valores falsos: hacen fallar S3 en silencio en vez de dar un error claro."* El código de `aws-s3.client.ts` ya defiende contra esto (`isUsableSecret` exige longitud ≥ 16), pero es más limpio **omitir las variables**.
-2. Añade `DB_SSL=false` — ver corrección 19.10.
-
-### 18.4 `.cursor/start.sh`
-
-```bash
-#!/usr/bin/env bash
-# Reconciliación por boot del entorno de Cloud Agent de <app>.
-# Arranca PostgreSQL, asegura que el rol/base de dev existen, y luego aplica
-# migraciones TypeORM y seeds. Es seguro ejecutarlo repetidamente.
-set -euo pipefail
-
-BACKEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB_NAME="<db_name>"
-
-echo "==> Starting PostgreSQL 16 cluster"
-sudo pg_ctlcluster 16 main start 2>/dev/null || true
-
-echo "==> Waiting for PostgreSQL to accept connections"
-for _ in $(seq 1 30); do
-  if sudo -u postgres pg_isready -q; then
-    break
-  fi
-  sleep 1
-done
-sudo -u postgres pg_isready
-
-echo "==> Ensuring dev role password and database"
-sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres WITH PASSWORD 'postgres';" >/dev/null
-if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
-  sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${DB_NAME};"
-fi
-
-echo "==> Enabling required extensions"
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" \
-  -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' >/dev/null
-
-echo "==> Applying migrations and seeds"
-cd "$BACKEND_DIR"
-npm run migration:run
-npm run db:seed
-
-echo "==> start.sh complete"
-```
-
-Notas sobre este script:
-
-| Línea | Por qué |
-|---|---|
-| `pg_ctlcluster 16 main start 2>/dev/null \|\| true` | Si el cluster ya está arrancado, el comando devuelve error. El `\|\| true` lo tolera (idempotencia). |
-| Bucle de `pg_isready` | `pg_ctlcluster` retorna antes de que el socket acepte conexiones. Sin esta espera, `migration:run` falla con `ECONNREFUSED` de forma intermitente. |
-| `ALTER USER postgres WITH PASSWORD` | La instalación de Debian deja `postgres` con autenticación `peer`, sin contraseña. El backend se conecta por TCP con contraseña, así que hay que fijarla. |
-| `CREATE EXTENSION "uuid-ossp"` | **Añadido respecto al original.** Las migraciones usan `uuid_generate_v4()`, que **no existe** sin esta extensión. Ver corrección 19.11. |
-| `migration:run` + `db:seed` en cada boot | Ambos son idempotentes (TypeORM salta migraciones ya aplicadas; el seeder hace upsert). Es la forma de que la VM esté siempre al día tras un `git pull`. |
-
-> **El PostgreSQL de Debian trae SSL activado por defecto** con un certificado autofirmado (`snakeoil`). Por eso el `database.config.ts` original, que fuerza `ssl: { rejectUnauthorized: false }` sin condición, funciona en este entorno por accidente. En otros entornos locales (Homebrew en macOS, contenedor `postgres:16` oficial) **no** hay SSL y la conexión falla. Por eso la corrección 19.10 lo hace condicional.
-
-### 18.5 Levantar PostgreSQL local a mano
-
-**Debian / Ubuntu:**
-
-```bash
-sudo apt-get update -y
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-16 postgresql-contrib
-sudo pg_ctlcluster 16 main start
-sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';"
-sudo -u postgres psql -c "CREATE DATABASE <db_name>;"
-sudo -u postgres psql -d <db_name> -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
-```
-
-**macOS (Homebrew):**
-
-```bash
-brew install postgresql@16
-brew services start postgresql@16
-createdb <db_name>
-psql -d <db_name> -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
-# En Homebrew el superusuario es tu usuario de macOS, no `postgres`.
-# Ajusta DB_USERNAME en .env, o crea el rol:
-psql -d postgres -c "CREATE ROLE postgres LOGIN SUPERUSER PASSWORD 'postgres';"
-```
-
-**Docker (la opción más reproducible):**
-
-```bash
-docker run -d --name <app>-pg \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=<db_name> \
-  -p 5432:5432 \
-  postgres:16
-# La imagen oficial NO trae SSL: hay que poner DB_SSL=false en .env.
-docker exec -i <app>-pg psql -U postgres -d <db_name> \
-  -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
-```
-
-### 18.6 Secuencia completa de arranque desde cero
-
-```bash
-# 1. Dependencias
-nvm use 20            # o `fnm use 20`; debe coincidir con el runtime de Lambda
-npm ci
-
-# 2. Configuración
-cp .env.example .env
-$EDITOR .env          # completar los valores <RELLENAR_...>
-
-# 3. Base de datos (ver 18.5)
-#    ...levantar PostgreSQL y crear <db_name>...
-
-# 4. Esquema y datos iniciales
-npm run migration:run
-npm run db:seed
-
-# 5. Arrancar
-npm run start:dev
-# -> http://localhost:3000
-# -> http://localhost:3000/api  (Swagger)
-
-# 6. Verificar
-curl -s http://localhost:3000/auth/terms-link | jq .
-# Esperado: {"url":"https://<dominio>/terminos"} (o el valor del seed)
-
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/users
-# Esperado: 401 (ruta protegida, sin token)
-```
-
-### 18.7 `.env.example` completo
-
-```bash
-# ============================================================
-# <app> — .env de ejemplo
-# ------------------------------------------------------------
-# Copia este archivo a `.env` y completa los valores marcados
-# como <RELLENAR>. El archivo `.env` está en .gitignore y NUNCA
-# se sube al repositorio.
-#
-#   cp .env.example .env
-# ============================================================
-
-NODE_ENV=dev
-PORT=3000
-ALLOWED_ORIGINS=http://localhost:4200,http://127.0.0.1:4200,http://localhost:3000
-
-# --- AWS (lo usa el módulo de documentos / S3) ---
-# AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY son OPCIONALES: déjalas comentadas.
-# El SDK resuelve credenciales por su cadena estándar: en Lambda las inyecta el
-# runtime desde el rol de ejecución; en local salen de ~/.aws o de `aws sso login`.
-# Si no tienes ninguna configurada la app arranca igual y los documentos se
-# guardan en `.local-uploads/` (fallback de desarrollo).
-#
-# NO pongas valores falsos: hacen que S3 falle de forma confusa en vez de
-# activar el fallback local.
-# AWS_ACCESS_KEY_ID=
-# AWS_SECRET_ACCESS_KEY=
-AWS_REGION=<REGION>
-AWS_S3_BUCKET_NAME=<BUCKET_DOCS>
-
-# --- Cognito (identidad / auth) ---
-# Pool y client id de dev (son identificadores, no secretos):
-COGNITO_USER_POOL_ID=<USER_POOL_ID>
-COGNITO_CLIENT_ID=<CLIENT_ID>
-COGNITO_REGION=<REGION>
-# SECRETO: pídelo al equipo o cópialo del gestor de secretos. NO lo subas a git.
-COGNITO_CLIENT_SECRET=<RELLENAR_COGNITO_CLIENT_SECRET>
-
-# --- PostgreSQL ---
-# Para PostgreSQL local: DB_HOST=localhost, DB_PASSWORD=postgres, DB_SSL=false.
-# Para la RDS de dev: DB_HOST=<DB_HOST>, DB_SSL=true, y NO corras migraciones
-# ni seeds (es una base compartida).
-DB_HOST=localhost
-DB_PORT=5432
-DB_USERNAME=postgres
-DB_NAME=<DB_NAME>
-# SECRETO: contraseña de la BD. NO la subas a git.
-DB_PASSWORD=<RELLENAR_DB_PASSWORD>
-# true contra RDS (obliga TLS), false contra PostgreSQL local sin SSL.
-DB_SSL=false
-```
-
-### 18.8 Script de setup para equipo (macOS)
-
-🟦 **EJEMPLO** — adaptable. El repo original tiene `scripts/setup-local.sh`, un instalador para que personas no técnicas del equipo levanten backend + frontend con un comando. Lo relevante del patrón:
-
-```bash
-#!/usr/bin/env bash
-# Levanta backend (:3000) + frontend (:4200) en una Mac.
-# Idempotente: puedes correrlo varias veces.
-set -euo pipefail
-
-WORKDIR="$(pwd)"
-BACKEND_REPO="https://github.com/<org-github>/<app>.git"
-FRONTEND_REPO="https://github.com/<org-github>/<app>-frontend.git"
-BRANCH="dev"
-
-# 1) Homebrew, node, pnpm, git  (brew install ... si faltan)
-# 2) git clone / git pull de ambos repos
-# 3) cp .env.example .env  +  pedir los 2 secretos por stdin y sustituirlos:
-#      printf "  COGNITO_CLIENT_SECRET: "; read -r COGNITO_SECRET
-#      sed -i '' "s|<RELLENAR_COGNITO_CLIENT_SECRET>|${COGNITO_SECRET}|" .env
-# 4) npm install  /  pnpm install
-# 5) arrancar ambos en background y esperar:
-#      npm run start:dev & BACKEND_PID=$!
-#      pnpm dev        & FRONTEND_PID=$!
-#      trap 'kill ${BACKEND_PID} ${FRONTEND_PID} 2>/dev/null || true; exit 0' INT TERM
-#      wait
-```
-
-Dos detalles que vale la pena copiar:
-
-- **`sed -i ''`** (con la cadena vacía) es la forma de `sed` en BSD/macOS. En GNU/Linux es `sed -i`. Si el script tiene que correr en ambos, usa `perl -pi -e` o detecta el sistema.
-- El `trap ... INT TERM` + `wait` hace que `Ctrl+C` mate ambos servidores en vez de dejar huérfanos.
-
----
-
-## 19. Correcciones obligatorias respecto al original
-
-🟥 Esta sección es la razón por la que este documento existe. Cada punto describe **qué hace el repo original**, **por qué está mal** y **el cambio concreto**. El agente implementador **debe** aplicar las once.
-
-### 19.1 Guard JWT global con decorador `@Public()`
-
-**Qué hace el original.** `app.module.ts` registra un único guard global:
-
-```ts
-providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
-```
-
-y cada ruta protegida repite el guard a mano:
-
-```ts
-@UseGuards(JwtAuthGuard)
-@Get('me')
-getMe(@CurrentUser() user) { ... }
-```
-
-**Por qué está mal.** El modelo es **opt-in**: una ruta está protegida solo si alguien se acordó de decorarla. Olvidar un `@UseGuards` no produce ningún error de compilación, ningún test rojo y ningún aviso: produce **un endpoint público silencioso**. En un backend con datos sensibles eso es una vulnerabilidad latente que crece con cada controlador nuevo. Hay un agravante real en el repo: en `auth.controller.ts` conviven `@UseGuards(JwtAuthGuard)` y `@UseGuards(JwtAuthGuard, RolesGuard)` y es fácil poner `@Roles(...)` sin el `RolesGuard`, caso en el que **el decorador de roles no hace absolutamente nada** y la ruta queda abierta a cualquier usuario autenticado.
-
-**El cambio.** Invertir el modelo a **opt-out**: todo protegido por defecto, y lo público se marca explícitamente.
-
-```ts
-// src/common/decorators/public.decorator.ts
-import { SetMetadata } from '@nestjs/common';
-
-export const IS_PUBLIC_KEY = 'isPublic';
-
-/**
- * Marca una ruta (o un controlador entero) como accesible sin token.
- * Es la ÚNICA forma de saltarse el JwtAuthGuard global.
- */
-export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
-```
-
-```ts
-// src/common/guards/jwt-auth.guard.ts
+// src/common/auth/jwt-auth.guard.ts
 import {
   ExecutionContext,
+  HttpException,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
+import { IS_PUBLIC_KEY } from './roles';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
@@ -7633,7 +1967,7 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     super();
   }
 
-  canActivate(context: ExecutionContext) {
+  override canActivate(context: ExecutionContext) {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -7642,1906 +1976,8617 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     return super.canActivate(context);
   }
 
-  handleRequest(err: any, user: any, info: any) {
-    if (err || !user) {
-      const reason = info?.message ?? '';
-      if (reason === 'No auth token') {
-        throw new UnauthorizedException('Token de autenticación no provisto');
-      }
-      if (info?.name === 'TokenExpiredError') {
-        throw new UnauthorizedException('El token ha expirado');
-      }
-      if (info?.name === 'JsonWebTokenError') {
-        throw new UnauthorizedException('Token inválido');
-      }
-      throw err ?? new UnauthorizedException('No autorizado');
+  override handleRequest<TUser>(err: unknown, user: TUser, info: unknown): TUser {
+    if (!err && user) return user;
+    if (err instanceof HttpException) throw err;
+    if (err) {
+      // Fallo de infraestructura (p. ej. la BD no responde al leer userStatus):
+      // no se concede acceso, pero tampoco se responde 401, que haría que el
+      // frontend cerrara la sesión de todos los usuarios durante una caída.
+      throw new ServiceUnavailableException('Servicio no disponible temporalmente.');
     }
-    return user;
+    const name = (info as { name?: string; message?: string } | undefined)?.name;
+    const message = (info as { message?: string } | undefined)?.message;
+    if (message === 'No auth token') {
+      throw new UnauthorizedException('No hay una sesión activa.');
+    }
+    if (name === 'TokenExpiredError') {
+      throw new UnauthorizedException('La sesión expiró.');
+    }
+    throw new UnauthorizedException('La sesión no es válida.');
   }
 }
 ```
 
 ```ts
-// src/app.module.ts (fragmento)
-providers: [
-  { provide: APP_GUARD, useClass: ThrottlerGuard }, // 1º: rate limit
-  { provide: APP_GUARD, useClass: JwtAuthGuard },   // 2º: autenticación
-  { provide: APP_GUARD, useClass: RolesGuard },     // 3º: autorización
-],
+// src/common/auth/roles.guard.ts
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { AccessTokenClaims } from './current-user';
+import { ROLES_KEY, type Role } from './roles';
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const required = this.reflector.getAllAndOverride<Role[] | undefined>(ROLES_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (!required || required.length === 0) return true;
+
+    const user = context.switchToHttp().getRequest<{ user?: AccessTokenClaims }>().user;
+    const groups = user?.['cognito:groups'] ?? [];
+    if (required.some((role) => groups.includes(role))) return true;
+
+    throw new ForbiddenException('No tienes permisos para realizar esta acción.');
+  }
+}
 ```
 
-El orden importa: los guards globales se ejecutan en el orden en que se declaran. El `RolesGuard` necesita que `request.user` ya exista, así que debe ir **después** del `JwtAuthGuard`.
+🆕 V2.3. `ROLES` tiene cuatro entradas: `<ROL_A>` (`Inversionista`), `<ROL_B>` (`Admin`), `<ROL_C>` (`Tesoreria`) y `<ROL_D>` (`Operaciones`). Los tres internos los asigna un Admin; nadie se registra como interno. El reparto de permisos está en 28.2. Un usuario puede tener varios grupos de Cognito; el guard deja pasar si **alguno** coincide con los roles exigidos. Sin `@Roles(...)` la ruta solo exige sesión.
 
-A partir de aquí, los controladores quedan limpios y lo excepcional es lo que se marca:
+El guard JWT distingue tres fallos y no los mezcla:
+
+| Situación | HTTP | Por qué |
+|---|---|---|
+| No hay cookie, firma inválida, `iss`/`client_id`/`token_use` no coinciden, usuario no existe | 401 | La sesión no es válida. El frontend intenta un refresh y, si no, manda a login |
+| El usuario existe pero su estado no es `active` | 403 | La sesión es real; no se refresca. Hay que decir por qué |
+| La base de datos no responde (timeout, proxy caído) | 503 | Falla **cerrado**, pero no es un 401: un corte de base no debe cerrar la sesión de todos los usuarios conectados |
+
+Cualquier `HttpException` que lance la estrategia se reenvía tal cual. Cualquier otra excepción se convierte en 503. Tragarla y responder 401 era el comportamiento de la v1, y un error de TypeORM se veía como "token caducado".
+
+### 9.2 Petición: id, IP, origen, CSRF
 
 ```ts
-@Public()
-@Post('login')
-login(@Body() dto: LoginDto) { ... }
+// src/common/http/request-id.ts
+import { randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
-@Get('me')                       // protegido sin escribir nada
-getMe(@CurrentUser() user) { ... }
+export const REQUEST_ID_HEADER = 'x-request-id';
+const VALID_ID = /^[A-Za-z0-9._-]{8,64}$/;
 
-@Roles('<ROL_A>', '<ROL_B>')     // el RolesGuard global ya está activo
-@Get('admin/stats')
-stats() { ... }
+/**
+ * Reutiliza el x-request-id que manda el frontend (o un sistema upstream) si
+ * tiene una forma segura; si no, genera uno. Siempre lo devuelve en la
+ * respuesta para que el usuario pueda citarlo al reportar un error.
+ */
+export function genRequestId(req: IncomingMessage, res: ServerResponse): string {
+  const incoming = req.headers[REQUEST_ID_HEADER];
+  const candidate = Array.isArray(incoming) ? incoming[0] : incoming;
+  const id = candidate && VALID_ID.test(candidate) ? candidate : randomUUID();
+  res.setHeader(REQUEST_ID_HEADER, id);
+  return id;
+}
+
+export function requestIdOf(req: { id?: unknown }): string {
+  return typeof req.id === 'string' ? req.id : 'unknown';
+}
 ```
 
-> **Regla de oro tras este cambio**: nunca escribas `@UseGuards(JwtAuthGuard)` en un controlador. Si lo haces, Nest instancia un **segundo** guard a nivel de ruta además del global y el `@Public()` del global se evalúa, pero el local no lo consulta si no inyectaste el `Reflector`. Confía solo en los globales.
-
-### 19.2 Migraciones solo en CI — quitar `runMigrations()` de los bootstraps
-
-**Qué hace el original.** Los cuatro puntos de entrada ejecutan migraciones al arrancar:
-
 ```ts
-// src/main.ts (bloque 6)
-const dataSource = app.get(DataSource);
-await dataSource.runMigrations();
+// src/common/http/request-context.ts
+import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+import type { Request } from 'express';
+import { clientIp } from './client-ip';
+import { requestIdOf } from './request-id';
 
-// src/lambda-bootstrap.ts
-await dataSource.runMigrations();
+export interface RequestContext {
+  ip: string;
+  requestId: string;
+  userAgent: string | null;
+}
 
-// src/lambda-ingest.ts
-await dataSource.runMigrations();
-
-// src/lambda-tc-sync.ts
-await dataSource.runMigrations();
+/** IP real, requestId y user-agent de la petición, para auditoría y consentimiento. */
+export const ReqCtx = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): RequestContext => {
+    const req = ctx.switchToHttp().getRequest<Request & { id?: unknown }>();
+    const ua = req.headers['user-agent'];
+    return {
+      ip: clientIp(req),
+      requestId: requestIdOf(req),
+      userAgent: typeof ua === 'string' ? ua.slice(0, 256) : null,
+    };
+  },
+);
 ```
 
-Y **además** el CI las corre en su propio paso (`scripts/ci/run-migrations.sh`), antes de desplegar.
-
-**Por qué está mal.** Tres razones, en orden de gravedad:
-
-1. **Condición de carrera.** Lambda puede arrancar N contenedores en frío **simultáneamente** ante un pico de tráfico. Los N ejecutan `runMigrations()` a la vez. TypeORM toma un lock de transacción sobre la tabla `migrations`, lo que mitiga la corrupción, pero el resultado práctico es que N−1 invocaciones se quedan **bloqueadas esperando el lock** y agotan el timeout de 30 s del API Gateway. El usuario ve 504.
-2. **Latencia de arranque en frío.** Aunque no haya migraciones pendientes, `runMigrations()` abre una conexión, consulta la tabla `migrations` y compara. Son cientos de milisegundos añadidos a **cada** cold start, para nada.
-3. **Privilegios.** El rol de ejecución de la Lambda necesita un usuario de base de datos con permiso de DDL (`CREATE TABLE`, `ALTER TABLE`, `DROP`). Si la aplicación solo necesita DML, darle DDL amplía enormemente el radio de explosión de una inyección SQL o de un bug.
-
-Es, además, **redundante**: el CI ya las aplicó en el paso anterior.
-
-**El cambio.** Eliminar el bloque de los cuatro archivos. En `main.ts`, borrar entero el bloque 6:
-
 ```ts
-// src/main.ts — ELIMINAR estas líneas:
-- const dataSource = app.get(DataSource);
-- await dataSource.runMigrations();
-- logger.log('Migraciones aplicadas');
+// src/common/http/client-ip.ts
+import type { Request } from 'express';
+
+/**
+ * IP real del cliente. Detrás de CloudFront → API Gateway, `req.ip` es la IP
+ * de CloudFront; la del usuario llega en `CloudFront-Viewer-Address`
+ * ("203.0.113.7:51234" o "[2001:db8::1]:51234"), que la política de origen
+ * de CloudFront reenvía (16.6). En local se usa `req.ip`.
+ */
+export function clientIp(req: Request): string {
+  const viewer = req.headers['cloudfront-viewer-address'];
+  const raw = Array.isArray(viewer) ? viewer[0] : viewer;
+  if (raw) {
+    const lastColon = raw.lastIndexOf(':');
+    const host = lastColon > 0 ? raw.slice(0, lastColon) : raw;
+    return host.replace(/^\[|\]$/g, '');
+  }
+  return req.ip ?? req.socket?.remoteAddress ?? 'unknown';
+}
 ```
 
-(y el `import { DataSource } from 'typeorm';` si queda sin uso).
+```ts
+// src/common/http/client-ip.spec.ts
+import type { Request } from 'express';
+import { describe, expect, it } from 'vitest';
+import { clientIp } from './client-ip';
 
-En desarrollo local, las migraciones se aplican a mano (`npm run migration:run`) o desde `.cursor/start.sh`. En dev/qa/prod, solo desde el paso de CI.
+const req = (headers: Record<string, string>, ip = '10.0.0.1') =>
+  ({ headers, ip }) as unknown as Request;
 
-Si quieres una red de seguridad, añade una **verificación** no destructiva en vez de una ejecución:
+describe('clientIp', () => {
+  it('usa CloudFront-Viewer-Address (IPv4)', () => {
+    expect(clientIp(req({ 'cloudfront-viewer-address': '203.0.113.7:51234' }))).toBe('203.0.113.7');
+  });
+  it('usa CloudFront-Viewer-Address (IPv6)', () => {
+    expect(clientIp(req({ 'cloudfront-viewer-address': '[2001:db8::1]:443' }))).toBe('2001:db8::1');
+  });
+  it('sin CloudFront cae a req.ip', () => {
+    expect(clientIp(req({}))).toBe('10.0.0.1');
+  });
+});
+```
 
 ```ts
-// src/main.ts (opcional, solo en el arranque HTTP tradicional)
-if (process.env.NODE_ENV !== 'test') {
-  const dataSource = app.get(DataSource);
-  const pending = await dataSource.showMigrations(); // true si hay pendientes
-  if (pending) {
-    logger.warn(
-      'Hay migraciones pendientes. Ejecuta `npm run migration:run` ' +
-        '(en dev/qa/prod lo hace el CI antes de desplegar).',
+// src/common/http/edge-guards.middleware.ts
+import { timingSafeEqual } from 'node:crypto';
+import { Injectable, type NestMiddleware } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { NextFunction, Request, Response } from 'express';
+import type { EnvConfig } from '../../config/env.validation';
+import { requestIdOf } from './request-id';
+
+export const ORIGIN_VERIFY_HEADER = 'x-origin-verify';
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Dos filtros que van antes que cualquier controlador. Son middleware de Nest
+ * (no `app.use`) para ejecutarse DESPUÉS de pino-http: así cada rechazo queda
+ * registrado con su requestId.
+ *
+ * 1. Origen: la URL de API Gateway es pública. CloudFront añade una cabecera
+ *    secreta; quien no la trae se está saltando WAF y recibe 403. Sin secreto
+ *    configurado (local) no filtra.
+ * 2. CSRF (defensa en profundidad sobre SameSite=Strict): toda mutación debe
+ *    venir del propio origen. Los navegadores modernos envían Sec-Fetch-Site;
+ *    los antiguos, Origin. Un cliente sin ninguna de las dos no es un navegador
+ *    y por tanto no puede portar la cookie de una víctima.
+ */
+@Injectable()
+export class EdgeGuardsMiddleware implements NestMiddleware {
+  private readonly secret?: Buffer;
+  private readonly appOrigin: string;
+
+  constructor(config: ConfigService<EnvConfig, true>) {
+    const secret = config.get('ORIGIN_VERIFY_SECRET', { infer: true });
+    this.secret = secret ? Buffer.from(secret) : undefined;
+    this.appOrigin = new URL(config.get('APP_ORIGIN', { infer: true })).origin;
+  }
+
+  use(req: Request, res: Response, next: NextFunction): void {
+    if (this.secret && !this.hasOriginSecret(req)) {
+      return this.reject(req, res, 'Forbidden');
+    }
+    if (!SAFE_METHODS.has(req.method) && !this.isSameOrigin(req)) {
+      return this.reject(req, res, 'Origen de la petición no permitido');
+    }
+    next();
+  }
+
+  private hasOriginSecret(req: Request): boolean {
+    const got = req.headers[ORIGIN_VERIFY_HEADER];
+    const value = Buffer.from(typeof got === 'string' ? got : '');
+    return value.length === this.secret!.length && timingSafeEqual(value, this.secret!);
+  }
+
+  private isSameOrigin(req: Request): boolean {
+    const site = req.headers['sec-fetch-site'];
+    if (typeof site === 'string') return site === 'same-origin';
+    const origin = req.headers.origin;
+    if (typeof origin === 'string') return origin === this.appOrigin;
+    return true;
+  }
+
+  private reject(req: Request, res: Response, message: string): void {
+    res.status(403).json({
+      statusCode: 403,
+      message,
+      requestId: requestIdOf(req as Request & { id?: unknown }),
+      timestamp: new Date().toISOString(),
+      path: req.originalUrl,
+    });
+  }
+}
+```
+
+`x-request-id` se reutiliza solo si es un UUID. Cualquier otro valor (un cliente puede mandar lo que quiera) se descarta y se genera uno. El mismo id sale en la cabecera de respuesta, en el log de pino, en el cuerpo de error y en la fila de `audit_logs`.
+
+La IP se toma de `CloudFront-Viewer-Address` (`1.2.3.4:12345` → `1.2.3.4`). Es una cabecera que CloudFront inyecta y que el behavior de `/api/*` reenvía. No se usa `X-Forwarded-For`. En local, sin esa cabecera, se usa `req.ip`.
+
+`EdgeGuardsMiddleware` hace dos comprobaciones, en este orden, sobre **todos** los métodos:
+
+1. **Origen.** En `dev`/`qa`/`prod` la cabecera `x-origin-verify` tiene que coincidir con el secreto. La pone CloudFront y el cliente no la puede añadir (el behavior no reenvía una `x-origin-verify` que venga del navegador: la sobrescribe). Sin ella, 403. En `local` y `test` no se exige.
+2. **CSRF, solo en métodos no seguros.** Pasa si `Sec-Fetch-Site` es `same-origin` o `none` (el segundo cubre curl y las pruebas), o si `Origin` es exactamente `APP_ORIGIN`. Una petición cross-site de un formulario no manda `Sec-Fetch-Site: same-origin`. Las cookies `SameSite=Strict` ya bloquean ese caso en navegadores actuales; esta comprobación cubre el resto y no depende de que el navegador implemente SameSite.
+
+El middleware es de Nest, no `app.use`, para que pino haya corrido antes y el 403 lleve `requestId`.
+
+### 9.3 Logs y Sentry
+
+```ts
+// src/common/observability/logger.config.ts
+import type { Params } from 'nestjs-pino';
+import { genRequestId } from '../http/request-id';
+
+const REDACT = [
+  'req.headers.cookie',
+  'req.headers.authorization',
+  'req.headers["x-origin-verify"]',
+  'res.headers["set-cookie"]',
+  '*.password',
+  '*.newPassword',
+  '*.refreshToken',
+  '*.accessToken',
+  '*.code',
+];
+
+export function loggerParams(opts: { level: string; stage: string; pretty: boolean }): Params {
+  return {
+    pinoHttp: {
+      level: opts.level,
+      genReqId: genRequestId,
+      redact: { paths: REDACT, censor: '[REDACTED]' },
+      base: { stage: opts.stage, fn: process.env.AWS_LAMBDA_FUNCTION_NAME },
+      customProps: (req) => {
+        const user = (req as { user?: { sub?: string } }).user;
+        return user?.sub ? { userSub: user.sub } : {};
+      },
+      customLogLevel: (_req, res, err) => {
+        if (err || res.statusCode >= 500) return 'error';
+        if (res.statusCode >= 400) return 'warn';
+        return 'info';
+      },
+      autoLogging: { ignore: (req) => req.url === '/api/health' },
+      serializers: {
+        req: (req: { id: string; method: string; url: string }) => ({
+          id: req.id,
+          method: req.method,
+          url: req.url,
+        }),
+        res: (res: { statusCode: number }) => ({ statusCode: res.statusCode }),
+      },
+      ...(opts.pretty
+        ? { transport: { target: 'pino-pretty', options: { singleLine: true } } }
+        : {}),
+    },
+  };
+}
+```
+
+```ts
+// src/common/observability/sentry.ts
+import type * as SentryNode from '@sentry/node';
+
+let sentry: typeof SentryNode | undefined;
+
+/**
+ * Inicialización mínima de Sentry: solo captura explícita de errores, sin
+ * trazas, sin integraciones automáticas y sin hooks de carga de módulos
+ * (encarecen el arranque en frío). Las trazas de rendimiento las da X-Ray (24.4).
+ */
+export async function initSentry(opts: {
+  dsn?: string;
+  environment: string;
+  release?: string;
+}): Promise<void> {
+  if (!opts.dsn || sentry) return;
+  const mod = await import('@sentry/node');
+  mod.init({
+    dsn: opts.dsn,
+    environment: opts.environment,
+    release: opts.release,
+    tracesSampleRate: 0,
+    enableOpenTelemetrySetup: false,
+    enableRuntimeChannelInjection: false,
+    defaultIntegrations: false,
+  });
+  sentry = mod;
+}
+
+export function captureException(error: unknown, context: Record<string, unknown>): void {
+  sentry?.captureException(error, { extra: context });
+}
+
+/** En Lambda el proceso se congela al responder: hay que vaciar la cola antes. */
+export async function flushSentry(timeoutMs = 1500): Promise<void> {
+  await sentry?.flush(timeoutMs);
+}
+```
+
+Pino redacta `req.headers.cookie`, `authorization`, `x-origin-verify`, `res.headers['set-cookie']` y cualquier campo `password`/`refreshToken`/`clientSecret` del body. El body no se loguea entero: solo la lista de claves.
+
+`/api/health` no entra en el auto-logging. Un balanceador que pega cada 10 segundos llenaría el grupo de logs y la factura.
+
+Sentry (`@sentry/node` 11) se inicializa solo si hay `SENTRY_DSN`. Tres opciones que en la versión 11 cambiaron de nombre y, si se escriben las antiguas, el proceso no arranca o instrumenta OpenTelemetry dos veces:
+
+- `enableOpenTelemetrySetup: false` y `enableRuntimeChannelInjection: false`. El tracing lo hace X-Ray (24.2), no el SDK de Sentry. Las dos a la vez duplican spans y se pisan.
+- `defaultIntegrations: false`. Las integraciones por defecto enganchan `console` y el loader de módulos; en un bundle de Lambda eso añade peso y ruido. Los errores se capturan a mano en el filtro, solo los 5xx.
+- `tracesSampleRate: 0`. Sin esto el SDK abre un transporte de tracing que no vamos a usar.
+- `sendDefaultPii: false` ya no existe en la versión 11; no añadirla.
+
+`Sentry.flush(2000)` después de capturar, porque Lambda puede congelar el proceso antes de que el cliente termine de enviar.
+
+### 9.4 Filtro de excepciones
+
+```ts
+// src/common/filters/http-exception.filter.ts
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
+import type { Request, Response } from 'express';
+import { requestIdOf } from '../http/request-id';
+import { captureException, flushSentry } from '../observability/sentry';
+
+export interface ErrorBody {
+  statusCode: number;
+  message: string | string[];
+  requestId: string;
+  timestamp: string;
+  path: string;
+}
+
+@Catch()
+export class HttpExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(HttpExceptionFilter.name);
+
+  async catch(exception: unknown, host: ArgumentsHost): Promise<void> {
+    const ctx = host.switchToHttp();
+    const res = ctx.getResponse<Response>();
+    const req = ctx.getRequest<Request>();
+    const requestId = requestIdOf(req as Request & { id?: unknown });
+
+    let status: number = HttpStatus.INTERNAL_SERVER_ERROR;
+    let message: string | string[] = 'Ocurrió un error inesperado en el servidor.';
+
+    if (exception instanceof HttpException) {
+      status = exception.getStatus();
+      const body = exception.getResponse();
+      if (typeof body === 'string') {
+        message = body;
+      } else if (body && typeof body === 'object' && 'message' in body) {
+        message = (body as { message: string | string[] }).message;
+      }
+    }
+
+    if (status >= 500) {
+      this.logger.error(
+        { err: exception, requestId, path: req.originalUrl },
+        'Error no controlado',
+      );
+      captureException(exception, { requestId, path: req.originalUrl });
+      await flushSentry();
+    }
+
+    const payload: ErrorBody = {
+      statusCode: status,
+      message,
+      requestId,
+      timestamp: new Date().toISOString(),
+      path: req.originalUrl,
+    };
+    res.status(status).json(payload);
+  }
+}
+```
+
+El cuerpo de error es siempre el mismo:
+
+```json
+{ "statusCode": 400, "message": "…", "requestId": "…", "timestamp": "…", "path": "/api/…" }
+```
+
+`message` es el mensaje de la excepción si es un string, o el array de class-validator unido. Nunca es el stack, nunca es un error de Postgres con el SQL. El stack va al log, con el `requestId`.
+
+Sentry solo recibe 5xx. Un 400 de validación no es un incidente.
+
+El tipo de `status` se trata como `number` al compararlo: el enum `HttpStatus` de Nest y un `number` suelto disparan `@typescript-eslint/no-unsafe-enum-comparison` si se comparan directo.
+
+### 9.5 Paginación, decimales, errores de Postgres, auditoría
+
+```ts
+// src/common/pagination/page.ts
+import { applyDecorators, type Type as ClassType } from '@nestjs/common';
+import {
+  ApiExtraModels,
+  ApiOkResponse,
+  ApiProperty,
+  ApiPropertyOptional,
+  getSchemaPath,
+} from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { IsInt, IsOptional, Max, Min } from 'class-validator';
+
+/** Parámetros de paginación comunes. Los query params llegan como string: @Type los convierte. */
+export class PageQueryDto {
+  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit: number = 20;
+
+  @ApiPropertyOptional({ default: 0, minimum: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  offset: number = 0;
+}
+
+/** Forma única de toda respuesta paginada de la API. */
+export class PageDto<T> {
+  @ApiProperty({ isArray: true })
+  items: T[];
+
+  @ApiProperty({ description: 'Total de filas que cumplen el filtro (sin paginar)' })
+  total: number;
+
+  @ApiProperty()
+  limit: number;
+
+  @ApiProperty()
+  offset: number;
+}
+
+export function toPage<T>(items: T[], total: number, q: PageQueryDto): PageDto<T> {
+  return { items, total, limit: q.limit, offset: q.offset };
+}
+
+/**
+ * Documenta en OpenAPI una respuesta PageDto<Model> con el tipo concreto de `items`.
+ * Sin esto, el cliente generado en el frontend vería `items: unknown[]`.
+ */
+export function ApiPageResponse(model: ClassType<unknown>) {
+  return applyDecorators(
+    ApiExtraModels(PageDto, model),
+    ApiOkResponse({
+      schema: {
+        allOf: [
+          { $ref: getSchemaPath(PageDto) },
+          { properties: { items: { type: 'array', items: { $ref: getSchemaPath(model) } } } },
+        ],
+      },
+    }),
+  );
+}
+```
+
+```ts
+// src/common/utils/decimal.util.ts
+import Decimal from 'decimal.js';
+
+export function toDecimal(value: number | string | null | undefined): Decimal | null {
+  if (value === null || value === undefined || value === '') return null;
+  return new Decimal(value);
+}
+
+export function safeDivide(numerator: Decimal | null, denominator: Decimal | null): Decimal | null {
+  if (!numerator || !denominator || denominator.isZero()) return null;
+  return numerator.div(denominator);
+}
+
+export function decimalToNumber(value: Decimal | null): number | null {
+  return value ? value.toNumber() : null;
+}
+
+export function parseAmount(text: string): Decimal | null {
+  const cleaned = text.replace(/[^\d.,()-]/g, '').trim();
+  if (!cleaned) return null;
+  const negative = cleaned.startsWith('(') && cleaned.endsWith(')');
+  const normalized = cleaned.replace(/[()]/g, '').replace(/,/g, '');
+  const num = toDecimal(normalized);
+  if (!num) return null;
+  return negative ? num.neg() : num;
+}
+```
+
+```ts
+// src/common/database/pg-errors.ts
+import { QueryFailedError } from 'typeorm';
+
+/** Código SQLSTATE de PostgreSQL para violación de restricción única. */
+export const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * true si el error es una violación de unicidad (opcionalmente de una restricción concreta).
+ * Detectar el conflicto al insertar, en vez de consultar antes, elimina la carrera entre
+ * dos peticiones simultáneas: la base es la única que puede garantizar la unicidad.
+ */
+export function isUniqueViolation(error: unknown, constraint?: string): boolean {
+  if (!(error instanceof QueryFailedError)) return false;
+  const driverError = error.driverError as { code?: string; constraint?: string };
+  return (
+    driverError.code === PG_UNIQUE_VIOLATION &&
+    (!constraint || driverError.constraint === constraint)
+  );
+}
+```
+
+```ts
+// src/common/constants/audit-actions.ts
+export const AUDIT_ACTIONS = {
+  USER_LOGIN: 'USER_LOGIN',
+  USER_LOGIN_FAILED: 'USER_LOGIN_FAILED',
+  USER_MFA_ENROLLED: 'USER_MFA_ENROLLED',
+  USER_SIGNUP: 'USER_SIGNUP',
+  USER_CONFIRM_SIGNUP: 'USER_CONFIRM_SIGNUP',
+  USER_FORGOT_PASSWORD: 'USER_FORGOT_PASSWORD',
+  USER_CONFIRM_PASSWORD: 'USER_CONFIRM_PASSWORD',
+  USER_LOGOUT: 'USER_LOGOUT',
+  USER_LOGOUT_ALL: 'USER_LOGOUT_ALL',
+  ADMIN_UPDATE_USER_STATUS: 'ADMIN_UPDATE_USER_STATUS',
+  GENERATE_PRESIGNED_URL: 'GENERATE_PRESIGNED_URL',
+  DOWNLOAD_DOCUMENT: 'DOWNLOAD_DOCUMENT',
+  // Acciones del dominio (🟦 ejemplo: módulo projects de 12.2)
+  PROJECT_CREATED: 'PROJECT_CREATED',
+  PROJECT_UPDATED: 'PROJECT_UPDATED',
+} as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
+```
+
+`PageQueryDto` limita `limit` a 100. La envoltura de toda lista es `{ items, total, limit, offset }`, sin más campos. `ApiPageResponse` es el decorador de Swagger para que el OpenAPI describa esa envoltura con el tipo concreto de `items`.
+
+`decimal.js` es la única forma de operar importes. La columna es `numeric`, el driver entrega `string`, y un `Number("0.10") + Number("0.20")` no es `0.30`.
+
+`isUniqueViolation` reconoce el código `23505`. Los servicios lo traducen a 409. No se captura con `error.message.includes('duplicate')`: el texto cambia con el idioma del servidor.
+
+Las acciones de auditoría son constantes. Una cadena libre en cada servicio produce diez grafías del mismo hecho y los informes dejan de cuadrar.
+
+### 9.6 Idempotencia de los `POST`
+
+🆕 **V2.1.** Un `POST` que crea algo puede llegar dos veces: doble clic, un reintento del navegador tras un corte, o el reintento de `useApi` después de refrescar la sesión. Sin una clave, el segundo crea un duplicado o, si hay una clave natural única, devuelve un 409 que el usuario no entiende ("ya existe" lo que acaba de crear él).
+
+El cliente manda `Idempotency-Key: <uuid>` en cada `POST` y reutiliza la misma clave en sus reintentos. El backend guarda la clave, atada al usuario, durante 24 horas:
+
+| Situación | Respuesta |
+|---|---|
+| Clave nueva | Se ejecuta el handler. Si responde bien, se guarda el cuerpo |
+| Misma clave, misma petición, ya terminada | El cuerpo guardado, con el mismo status y `Idempotent-Replayed: true`. El handler no corre |
+| Misma clave, misma petición, todavía en curso | 409. El cliente espera y reintenta |
+| Misma clave, otra petición (otra ruta u otro body) | 422. Es un bug del cliente |
+| Sin clave o con una que no es UUID, en una ruta `@Idempotent()` | 400 |
+| El handler lanza | La clave se libera. Un reintento vuelve a ejecutar, y un error de validación vuelve a dar el mismo error |
+
+```ts
+// src/common/idempotency/idempotent.decorator.ts
+import { applyDecorators, SetMetadata } from '@nestjs/common';
+import { ApiHeader } from '@nestjs/swagger';
+
+export const IDEMPOTENT = 'idempotent';
+export const IDEMPOTENCY_HEADER = 'idempotency-key';
+
+/** La ruta exige Idempotency-Key. Solo en rutas autenticadas: la clave se ata al usuario. */
+export const Idempotent = () =>
+  applyDecorators(
+    SetMetadata(IDEMPOTENT, true),
+    ApiHeader({
+      name: 'Idempotency-Key',
+      required: true,
+      description: 'UUID generado por el cliente. El reintento lleva el mismo valor',
+      schema: { type: 'string', format: 'uuid' },
+    }),
+  );
+```
+
+```ts
+// src/common/idempotency/idempotency-key.entity.ts
+import { Check, Column, CreateDateColumn, Entity, Index, PrimaryColumn } from 'typeorm';
+
+export const IDEMPOTENCY_STATE = { IN_PROGRESS: 'in_progress', COMPLETED: 'completed' } as const;
+export type IdempotencyState = (typeof IDEMPOTENCY_STATE)[keyof typeof IDEMPOTENCY_STATE];
+
+/**
+ * Sin FK a users: la fila caduca en 24 h y no debe bloquear nada del usuario.
+ * Los nombres de las restricciones son fijos para que migration:generate no proponga renombrarlas.
+ */
+@Entity('idempotency_keys')
+@Check('CHK_idempotency_keys_state', `"state" IN ('in_progress','completed')`)
+export class IdempotencyKey {
+  @PrimaryColumn({ type: 'uuid', primaryKeyConstraintName: 'PK_idempotency_keys' })
+  actorSub: string;
+
+  @PrimaryColumn({ type: 'uuid', primaryKeyConstraintName: 'PK_idempotency_keys' })
+  key: string;
+
+  /** sha256 de método, ruta y body. Distingue "el mismo reintento" de "otra petición con la misma clave". */
+  @Column({ type: 'char', length: 64 })
+  fingerprint: string;
+
+  @Column({ type: 'varchar', length: 20, default: IDEMPOTENCY_STATE.IN_PROGRESS })
+  state: IdempotencyState;
+
+  @Column({ type: 'jsonb', nullable: true })
+  responseBody: unknown;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt: Date;
+
+  @Index('IDX_idempotency_keys_expires_at')
+  @Column({ type: 'timestamptz' })
+  expiresAt: Date;
+}
+```
+
+```ts
+// src/common/idempotency/idempotency.service.ts
+import { ConflictException, Injectable, UnprocessableEntityException } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import type { DataSource } from 'typeorm';
+
+const TTL = '24 hours';
+const PURGE_PROBABILITY = 0.02;
+const PURGE_BATCH = 500;
+
+export type Claim = { kind: 'new' } | { kind: 'replay'; body: unknown };
+
+@Injectable()
+export class IdempotencyService {
+  constructor(@InjectDataSource() private readonly db: DataSource) {}
+
+  /**
+   * Reserva la clave en una sola sentencia. Dos peticiones simultáneas con la misma
+   * clave no pueden ganar las dos: la clave primaria decide. Una clave caducada se
+   * reutiliza como nueva.
+   */
+  async claim(actorSub: string, key: string, fingerprint: string): Promise<Claim> {
+    const claimed: unknown[] = await this.db.query(
+      `INSERT INTO idempotency_keys (actor_sub, key, fingerprint, expires_at)
+       VALUES ($1, $2, $3, now() + $4::interval)
+       ON CONFLICT (actor_sub, key) DO UPDATE
+         SET fingerprint = EXCLUDED.fingerprint, state = 'in_progress', response_body = NULL,
+             created_at = now(), expires_at = EXCLUDED.expires_at
+         WHERE idempotency_keys.expires_at < now()
+       RETURNING key`,
+      [actorSub, key, fingerprint, TTL],
+    );
+    if (claimed.length > 0) return { kind: 'new' };
+
+    const rows: Array<{ fingerprint: string; state: string; response_body: unknown }> =
+      await this.db.query(
+        `SELECT fingerprint, state, response_body FROM idempotency_keys
+         WHERE actor_sub = $1 AND key = $2`,
+        [actorSub, key],
+      );
+    const row = rows[0];
+    if (!row || row.state !== 'completed') {
+      throw new ConflictException(
+        'La petición original con esta Idempotency-Key sigue en curso. Reintenta en unos segundos.',
+      );
+    }
+    if (row.fingerprint !== fingerprint) {
+      throw new UnprocessableEntityException('Esta Idempotency-Key ya se usó con otra petición.');
+    }
+    return { kind: 'replay', body: row.response_body };
+  }
+
+  async complete(actorSub: string, key: string, body: unknown): Promise<void> {
+    // pg convierte un array de JS en un array de Postgres, no en JSON: se serializa a mano.
+    await this.db.query(
+      `UPDATE idempotency_keys SET state = 'completed', response_body = $3::jsonb
+       WHERE actor_sub = $1 AND key = $2`,
+      [actorSub, key, JSON.stringify(body ?? null)],
+    );
+    if (Math.random() < PURGE_PROBABILITY) await this.purgeExpired();
+  }
+
+  async release(actorSub: string, key: string): Promise<void> {
+    await this.db.query(
+      `DELETE FROM idempotency_keys WHERE actor_sub = $1 AND key = $2 AND state = 'in_progress'`,
+      [actorSub, key],
+    );
+  }
+
+  /** Lote acotado que viaja con el tráfico: no hace falta un cron para una tabla de 24 h. */
+  private async purgeExpired(): Promise<void> {
+    await this.db.query(
+      `DELETE FROM idempotency_keys WHERE ctid = ANY(ARRAY(
+         SELECT ctid FROM idempotency_keys WHERE expires_at < now() LIMIT $1))`,
+      [PURGE_BATCH],
     );
   }
 }
 ```
 
-`showMigrations()` solo lee; no toma locks de escritura ni requiere DDL.
+```ts
+// src/common/idempotency/idempotency.interceptor.ts
+import { createHash } from 'node:crypto';
+import {
+  BadRequestException,
+  type CallHandler,
+  type ExecutionContext,
+  Injectable,
+  type NestInterceptor,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { Request, Response } from 'express';
+import { from, type Observable, of, throwError } from 'rxjs';
+import { catchError, mergeMap } from 'rxjs/operators';
+import { IDEMPOTENCY_HEADER, IDEMPOTENT } from './idempotent.decorator';
+import { IdempotencyService } from './idempotency.service';
 
-### 19.3 RDS Proxy
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-**Qué hace el original.** `database.config.ts` no configura `extra`, así que TypeORM usa el pool por defecto de `node-postgres` (`max: 10`). Cada contenedor Lambda caliente mantiene hasta 10 conexiones abiertas contra PostgreSQL.
+@Injectable()
+export class IdempotencyInterceptor implements NestInterceptor {
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly keys: IdempotencyService,
+  ) {}
 
-**Por qué está mal.** Una `db.t3.medium` admite ~85 conexiones. Con 3 funciones Lambda y concurrencia moderada —digamos 30 contenedores calientes— la aritmética es 30 × 10 = 300 conexiones solicitadas contra un techo de 85. El síntoma es `FATAL: sorry, too many clients already`, y aparece exactamente cuando hay tráfico, es decir, en el peor momento. Lambda y los pools de conexiones son un antipatrón conocido: el pool asume un proceso longevo que amortiza el coste de abrir conexiones, y Lambda es lo contrario.
+  async intercept(ctx: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
+    const enabled = this.reflector.getAllAndOverride<boolean | undefined>(IDEMPOTENT, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]);
+    if (!enabled || ctx.getType() !== 'http') return next.handle();
 
-**El cambio.** Dos partes, y las dos son necesarias:
+    const req = ctx.switchToHttp().getRequest<Request & { user?: { sub?: string } }>();
+    const res = ctx.switchToHttp().getResponse<Response>();
+    const raw = req.header(IDEMPOTENCY_HEADER);
+    if (!raw || !UUID.test(raw)) {
+      throw new BadRequestException('La cabecera Idempotency-Key es obligatoria y debe ser un UUID.');
+    }
+    const sub = req.user?.sub;
+    if (!sub) return next.handle();
 
-**(a) Limitar el pool cuando se corre dentro de Lambda.**
+    const key = raw.toLowerCase();
+    const fingerprint = createHash('sha256')
+      .update(`${req.method} ${req.originalUrl}\n${JSON.stringify(req.body ?? null)}`)
+      .digest('hex');
+
+    const claim = await this.keys.claim(sub, key, fingerprint);
+    if (claim.kind === 'replay') {
+      // El status lo vuelve a poner Nest (201 en un POST): es el mismo del handler original.
+      res.setHeader('Idempotent-Replayed', 'true');
+      return of(claim.body);
+    }
+
+    return next.handle().pipe(
+      // Solo los errores del handler liberan la clave. Si falla `complete`, el cambio ya está
+      // confirmado: liberar la clave permitiría ejecutarlo dos veces.
+      catchError((err: unknown) =>
+        from(this.keys.release(sub, key).catch(() => undefined)).pipe(
+          mergeMap(() => throwError(() => err)),
+        ),
+      ),
+      mergeMap((body: unknown) => from(this.keys.complete(sub, key, body).then(() => body))),
+    );
+  }
+}
+```
+
+Uso: `@Idempotent()` en el `POST` del controlador, encima de `@Post()` (12.2). No va en `/api/auth/*` (son públicas y no hay usuario al que atar la clave) ni en `PATCH`, que ya tiene el bloqueo optimista por `version`.
+
+Lo que no cubre:
+
+- Si la Lambda muere entre el `COMMIT` del handler y el `complete`, la fila se queda `in_progress` hasta que caduca. El reintento recibe 409 durante ese tiempo en lugar de duplicar. Es el lado seguro del fallo: un duplicado no se deshace, y un 409 se explica.
+- No hay caché de errores. Stripe guarda también las respuestas 4xx. Aquí un 400 vuelve a ejecutar la validación, que da el mismo 400, y la tabla no se llena de errores.
+- `x-request-id` y `Idempotency-Key` son cosas distintas. El primero identifica un intento y el segundo identifica la operación. El cliente reutiliza los dos en el reintento tras el refresh, así que esas dos líneas de log comparten `requestId`.
+
+La cabecera tiene que llegar a la Lambda: está en la lista de `ApiOriginRequest` de CloudFront (16.8). Si se quita de ahí, toda ruta `@Idempotent()` responde 400 en AWS y funciona en local.
 
 ```ts
-// src/config/database.config.ts (fragmento)
-export const databaseConfig = (
-  configService: ConfigService,
-): TypeOrmModuleOptions => {
-  // AWS_LAMBDA_FUNCTION_NAME solo existe dentro del runtime de Lambda.
-  const isLambda = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+// test/idempotency.e2e-spec.ts
+import { randomUUID } from 'node:crypto';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTestApp, insertUser, signAccessToken, type TestContext } from './support/test-app';
 
-  return {
-    type: 'postgres',
-    host: configService.get<string>('DB_HOST'),
-    port: configService.get<number>('DB_PORT'),
-    username: configService.get<string>('DB_USERNAME'),
-    password: configService.get<string>('DB_PASSWORD'),
-    database: configService.get<string>('DB_NAME'),
-    autoLoadEntities: true,
-    synchronize: false,
-    migrations: [path.join(__dirname, '/../migrations/*.{ts,js}')],
-    ssl: configService.get<string>('DB_SSL') === 'false'
-      ? false
-      : { rejectUnauthorized: false },
-    extra: {
-      // Un contenedor Lambda procesa UNA petición a la vez: más de una
-      // conexión por contenedor no aporta throughput, solo agota la BD.
-      max: isLambda ? 1 : 10,
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 5_000,
-    },
+const AT = '<app-short>_at';
+
+describe('Idempotency-Key en POST /api/projects', () => {
+  let ctx: TestContext;
+  let cookie: string;
+
+  beforeAll(async () => {
+    ctx = await createTestApp();
+    const sub = await insertUser(ctx.db);
+    cookie = `${AT}=${signAccessToken({ sub, groups: ['<ROL_A>'] })}`;
+  });
+
+  afterAll(async () => {
+    await ctx.app.close();
+    await ctx.db.destroy();
+  });
+
+  const post = (body: object, key?: string) => {
+    const req = request(ctx.app.getHttpServer()).post('/api/projects').set('Cookie', cookie);
+    return (key ? req.set('Idempotency-Key', key) : req).send(body);
   };
+  const projectsWithCode = async (code: string) => {
+    const rows: Array<{ n: number }> = await ctx.db.query(
+      `SELECT count(*)::int AS n FROM projects WHERE code = $1`,
+      [code],
+    );
+    return rows[0].n;
+  };
+
+  it('sin clave responde 400 y no crea nada', async () => {
+    await post({ code: 'IDM-00001', name: 'Sin clave' }).expect(400);
+    expect(await projectsWithCode('IDM-00001')).toBe(0);
+  });
+
+  it('una clave que no es UUID responde 400', async () => {
+    await post({ code: 'IDM-00002', name: 'Clave mala' }, 'no-es-un-uuid').expect(400);
+  });
+
+  it('el reintento con la misma clave devuelve la misma respuesta y crea una sola fila', async () => {
+    const key = randomUUID();
+    const body = { code: 'IDM-00003', name: 'Reintento' };
+    const first = await post(body, key).expect(201);
+    const second = await post(body, key).expect(201);
+    expect(second.headers['idempotent-replayed']).toBe('true');
+    expect(second.body.id).toBe(first.body.id);
+    expect(await projectsWithCode('IDM-00003')).toBe(1);
+  });
+
+  it('la misma clave con otro body responde 422', async () => {
+    const key = randomUUID();
+    await post({ code: 'IDM-00004', name: 'Uno' }, key).expect(201);
+    await post({ code: 'IDM-00005', name: 'Otro' }, key).expect(422);
+    expect(await projectsWithCode('IDM-00005')).toBe(0);
+  });
+
+  it('un 400 del handler libera la clave', async () => {
+    const key = randomUUID();
+    await post({ code: 'mal', name: 'Formato' }, key).expect(400);
+    await post({ code: 'mal', name: 'Formato' }, key).expect(400);
+    const rows = await ctx.db.query(`SELECT 1 FROM idempotency_keys WHERE key = $1`, [key]);
+    expect(rows).toHaveLength(0);
+  });
+});
+```
+
+El último caso depende del orden de Nest: los pipes de validación corren **después** de los interceptores, así que un 400 de class-validator pasa por el `catchError` y libera la clave.
+
+---
+## 10. Autenticación y RBAC con Cognito, end to end
+
+🆕 **V2.** Cognito es el proveedor de identidad. El backend no firma JWTs propios y no guarda contraseñas. La sesión que ve el navegador son tres cookies que el backend emite y que JavaScript no puede leer.
+
+### 10.1 Las tres cookies
+
+| Cookie (HTTPS) | Cookie (HTTP local) | Path | Vida | Contenido |
+|---|---|---|---|---|
+| `__Host-<app-short>_at` | `<app-short>_at` | `/` | la de `ExpiresIn` de Cognito (15 min) | Access token |
+| `__Secure-<app-short>_rt` | `<app-short>_rt` | `/api/auth` | 30 días | Refresh token |
+| `__Secure-<app-short>_mfa` | `<app-short>_mfa` | `/api/auth` | 5 min | Estado opaco del reto en curso |
+
+`httpOnly`, `Secure` (solo con HTTPS), `SameSite=Strict`. Sin atributo `Domain`: el prefijo `__Host-` lo prohíbe, y así un subdominio comprometido no puede plantar una cookie de sesión. En local el navegador rechaza los prefijos `__Host-`/`__Secure-` sobre HTTP, por eso se omiten. La función que elige los nombres es la única fuente; los tests y el frontend no los hardcodean, los descubren por el comportamiento (el frontend ni siquiera los lee: `httpOnly`).
+
+El refresh token solo viaja a `/api/auth/*`. Un XSS en una página que llama a `/api/projects` no lo arrastra.
+
+### 10.2 Recorrido
+
+```
+POST /api/auth/login          { email, password }
+        │
+        ├─ tokens ──────────► Set-Cookie access + refresh, limpia el reto
+        │                     body: { status: "authenticated" }
+        │
+        └─ reto ────────────► Set-Cookie reto (base64url de {c,s,u,e})
+                              body: { status: "challenge", challenge: "SOFTWARE_TOKEN_MFA"
+                                      | "MFA_SETUP" | "NEW_PASSWORD_REQUIRED" | "EMAIL_OTP" }
+
+POST /api/auth/challenge      { code } o { newPassword }
+POST /api/auth/challenge/mfa-setup   { code }   (verifica el TOTP recién asociado)
+        │
+        └─ el servicio reenvía a Cognito con la session del reto y el SECRET_HASH
+           firmado con el USERNAME interno (USER_ID_FOR_SRP), no con el email
+
+POST /api/auth/refresh        (sin body: la cookie de refresh va sola por el path)
+POST /api/auth/logout         RevokeToken del refresh, aunque el access haya caducado
+POST /api/auth/logout-all     GlobalSignOut
+GET  /api/auth/me             perfil desde la tabla users, no desde los claims del ID token
+```
+
+Alta, confirmación y recuperación siguen siendo de Cognito y son públicas:
+
+`POST /api/auth/signup`, `/confirm`, `/resend-code`, `/forgot-password`, `/confirm-password`, y `GET /api/auth/terms-link`.
+
+`signup` solo existe si `AUTH_SELF_SIGNUP=true` (el user pool lo permite; ver Anexo A). Si el alta crea el usuario en Cognito y falla al insertar la fila local, se llama a `AdminDeleteUser` con el **sub** devuelto, no con el email: borrar por email puede borrar a otra persona si el email se reutilizó.
+
+### 10.3 Qué se valida del access token
+
+`jwt.strategy.ts` comprueba, además de la firma RS256 contra el JWKS del pool:
+
+- `token_use === "access"`. Un ID token presentado como sesión se rechaza.
+- `client_id === COGNITO_CLIENT_ID`. Un token emitido para otra app del mismo pool no sirve.
+- `iss` es el issuer del pool.
+
+Después carga el usuario de la tabla `users` por el `sub`. El perfil (email, nombre, estado, roles) sale de esa fila. Los claims del token no se proyectan al cliente: Cognito y la base pueden divergir un instante tras un cambio de grupo, y la fuente de autorización de la API es la fila local que el migrator y `AdminAddUserToGroup` mantienen alineada con los grupos.
+
+Usuario desconocido → 401. Error de base → 503 (9.1).
+
+### 10.4 `SECRET_HASH` y la rotación del refresh
+
+El app client de Cognito tiene secreto. Estas llamadas llevan `SECRET_HASH = HMAC_SHA256(clientSecret, username + clientId)`:
+
+- `InitiateAuth` con `USER_PASSWORD_AUTH`
+- `RespondToAuthChallenge`
+- `SignUp`, `ConfirmSignUp`, `ForgotPassword`, `ConfirmForgotPassword`, `ResendConfirmationCode`
+
+El `username` de ese HMAC, en los retos, es el `USERNAME` interno que Cognito devuelve (`USER_ID_FOR_SRP`), no el email con el que el usuario escribió. El estado del reto lo guarda en la cookie (`u`). Perderlo a mitad de un reto encadenado (por ejemplo MFA después de `NEW_PASSWORD_REQUIRED`) produce un `NotAuthorizedException` que parece una contraseña mala.
+
+**El refresh no usa ese HMAC.** Con el plan Essentials, la rotación se hace con `GetTokensFromRefreshToken` y el secreto va en el campo `ClientSecret` de la petición, no en `SECRET_HASH`. Cada refresh invalida el refresh token anterior. `RetryGracePeriodSeconds: 10` (16.5) absorbe el reintento de dos pestañas que refrescan a la vez; fuera de esa ventana el segundo recibe 401 y el usuario vuelve a login. Es el comportamiento que se quiere.
+
+### 10.5 Código
+
+```ts
+// src/modules/auth/session-cookies.ts
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { CookieOptions, Request, Response } from 'express';
+import type { EnvConfig } from '../../config/env.validation';
+
+const APP = '<app-short>';
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const AUTH_PATH = '/api/auth';
+
+/** Estado de un login a medio camino (MFA, cambio de contraseña). Opaco para el navegador. */
+export interface ChallengeState {
+  /** Nombre del reto de Cognito pendiente. */
+  c: string;
+  /** Session de Cognito (opaca, caduca en 3 minutos). */
+  s: string;
+  /** USERNAME interno de Cognito (USER_ID_FOR_SRP); con él se firma SECRET_HASH. */
+  u: string;
+  /** Email con el que se inició sesión (para la URI otpauth y la auditoría). */
+  e: string;
+}
+
+/**
+ * Nombres de cookie según el origen. Con HTTPS se usan los prefijos
+ * `__Host-` (obliga a Secure, Path=/ y sin Domain: no se puede inyectar desde
+ * un subdominio) y `__Secure-`. En HTTP local los navegadores rechazan esos
+ * prefijos, así que se omiten.
+ */
+export function sessionCookieNames(appOrigin: string) {
+  const secure = appOrigin.startsWith('https://');
+  return {
+    secure,
+    access: secure ? `__Host-${APP}_at` : `${APP}_at`,
+    refresh: secure ? `__Secure-${APP}_rt` : `${APP}_rt`,
+    challenge: secure ? `__Secure-${APP}_mfa` : `${APP}_mfa`,
+  };
+}
+
+@Injectable()
+export class SessionCookies {
+  readonly names: ReturnType<typeof sessionCookieNames>;
+
+  constructor(config: ConfigService<EnvConfig, true>) {
+    this.names = sessionCookieNames(config.get('APP_ORIGIN', { infer: true }));
+  }
+
+  private base(path: string): CookieOptions {
+    return { httpOnly: true, secure: this.names.secure, sameSite: 'strict', path };
+  }
+
+  setSession(
+    res: Response,
+    tokens: { accessToken: string; refreshToken?: string; expiresIn: number },
+  ): void {
+    res.cookie(this.names.access, tokens.accessToken, {
+      ...this.base('/'),
+      maxAge: tokens.expiresIn * 1000,
+    });
+    if (tokens.refreshToken) {
+      res.cookie(this.names.refresh, tokens.refreshToken, {
+        ...this.base(AUTH_PATH),
+        maxAge: REFRESH_TTL_MS,
+      });
+    }
+    res.clearCookie(this.names.challenge, this.base(AUTH_PATH));
+  }
+
+  setChallenge(res: Response, state: ChallengeState): void {
+    const value = Buffer.from(JSON.stringify(state)).toString('base64url');
+    res.cookie(this.names.challenge, value, { ...this.base(AUTH_PATH), maxAge: CHALLENGE_TTL_MS });
+  }
+
+  clearAll(res: Response): void {
+    res.clearCookie(this.names.access, this.base('/'));
+    res.clearCookie(this.names.refresh, this.base(AUTH_PATH));
+    res.clearCookie(this.names.challenge, this.base(AUTH_PATH));
+  }
+
+  accessToken(req: Request): string | undefined {
+    return readCookie(req, this.names.access);
+  }
+
+  refreshToken(req: Request): string | undefined {
+    return readCookie(req, this.names.refresh);
+  }
+
+  challenge(req: Request): ChallengeState | undefined {
+    const raw = readCookie(req, this.names.challenge);
+    if (!raw) return undefined;
+    try {
+      const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as ChallengeState;
+      return parsed.c && parsed.s && parsed.u ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function readCookie(req: Request, name: string): string | undefined {
+  const value = (req.cookies as Record<string, unknown> | undefined)?.[name];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+```
+
+```ts
+// src/modules/auth/cognito.provider.ts
+import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
+import type { Provider } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { EnvConfig } from '../../config/env.validation';
+
+/** Token de inyección: los tests lo sustituyen por un doble con `send` simulado (15.3). */
+export const COGNITO_CLIENT = Symbol('COGNITO_CLIENT');
+
+export type CognitoClient = Pick<CognitoIdentityProviderClient, 'send'>;
+
+export const cognitoClientProvider: Provider = {
+  provide: COGNITO_CLIENT,
+  inject: [ConfigService],
+  useFactory: (config: ConfigService<EnvConfig, true>): CognitoClient =>
+    new CognitoIdentityProviderClient({ region: config.get('AWS_REGION', { infer: true }) }),
 };
 ```
 
-**(b) Poner un RDS Proxy delante.** El proxy multiplexa: mantiene un pool propio contra la base de datos y reutiliza conexiones entre invocaciones Lambda. Las Lambdas apuntan al endpoint del proxy en vez de al de la instancia.
+```ts
+// src/modules/auth/jwt-key.provider.ts
+import type { Provider } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { passportJwtSecret } from 'jwks-rsa';
+import type { SecretOrKeyProvider } from 'passport-jwt';
+import type { EnvConfig } from '../../config/env.validation';
 
-Lo que esto implica a nivel de infraestructura:
+/** Token de inyección de las claves públicas de firma. Los tests lo sustituyen por una clave local (15.3). */
+export const JWT_KEY_PROVIDER = Symbol('JWT_KEY_PROVIDER');
 
-| Requisito | Detalle |
+export function cognitoIssuer(config: ConfigService<EnvConfig, true>): string {
+  return `https://cognito-idp.${config.get('AWS_REGION', { infer: true })}.amazonaws.com/${config.get('COGNITO_USER_POOL_ID', { infer: true })}`;
+}
+
+export const jwtKeyProvider: Provider = {
+  provide: JWT_KEY_PROVIDER,
+  inject: [ConfigService],
+  useFactory: (config: ConfigService<EnvConfig, true>): SecretOrKeyProvider =>
+    passportJwtSecret({
+      cache: true,
+      cacheMaxAge: 6 * 60 * 60 * 1000,
+      rateLimit: true,
+      jwksRequestsPerMinute: 10,
+      jwksUri: `${cognitoIssuer(config)}/.well-known/jwks.json`,
+    }) as SecretOrKeyProvider,
+};
+```
+
+```ts
+// src/modules/auth/jwt.strategy.ts
+import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PassportStrategy } from '@nestjs/passport';
+import type { Request } from 'express';
+import { Strategy, type SecretOrKeyProvider } from 'passport-jwt';
+import type { AccessTokenClaims } from '../../common/auth/current-user';
+import type { EnvConfig } from '../../config/env.validation';
+import { USER_STATUS } from '../users/user.entity';
+import { UsersService } from '../users/users.service';
+import { cognitoIssuer, JWT_KEY_PROVIDER } from './jwt-key.provider';
+import { sessionCookieNames } from './session-cookies';
+
+const BLOCKED_MESSAGES: Record<string, string> = {
+  [USER_STATUS.BLOCKED]: 'Tu cuenta fue bloqueada. Comunícate con soporte.',
+  [USER_STATUS.REJECTED]: 'Tu cuenta fue rechazada.',
+  [USER_STATUS.OBSERVED]: 'Tu cuenta está en revisión. El acceso está suspendido temporalmente.',
+};
+
+@Injectable()
+export class JwtStrategy extends PassportStrategy(Strategy) {
+  private readonly clientId: string;
+
+  constructor(
+    config: ConfigService<EnvConfig, true>,
+    private readonly users: UsersService,
+    @Inject(JWT_KEY_PROVIDER) keyProvider: SecretOrKeyProvider,
+  ) {
+    const issuer = cognitoIssuer(config);
+    const cookieName = sessionCookieNames(config.get('APP_ORIGIN', { infer: true })).access;
+
+    super({
+      jwtFromRequest: (req: Request) =>
+        (req.cookies as Record<string, string> | undefined)?.[cookieName] ?? null,
+      ignoreExpiration: false,
+      // Sin esta lista, un token HS256 firmado con la clave pública pasaría (confusión de algoritmo).
+      algorithms: ['RS256'],
+      issuer,
+      secretOrKeyProvider: keyProvider,
+    });
+    this.clientId = config.get('COGNITO_CLIENT_ID', { infer: true });
+  }
+
+  /**
+   * La firma, la expiración y el emisor ya están verificados. Aquí se exige que
+   * sea un ACCESS token de NUESTRO App Client, y se aplica el bloqueo en
+   * caliente leyendo el estado local. Cualquier error de base de datos se
+   * propaga: el guard lo convierte en 503 y NO deja pasar (falla cerrado).
+   */
+  async validate(payload: AccessTokenClaims): Promise<AccessTokenClaims> {
+    if (payload.token_use !== 'access' || payload.client_id !== this.clientId) {
+      throw new UnauthorizedException('La sesión no es válida.');
+    }
+    const status = await this.users.findStatusById(payload.sub);
+    if (status === null) {
+      throw new UnauthorizedException('Tu usuario no está registrado en la aplicación.');
+    }
+    if (status !== USER_STATUS.ACTIVE) {
+      throw new UnauthorizedException(BLOCKED_MESSAGES[status] ?? 'Acceso denegado.');
+    }
+    return payload;
+  }
+}
+```
+
+```ts
+// src/modules/auth/dto/auth.dto.ts
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
+import {
+  Equals,
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  MaxLength,
+} from 'class-validator';
+
+const normalizeEmail = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : value;
+
+/** Debe coincidir con la política de contraseñas del User Pool (16.5). */
+const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{12,128}$/;
+const PASSWORD_MESSAGE =
+  'La contraseña debe tener entre 12 y 128 caracteres e incluir mayúscula, minúscula, número y un carácter especial.';
+
+class EmailDto {
+  @ApiProperty({ example: 'usuario@ejemplo.com' })
+  @Transform(normalizeEmail)
+  @IsEmail({}, { message: 'El correo electrónico no tiene un formato válido.' })
+  @MaxLength(320)
+  email: string;
+}
+
+export class LoginDto extends EmailDto {
+  @ApiProperty({ example: 'Contraseña-Segura-1' })
+  @IsString()
+  @IsNotEmpty({ message: 'La contraseña es obligatoria.' })
+  @MaxLength(128)
+  password: string;
+}
+
+export class SignUpDto extends EmailDto {
+  @ApiProperty({ example: 'Contraseña-Segura-1' })
+  @Matches(PASSWORD_RULE, { message: PASSWORD_MESSAGE })
+  password: string;
+
+  @ApiPropertyOptional({ example: '+51999999999', description: 'Formato E.164' })
+  @IsOptional()
+  @Matches(/^\+[1-9]\d{7,14}$/, {
+    message: 'El teléfono debe estar en formato E.164 (+51999999999).',
+  })
+  phoneNumber?: string;
+
+  @ApiProperty({ example: 'Ana María' })
+  @IsString()
+  @Length(1, 100)
+  firstName: string;
+
+  @ApiProperty({ example: 'Pérez Soto' })
+  @IsString()
+  @Length(1, 100)
+  lastName: string;
+
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  @Equals(true, { message: 'Debes aceptar los términos y condiciones para continuar.' })
+  acceptedTerms: boolean;
+}
+
+export class ConfirmSignUpDto extends EmailDto {
+  @ApiProperty({ example: '123456' })
+  @Matches(/^\d{6}$/, { message: 'El código debe tener 6 dígitos.' })
+  code: string;
+}
+
+export class ResendCodeDto extends EmailDto {}
+
+export class ForgotPasswordDto extends EmailDto {}
+
+export class ConfirmPasswordDto extends EmailDto {
+  @ApiProperty({ example: '123456' })
+  @Matches(/^\d{6}$/, { message: 'El código debe tener 6 dígitos.' })
+  code: string;
+
+  @ApiProperty({ example: 'Contraseña-Nueva-2' })
+  @Matches(PASSWORD_RULE, { message: PASSWORD_MESSAGE })
+  newPassword: string;
+}
+
+export const SUPPORTED_CHALLENGES = [
+  'SOFTWARE_TOKEN_MFA',
+  'EMAIL_OTP',
+  'MFA_SETUP',
+  'NEW_PASSWORD_REQUIRED',
+] as const;
+export type SupportedChallenge = (typeof SUPPORTED_CHALLENGES)[number];
+
+export class ChallengeResponseDto {
+  @ApiProperty({ enum: SUPPORTED_CHALLENGES })
+  @IsIn(SUPPORTED_CHALLENGES)
+  challenge: SupportedChallenge;
+
+  @ApiPropertyOptional({ example: '123456', description: 'Código TOTP o del correo' })
+  @IsOptional()
+  @Matches(/^\d{6,8}$/, { message: 'El código debe tener entre 6 y 8 dígitos.' })
+  code?: string;
+
+  @ApiPropertyOptional({ description: 'Solo para NEW_PASSWORD_REQUIRED' })
+  @IsOptional()
+  @Matches(PASSWORD_RULE, { message: PASSWORD_MESSAGE })
+  newPassword?: string;
+}
+
+/** Respuestas de la API de sesión: nunca contienen tokens. */
+export type SessionResponse =
+  | { status: 'authenticated'; expiresAt: string }
+  | { status: 'challenge'; challenge: SupportedChallenge };
+
+export class SessionResponseDto {
+  @ApiProperty({ enum: ['authenticated', 'challenge'] })
+  status: 'authenticated' | 'challenge';
+
+  @ApiPropertyOptional({
+    description: 'Expiración del access token (ISO 8601). Solo si status=authenticated',
+  })
+  expiresAt?: string;
+
+  @ApiPropertyOptional({ enum: SUPPORTED_CHALLENGES, description: 'Solo si status=challenge' })
+  challenge?: SupportedChallenge;
+}
+
+export class MfaSetupResponseDto {
+  @ApiProperty({ description: 'Secreto TOTP en base32 (para ingreso manual)' })
+  secretCode: string;
+
+  @ApiProperty({ description: 'URI otpauth:// para pintar el código QR' })
+  otpauthUri: string;
+}
+
+export class MessageResponseDto {
+  @ApiProperty()
+  message: string;
+}
+
+export class MeResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  sub: string;
+
+  @ApiProperty()
+  email: string;
+
+  @ApiProperty()
+  firstName: string;
+
+  @ApiProperty()
+  lastName: string;
+
+  @ApiProperty({ type: [String] })
+  groups: string[];
+
+  @ApiProperty({ enum: ['active', 'blocked', 'observed', 'rejected', 'unknown'] })
+  userStatus: string;
+
+  @ApiProperty({ format: 'date-time' })
+  sessionExpiresAt: string;
+}
+```
+
+```ts
+// src/modules/auth/auth.service.ts
+import {
+  AdminDeleteUserCommand,
+  AssociateSoftwareTokenCommand,
+  type AuthenticationResultType,
+  ConfirmForgotPasswordCommand,
+  ConfirmSignUpCommand,
+  ForgotPasswordCommand,
+  GetTokensFromRefreshTokenCommand,
+  GlobalSignOutCommand,
+  InitiateAuthCommand,
+  ResendConfirmationCodeCommand,
+  RespondToAuthChallengeCommand,
+  RevokeTokenCommand,
+  SignUpCommand,
+  VerifySoftwareTokenCommand,
+} from '@aws-sdk/client-cognito-identity-provider';
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  Inject,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHmac } from 'node:crypto';
+import { AUDIT_ACTIONS } from '../../common/constants/audit-actions';
+import type { RequestContext } from '../../common/http/request-context';
+import type { EnvConfig } from '../../config/env.validation';
+import { AuditService } from '../audit/audit.service';
+import { UsersService } from '../users/users.service';
+import { COGNITO_CLIENT, type CognitoClient } from './cognito.provider';
+import {
+  type ChallengeResponseDto,
+  type ConfirmPasswordDto,
+  type ConfirmSignUpDto,
+  type ForgotPasswordDto,
+  type LoginDto,
+  type ResendCodeDto,
+  type SignUpDto,
+  SUPPORTED_CHALLENGES,
+  type SupportedChallenge,
+} from './dto/auth.dto';
+import type { ChallengeState } from './session-cookies';
+
+export interface SessionTokens {
+  accessToken: string;
+  refreshToken?: string;
+  expiresIn: number;
+  sub: string;
+}
+
+export type LoginOutcome =
+  | { kind: 'session'; tokens: SessionTokens }
+  | { kind: 'challenge'; challenge: SupportedChallenge; state: ChallengeState };
+
+const GENERIC_MESSAGE = 'Si el correo está registrado, recibirás un código en unos minutos.';
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  private readonly clientId: string;
+  private readonly clientSecret: string;
+  private readonly userPoolId: string;
+  private readonly selfSignup: boolean;
+
+  constructor(
+    @Inject(COGNITO_CLIENT) private readonly cognito: CognitoClient,
+    config: ConfigService<EnvConfig, true>,
+    private readonly users: UsersService,
+    private readonly audit: AuditService,
+  ) {
+    this.clientId = config.get('COGNITO_CLIENT_ID', { infer: true });
+    this.clientSecret = config.get('COGNITO_CLIENT_SECRET', { infer: true });
+    this.userPoolId = config.get('COGNITO_USER_POOL_ID', { infer: true });
+    this.selfSignup = config.get('AUTH_SELF_SIGNUP', { infer: true });
+  }
+
+  // ─── Login y retos ────────────────────────────────────────────────────────
+
+  async login(dto: LoginDto, ctx: RequestContext): Promise<LoginOutcome> {
+    try {
+      const res = await this.cognito.send(
+        new InitiateAuthCommand({
+          AuthFlow: 'USER_PASSWORD_AUTH',
+          ClientId: this.clientId,
+          AuthParameters: {
+            USERNAME: dto.email,
+            PASSWORD: dto.password,
+            SECRET_HASH: this.secretHash(dto.email),
+          },
+        }),
+      );
+      return await this.outcome(res, dto.email, ctx);
+    } catch (error) {
+      await this.audit.recordSafe({
+        action: AUDIT_ACTIONS.USER_LOGIN_FAILED,
+        actorSub: null,
+        ip: ctx.ip,
+        requestId: ctx.requestId,
+        details: (error as { name?: string }).name,
+      });
+      throw this.translate(error);
+    }
+  }
+
+  async respondToChallenge(
+    state: ChallengeState | undefined,
+    dto: ChallengeResponseDto,
+    ctx: RequestContext,
+  ): Promise<LoginOutcome> {
+    if (!state || state.c !== dto.challenge) {
+      throw new UnauthorizedException(
+        'El inicio de sesión expiró. Vuelve a ingresar tu contraseña.',
+      );
+    }
+    try {
+      if (dto.challenge === 'MFA_SETUP') {
+        if (!dto.code) throw new BadRequestException('Ingresa el código de tu app autenticadora.');
+        const verified = await this.cognito.send(
+          new VerifySoftwareTokenCommand({
+            Session: state.s,
+            UserCode: dto.code,
+            FriendlyDeviceName: 'app',
+          }),
+        );
+        if (verified.Status !== 'SUCCESS' || !verified.Session) {
+          throw new BadRequestException('El código no es correcto.');
+        }
+        const res = await this.cognito.send(
+          new RespondToAuthChallengeCommand({
+            ClientId: this.clientId,
+            ChallengeName: 'MFA_SETUP',
+            Session: verified.Session,
+            ChallengeResponses: { USERNAME: state.u, SECRET_HASH: this.secretHash(state.u) },
+          }),
+        );
+        await this.audit.recordSafe({
+          action: AUDIT_ACTIONS.USER_MFA_ENROLLED,
+          actorSub: state.u,
+          ip: ctx.ip,
+          requestId: ctx.requestId,
+        });
+        return await this.outcome(res, state.e, ctx, state.u);
+      }
+
+      const responses: Record<string, string> = {
+        USERNAME: state.u,
+        SECRET_HASH: this.secretHash(state.u),
+      };
+      if (dto.challenge === 'NEW_PASSWORD_REQUIRED') {
+        if (!dto.newPassword) throw new BadRequestException('Ingresa una contraseña nueva.');
+        responses.NEW_PASSWORD = dto.newPassword;
+      } else {
+        if (!dto.code) throw new BadRequestException('Ingresa el código de verificación.');
+        responses[dto.challenge === 'EMAIL_OTP' ? 'EMAIL_OTP_CODE' : 'SOFTWARE_TOKEN_MFA_CODE'] =
+          dto.code;
+      }
+      const res = await this.cognito.send(
+        new RespondToAuthChallengeCommand({
+          ClientId: this.clientId,
+          ChallengeName: dto.challenge,
+          Session: state.s,
+          ChallengeResponses: responses,
+        }),
+      );
+      return await this.outcome(res, state.e, ctx, state.u);
+    } catch (error) {
+      throw this.translate(error);
+    }
+  }
+
+  /** Paso previo a MFA_SETUP: devuelve el secreto TOTP para pintar el código QR. */
+  async startMfaSetup(state: ChallengeState | undefined, issuer: string) {
+    if (!state || state.c !== 'MFA_SETUP') {
+      throw new UnauthorizedException(
+        'El inicio de sesión expiró. Vuelve a ingresar tu contraseña.',
+      );
+    }
+    try {
+      const res = await this.cognito.send(new AssociateSoftwareTokenCommand({ Session: state.s }));
+      if (!res.SecretCode || !res.Session) throw new Error('Cognito no devolvió el secreto TOTP');
+      const label = encodeURIComponent(`${issuer}:${state.e}`);
+      const otpauthUri = `otpauth://totp/${label}?secret=${res.SecretCode}&issuer=${encodeURIComponent(issuer)}`;
+      return { secretCode: res.SecretCode, otpauthUri, state: { ...state, s: res.Session } };
+    } catch (error) {
+      throw this.translate(error);
+    }
+  }
+
+  // ─── Sesión ───────────────────────────────────────────────────────────────
+
+  /**
+   * Con la rotación de refresh token activada en el App Client (16.5), cada
+   * renovación devuelve un refresh token NUEVO e invalida el anterior tras un
+   * período de gracia. GetTokensFromRefreshToken recibe el client secret
+   * directamente: ya no hace falta calcular SECRET_HASH con el `sub` (22.1).
+   */
+  async refresh(refreshToken: string | undefined): Promise<SessionTokens> {
+    if (!refreshToken) throw new UnauthorizedException('No hay una sesión activa.');
+    try {
+      const res = await this.cognito.send(
+        new GetTokensFromRefreshTokenCommand({
+          ClientId: this.clientId,
+          ClientSecret: this.clientSecret,
+          RefreshToken: refreshToken,
+        }),
+      );
+      return this.tokensFrom(res.AuthenticationResult);
+    } catch (error) {
+      const name = (error as { name?: string }).name;
+      if (name === 'NotAuthorizedException' || name === 'RefreshTokenReuseException') {
+        throw new UnauthorizedException('La sesión expiró. Vuelve a iniciar sesión.');
+      }
+      throw this.translate(error);
+    }
+  }
+
+  /** Cierra ESTA sesión: revoca el refresh token y los access tokens emitidos con él. */
+  async logout(refreshToken: string | undefined, actorSub: string | null, ctx: RequestContext) {
+    if (refreshToken) {
+      try {
+        await this.cognito.send(
+          new RevokeTokenCommand({
+            ClientId: this.clientId,
+            ClientSecret: this.clientSecret,
+            Token: refreshToken,
+          }),
+        );
+      } catch (error) {
+        this.logger.warn({ err: error }, 'RevokeToken falló; se limpian las cookies igualmente');
+      }
+    }
+    await this.audit.recordSafe({
+      action: AUDIT_ACTIONS.USER_LOGOUT,
+      actorSub,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+  }
+
+  /** Cierra la sesión en TODOS los dispositivos del usuario. */
+  async logoutAll(accessToken: string, actorSub: string, ctx: RequestContext) {
+    try {
+      await this.cognito.send(new GlobalSignOutCommand({ AccessToken: accessToken }));
+    } catch (error) {
+      throw this.translate(error);
+    }
+    await this.audit.recordSafe({
+      action: AUDIT_ACTIONS.USER_LOGOUT_ALL,
+      actorSub,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+  }
+
+  // ─── Registro y recuperación ──────────────────────────────────────────────
+
+  async signUp(dto: SignUpDto, ctx: RequestContext) {
+    if (!this.selfSignup) {
+      throw new ForbiddenException(
+        'El registro está cerrado. Solicita una invitación al administrador.',
+      );
+    }
+    let userSub: string | undefined;
+    try {
+      const res = await this.cognito.send(
+        new SignUpCommand({
+          ClientId: this.clientId,
+          Username: dto.email,
+          Password: dto.password,
+          SecretHash: this.secretHash(dto.email),
+          UserAttributes: [
+            { Name: 'email', Value: dto.email },
+            { Name: 'given_name', Value: dto.firstName },
+            { Name: 'family_name', Value: dto.lastName },
+            ...(dto.phoneNumber ? [{ Name: 'phone_number', Value: dto.phoneNumber }] : []),
+          ],
+        }),
+      );
+      userSub = res.UserSub;
+    } catch (error) {
+      // Anti-enumeración: un email ya registrado responde igual que uno nuevo.
+      if ((error as { name?: string }).name === 'UsernameExistsException') {
+        return { message: 'Te enviamos un código de verificación a tu correo.' };
+      }
+      throw this.translate(error);
+    }
+    if (!userSub)
+      throw new ServiceUnavailableException('Cognito no devolvió el identificador del usuario.');
+
+    try {
+      const termsVersion =
+        (await this.users.getSetting('terms_and_conditions_url')) ?? '<TERMS_URL>';
+      await this.users.create({
+        id: userSub,
+        email: dto.email,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        phoneNumber: dto.phoneNumber ?? null,
+        acceptedTerms: dto.acceptedTerms,
+        termsVersion,
+        ip: ctx.ip,
+        requestId: ctx.requestId,
+      });
+    } catch (dbError) {
+      // Rollback: sin esto la identidad queda huérfana en Cognito y el usuario
+      // no puede volver a registrarse ni entrar.
+      await this.cognito
+        .send(new AdminDeleteUserCommand({ UserPoolId: this.userPoolId, Username: userSub }))
+        .catch((e: unknown) => this.logger.error({ err: e, userSub }, 'Rollback de Cognito falló'));
+      throw dbError;
+    }
+    return { message: 'Te enviamos un código de verificación a tu correo.' };
+  }
+
+  async confirmSignUp(dto: ConfirmSignUpDto, ctx: RequestContext) {
+    try {
+      await this.cognito.send(
+        new ConfirmSignUpCommand({
+          ClientId: this.clientId,
+          Username: dto.email,
+          ConfirmationCode: dto.code,
+          SecretHash: this.secretHash(dto.email),
+        }),
+      );
+    } catch (error) {
+      throw this.translate(error);
+    }
+    const user = await this.users.confirmByEmail(dto.email);
+    await this.audit.recordSafe({
+      action: AUDIT_ACTIONS.USER_CONFIRM_SIGNUP,
+      actorSub: user.id,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+    return { message: 'Cuenta confirmada. Ya puedes iniciar sesión.' };
+  }
+
+  async resendCode(dto: ResendCodeDto) {
+    try {
+      await this.cognito.send(
+        new ResendConfirmationCodeCommand({
+          ClientId: this.clientId,
+          Username: dto.email,
+          SecretHash: this.secretHash(dto.email),
+        }),
+      );
+    } catch (error) {
+      if (!this.isEnumerationError(error)) throw this.translate(error);
+    }
+    return { message: GENERIC_MESSAGE };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto, ctx: RequestContext) {
+    try {
+      await this.cognito.send(
+        new ForgotPasswordCommand({
+          ClientId: this.clientId,
+          Username: dto.email,
+          SecretHash: this.secretHash(dto.email),
+        }),
+      );
+    } catch (error) {
+      if (!this.isEnumerationError(error)) throw this.translate(error);
+    }
+    const user = await this.users.findByEmail(dto.email);
+    await this.audit.recordSafe({
+      action: AUDIT_ACTIONS.USER_FORGOT_PASSWORD,
+      actorSub: user?.id ?? null,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+    return { message: GENERIC_MESSAGE };
+  }
+
+  async confirmForgotPassword(dto: ConfirmPasswordDto, ctx: RequestContext) {
+    try {
+      await this.cognito.send(
+        new ConfirmForgotPasswordCommand({
+          ClientId: this.clientId,
+          Username: dto.email,
+          ConfirmationCode: dto.code,
+          Password: dto.newPassword,
+          SecretHash: this.secretHash(dto.email),
+        }),
+      );
+    } catch (error) {
+      throw this.translate(error);
+    }
+    const user = await this.users.findByEmail(dto.email);
+    await this.audit.recordSafe({
+      action: AUDIT_ACTIONS.USER_CONFIRM_PASSWORD,
+      actorSub: user?.id ?? null,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+    return { message: 'Contraseña restablecida. Ya puedes iniciar sesión.' };
+  }
+
+  // ─── Internos ─────────────────────────────────────────────────────────────
+
+  private async outcome(
+    res: {
+      AuthenticationResult?: AuthenticationResultType;
+      ChallengeName?: string;
+      Session?: string;
+      ChallengeParameters?: Record<string, string>;
+    },
+    email: string,
+    ctx: RequestContext,
+    previousUsername?: string,
+  ): Promise<LoginOutcome> {
+    if (res.AuthenticationResult) {
+      const tokens = this.tokensFrom(res.AuthenticationResult);
+      await this.audit.recordSafe({
+        action: AUDIT_ACTIONS.USER_LOGIN,
+        actorSub: tokens.sub,
+        ip: ctx.ip,
+        requestId: ctx.requestId,
+      });
+      return { kind: 'session', tokens };
+    }
+    const challenge = res.ChallengeName as SupportedChallenge | undefined;
+    if (!challenge || !res.Session || !SUPPORTED_CHALLENGES.includes(challenge)) {
+      this.logger.error({ challenge: res.ChallengeName }, 'Reto de Cognito no soportado');
+      throw new BadRequestException('Este método de verificación no está habilitado.');
+    }
+    return {
+      kind: 'challenge',
+      challenge,
+      state: {
+        c: challenge,
+        s: res.Session,
+        // Cognito solo envía USER_ID_FOR_SRP en el primer reto: en los encadenados se arrastra.
+        u: res.ChallengeParameters?.USER_ID_FOR_SRP ?? previousUsername ?? email,
+        e: email,
+      },
+    };
+  }
+
+  private tokensFrom(result: AuthenticationResultType | undefined): SessionTokens {
+    if (!result?.AccessToken || !result.ExpiresIn) {
+      throw new ServiceUnavailableException('Cognito no devolvió tokens.');
+    }
+    return {
+      accessToken: result.AccessToken,
+      refreshToken: result.RefreshToken,
+      expiresIn: result.ExpiresIn,
+      sub: decodeSub(result.AccessToken),
+    };
+  }
+
+  /** HMAC requerido por Cognito cuando el App Client tiene secreto (10.2). */
+  private secretHash(username: string): string {
+    return createHmac('sha256', this.clientSecret)
+      .update(username + this.clientId)
+      .digest('base64');
+  }
+
+  private isEnumerationError(error: unknown): boolean {
+    const name = (error as { name?: string }).name;
+    return name === 'UserNotFoundException' || name === 'InvalidParameterException';
+  }
+
+  /** Traduce errores de Cognito a HTTP sin filtrar detalles internos. */
+  private translate(error: unknown): HttpException {
+    if (error instanceof HttpException) return error;
+    const name = (error as { name?: string }).name ?? 'Error';
+    switch (name) {
+      case 'NotAuthorizedException':
+      case 'UserNotFoundException':
+        return new UnauthorizedException('Correo o contraseña incorrectos.');
+      case 'UserNotConfirmedException':
+        return new ForbiddenException('Debes confirmar tu cuenta. Revisa tu correo.');
+      case 'PasswordResetRequiredException':
+        return new ForbiddenException('Debes restablecer tu contraseña.');
+      case 'CodeMismatchException':
+      case 'EnableSoftwareTokenMFAException':
+        return new BadRequestException('El código no es correcto.');
+      case 'ExpiredCodeException':
+        return new BadRequestException('El código expiró. Solicita uno nuevo.');
+      case 'InvalidPasswordException':
+        return new BadRequestException('La contraseña no cumple la política de seguridad.');
+      case 'LimitExceededException':
+      case 'TooManyRequestsException':
+      case 'TooManyFailedAttemptsException':
+        return new HttpException('Demasiados intentos. Espera unos minutos.', 429);
+      default:
+        this.logger.error({ err: error }, 'Error inesperado de Cognito');
+        return new ServiceUnavailableException('El servicio de autenticación no está disponible.');
+    }
+  }
+}
+
+/** El token acaba de llegar de Cognito por TLS: leer su payload sin verificar es seguro aquí. */
+function decodeSub(jwt: string): string {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as {
+      sub?: string;
+    };
+    return payload.sub ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+```
+
+```ts
+// src/modules/auth/auth.controller.ts
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  Res,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ApiNoContentResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request, Response } from 'express';
+import { CurrentUser, type CurrentUserPayload } from '../../common/auth/current-user';
+import { Public } from '../../common/auth/roles';
+import { ReqCtx, type RequestContext } from '../../common/http/request-context';
+import { UsersService } from '../users/users.service';
+import { AuthService, type LoginOutcome } from './auth.service';
+import {
+  ChallengeResponseDto,
+  ConfirmPasswordDto,
+  ConfirmSignUpDto,
+  ForgotPasswordDto,
+  LoginDto,
+  MeResponseDto,
+  MessageResponseDto,
+  MfaSetupResponseDto,
+  ResendCodeDto,
+  type SessionResponse,
+  SessionResponseDto,
+  SignUpDto,
+} from './dto/auth.dto';
+import { SessionCookies } from './session-cookies';
+
+const MFA_ISSUER = '<org> <app-short>';
+
+@ApiTags('Autenticación')
+@Controller('auth')
+export class AuthController {
+  constructor(
+    private readonly auth: AuthService,
+    private readonly users: UsersService,
+    private readonly cookies: SessionCookies,
+  ) {}
+
+  @Post('login')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Iniciar sesión. Emite cookies de sesión o devuelve un reto (MFA, cambio de contraseña)',
+  })
+  @ApiOkResponse({ type: SessionResponseDto })
+  async login(
+    @Body() dto: LoginDto,
+    @ReqCtx() ctx: RequestContext,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<SessionResponse> {
+    return this.apply(res, await this.auth.login(dto, ctx));
+  }
+
+  @Post('challenge')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Responder al reto pendiente (código MFA, alta de MFA o contraseña nueva)',
+  })
+  @ApiOkResponse({ type: SessionResponseDto })
+  async challenge(
+    @Body() dto: ChallengeResponseDto,
+    @ReqCtx() ctx: RequestContext,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<SessionResponse> {
+    return this.apply(
+      res,
+      await this.auth.respondToChallenge(this.cookies.challenge(req), dto, ctx),
+    );
+  }
+
+  @Post('challenge/mfa-setup')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Obtener el secreto TOTP (y su URI otpauth para el QR) durante el alta de MFA',
+  })
+  @ApiOkResponse({ type: MfaSetupResponseDto })
+  async mfaSetup(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const result = await this.auth.startMfaSetup(this.cookies.challenge(req), MFA_ISSUER);
+    this.cookies.setChallenge(res, result.state);
+    return { secretCode: result.secretCode, otpauthUri: result.otpauthUri };
+  }
+
+  @Post('refresh')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Renovar la sesión con la cookie de refresh (rota el refresh token)' })
+  @ApiOkResponse({ type: SessionResponseDto })
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<SessionResponse> {
+    try {
+      const tokens = await this.auth.refresh(this.cookies.refreshToken(req));
+      this.cookies.setSession(res, tokens);
+      return { status: 'authenticated', expiresAt: expiresAt(tokens.expiresIn) };
+    } catch (error) {
+      this.cookies.clearAll(res);
+      throw error;
+    }
+  }
+
+  @Post('logout')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Cerrar esta sesión (funciona aunque el access token haya expirado)' })
+  @ApiNoContentResponse()
+  async logout(
+    @Req() req: Request,
+    @ReqCtx() ctx: RequestContext,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    // Ruta pública (el access token puede haber expirado): el sub se lee sin
+    // verificar, solo para la auditoría. Nunca se usa para autorizar.
+    const sub = unverifiedSub(this.cookies.accessToken(req));
+    await this.auth.logout(this.cookies.refreshToken(req), sub, ctx);
+    this.cookies.clearAll(res);
+  }
+
+  @Post('logout-all')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Cerrar la sesión en todos los dispositivos' })
+  @ApiNoContentResponse()
+  async logoutAll(
+    @Req() req: Request,
+    @CurrentUser() user: CurrentUserPayload,
+    @ReqCtx() ctx: RequestContext,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    const accessToken = this.cookies.accessToken(req);
+    if (!accessToken) throw new UnauthorizedException('No hay una sesión activa.');
+    await this.auth.logoutAll(accessToken, user.sub, ctx);
+    this.cookies.clearAll(res);
+  }
+
+  @Get('me')
+  @ApiOperation({ summary: 'Perfil del usuario de la sesión actual' })
+  @ApiOkResponse({ type: MeResponseDto })
+  async me(@CurrentUser() user: CurrentUserPayload): Promise<MeResponseDto> {
+    const dbUser = await this.users.findById(user.sub);
+    return {
+      sub: user.sub,
+      email: dbUser?.email ?? '',
+      firstName: dbUser?.firstName ?? '',
+      lastName: dbUser?.lastName ?? '',
+      groups: user.groups,
+      userStatus: dbUser?.userStatus ?? 'unknown',
+      sessionExpiresAt: new Date(user.exp * 1000).toISOString(),
+    };
+  }
+
+  @Get('terms-link')
+  @Public()
+  @ApiOperation({ summary: 'Enlace vigente de términos y condiciones' })
+  async termsLink() {
+    return { url: (await this.users.getSetting('terms_and_conditions_url')) ?? '<TERMS_URL>' };
+  }
+
+  @Post('signup')
+  @Public()
+  @ApiOperation({ summary: 'Registro (solo si AUTH_SELF_SIGNUP=true)' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  signUp(@Body() dto: SignUpDto, @ReqCtx() ctx: RequestContext) {
+    return this.auth.signUp(dto, ctx);
+  }
+
+  @Post('confirm')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirmar la cuenta con el código del correo' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  confirm(@Body() dto: ConfirmSignUpDto, @ReqCtx() ctx: RequestContext) {
+    return this.auth.confirmSignUp(dto, ctx);
+  }
+
+  @Post('resend-code')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reenviar el código de confirmación' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  resendCode(@Body() dto: ResendCodeDto) {
+    return this.auth.resendCode(dto);
+  }
+
+  @Post('forgot-password')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Solicitar código para restablecer la contraseña' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  forgotPassword(@Body() dto: ForgotPasswordDto, @ReqCtx() ctx: RequestContext) {
+    return this.auth.forgotPassword(dto, ctx);
+  }
+
+  @Post('confirm-password')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Fijar la contraseña nueva con el código recibido' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  confirmPassword(@Body() dto: ConfirmPasswordDto, @ReqCtx() ctx: RequestContext) {
+    return this.auth.confirmForgotPassword(dto, ctx);
+  }
+
+  private apply(res: Response, outcome: LoginOutcome): SessionResponse {
+    if (outcome.kind === 'session') {
+      this.cookies.setSession(res, outcome.tokens);
+      return { status: 'authenticated', expiresAt: expiresAt(outcome.tokens.expiresIn) };
+    }
+    this.cookies.setChallenge(res, outcome.state);
+    return { status: 'challenge', challenge: outcome.challenge };
+  }
+}
+
+function unverifiedSub(jwt: string | undefined): string | null {
+  if (!jwt) return null;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as {
+      sub?: unknown;
+    };
+    return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+function expiresAt(expiresIn: number): string {
+  return new Date(Date.now() + expiresIn * 1000).toISOString();
+}
+```
+
+```ts
+// src/modules/auth/auth.module.ts
+import { Module } from '@nestjs/common';
+import { PassportModule } from '@nestjs/passport';
+import { AuditModule } from '../audit/audit.module';
+import { UsersModule } from '../users/users.module';
+import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { cognitoClientProvider } from './cognito.provider';
+import { jwtKeyProvider } from './jwt-key.provider';
+import { JwtStrategy } from './jwt.strategy';
+import { SessionCookies } from './session-cookies';
+
+@Module({
+  imports: [
+    PassportModule.register({ defaultStrategy: 'jwt', session: false }),
+    UsersModule,
+    AuditModule,
+  ],
+  controllers: [AuthController],
+  providers: [AuthService, JwtStrategy, SessionCookies, cognitoClientProvider, jwtKeyProvider],
+})
+export class AuthModule {}
+```
+
+`COGNITO_CLIENT` y `JWT_KEY_PROVIDER` son símbolos de inyección. En producción el primero es el SDK y el segundo descarga el JWKS. En tests se sustituyen los dos (15.2): no hay user pool en la suite.
+
+### 10.6 Usuarios y estado
+
+La fila local existe desde el signup (o desde `create-admin` del migrator). El id es el `sub` de Cognito, no un uuid generado por la base: así el JWT y la fila son la misma clave y no hace falta una consulta de más para traducir.
+
+```ts
+// src/modules/users/users.service.ts
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import type { DataSource, Repository } from 'typeorm';
+import { AUDIT_ACTIONS } from '../../common/constants/audit-actions';
+import { AuditService } from '../audit/audit.service';
+import { Setting } from './setting.entity';
+import { UserTermsAcceptance } from './user-terms-acceptance.entity';
+import { COGNITO_STATUS, User, USER_STATUS, type UserStatus } from './user.entity';
+
+export interface CreateUserInput {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  phoneNumber: string | null;
+  acceptedTerms: boolean;
+  termsVersion: string;
+  ip: string;
+  requestId: string;
+}
+
+export interface ActorContext {
+  actorSub: string;
+  ip: string;
+  requestId: string;
+}
+
+@Injectable()
+export class UsersService {
+  constructor(
+    @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(Setting) private readonly settings: Repository<Setting>,
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly audit: AuditService,
+  ) {}
+
+  /** Crea el usuario local, su consentimiento y su auditoría en UNA transacción. */
+  async create(input: CreateUserInput): Promise<User> {
+    return this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(User);
+      // insert(), NO save(): save() hace UPDATE si la PK ya existe y pisaría a otro usuario.
+      const user = repo.create({
+        id: input.id,
+        email: input.email.toLowerCase(),
+        firstName: input.firstName,
+        lastName: input.lastName,
+        phoneNumber: input.phoneNumber,
+        cognitoStatus: COGNITO_STATUS.UNCONFIRMED,
+        userStatus: USER_STATUS.ACTIVE,
+        acceptedTermsAt: input.acceptedTerms ? new Date() : null,
+      });
+      await repo.insert(user);
+      if (input.acceptedTerms) {
+        await manager.getRepository(UserTermsAcceptance).insert({
+          userSub: user.id,
+          termsKey: 'terms_and_conditions_url',
+          termsVersion: input.termsVersion,
+          ip: input.ip,
+          requestId: input.requestId,
+        });
+      }
+      await this.audit.record(
+        {
+          action: AUDIT_ACTIONS.USER_SIGNUP,
+          actorSub: user.id,
+          ip: input.ip,
+          requestId: input.requestId,
+          entityType: 'user',
+          entityId: user.id,
+        },
+        manager,
+      );
+      return user;
+    });
+  }
+
+  async confirmByEmail(email: string): Promise<User> {
+    const user = await this.findByEmail(email);
+    if (!user) throw new NotFoundException('Usuario no encontrado.');
+    user.cognitoStatus = COGNITO_STATUS.CONFIRMED;
+    return this.users.save(user);
+  }
+
+  async updateStatus(id: string, userStatus: UserStatus, actor: ActorContext): Promise<User> {
+    return this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(User);
+      const user = await repo.findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+      if (!user) throw new NotFoundException('Usuario no encontrado.');
+      const before = { userStatus: user.userStatus };
+      user.userStatus = userStatus;
+      const saved = await repo.save(user);
+      await this.audit.record(
+        {
+          action: AUDIT_ACTIONS.ADMIN_UPDATE_USER_STATUS,
+          actorSub: actor.actorSub,
+          ip: actor.ip,
+          requestId: actor.requestId,
+          entityType: 'user',
+          entityId: id,
+          before,
+          after: { userStatus },
+        },
+        manager,
+      );
+      return saved;
+    });
+  }
+
+  async findById(id: string): Promise<User | null> {
+    return this.users.findOneBy({ id });
+  }
+
+  /** Solo la columna que necesita JwtStrategy: es la consulta más frecuente del sistema. */
+  async findStatusById(id: string): Promise<UserStatus | null> {
+    const row = await this.users.findOne({ where: { id }, select: { userStatus: true } });
+    return row?.userStatus ?? null;
+  }
+
+  async findByEmail(email: string): Promise<User | null> {
+    if (!email) return null;
+    return this.users.findOneBy({ email: email.trim().toLowerCase() });
+  }
+
+  async getSetting(key: string): Promise<string | null> {
+    const setting = await this.settings.findOneBy({ key });
+    return setting?.value ?? null;
+  }
+}
+```
+
+```ts
+// src/modules/users/users.controller.ts
+import { Body, Controller, Param, ParseUUIDPipe, Patch } from '@nestjs/common';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { IsIn } from 'class-validator';
+import { CurrentUser, type CurrentUserPayload } from '../../common/auth/current-user';
+import { ADMIN_ROLE, Roles } from '../../common/auth/roles';
+import { ReqCtx, type RequestContext } from '../../common/http/request-context';
+import { USER_STATUS, type UserStatus } from './user.entity';
+import { UsersService } from './users.service';
+
+export class UpdateUserStatusDto {
+  @IsIn(Object.values(USER_STATUS), {
+    message: `El estado debe ser uno de: ${Object.values(USER_STATUS).join(', ')}.`,
+  })
+  userStatus: UserStatus;
+}
+
+@ApiTags('Usuarios')
+@Controller('users')
+export class UsersController {
+  constructor(private readonly users: UsersService) {}
+
+  @Patch(':id/status')
+  @Roles(ADMIN_ROLE)
+  @ApiOperation({ summary: 'Cambiar el estado administrativo de un usuario (admin)' })
+  async updateStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateUserStatusDto,
+    @CurrentUser() admin: CurrentUserPayload,
+    @ReqCtx() ctx: RequestContext,
+  ) {
+    const user = await this.users.updateStatus(id, dto.userStatus, {
+      actorSub: admin.sub,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+    return { id: user.id, userStatus: user.userStatus };
+  }
+}
+```
+
+```ts
+// src/modules/users/users.module.ts
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuditModule } from '../audit/audit.module';
+import { Setting } from './setting.entity';
+import { UserTermsAcceptance } from './user-terms-acceptance.entity';
+import { User } from './user.entity';
+import { UsersController } from './users.controller';
+import { UsersService } from './users.service';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([User, Setting, UserTermsAcceptance]), AuditModule],
+  controllers: [UsersController],
+  providers: [UsersService],
+  exports: [UsersService],
+})
+export class UsersModule {}
+```
+
+`create()` usa `insert()`, no `save()`. `save()` con un id ya presente hace `UPDATE`. En una condición de carrera del signup eso sobrescribiría la fila de otro alta en vez de fallar con 23505. `updateStatus` toma un lock pesimista y escribe la auditoría en la misma transacción.
+
+`PATCH /api/users/:id/status` exige `<ROL_B>`. Desactivar a un usuario no revoca por sí solo sus refresh tokens: el administrador que desactiva llama también al flujo de `logout-all` de ese usuario (queda como paso del servicio de dominio cuando exista la pantalla; el endpoint `logout-all` ya revoca la sesión de quien llama). Un usuario `disabled` recibe 403 en el guard aunque su access token siga siendo válido, así que el efecto es inmediato para la API.
+
+### 10.7 Alta del inversionista y puerta para invertir
+
+🆕 **V2.3.** El alta no la aprueba nadie. `userStatus` nace en `active` y la persona entra en ese momento. Al confirmar el email, `confirmSignUp` llama a `AdminAddUserToGroup` con `<ROL_A>`: toda persona que se registra sola es inversionista. Los grupos internos solo los asigna un Admin (28.2). La Lambda de la API necesita `cognito-idp:AdminAddUserToGroup` sobre el pool del stage, y nada más de administración de Cognito.
+
+Con cuenta, el inversionista ve las propiedades, la cartera vacía y el secundario. Para comprometer, comprar o vender necesita `investorStatus = 'enabled'`, que se gana en este orden (el onboarding de 4 pasos del prototipo):
+
+1. **Perfil.** Nombre, tipo de documento (`DNI`, `CE` o `PASAPORTE`), número, fecha de nacimiento y teléfono.
+2. **Estado civil.** `soltero`, `casado` o `conviviente`. Si es casado, régimen: `separacion` o `gananciales`. Con gananciales, el nombre y el email del cónyuge son obligatorios.
+3. **Origen de fondos.** Una de las cinco opciones del prototipo y la declaración de licitud (casilla obligatoria, con fecha e IP).
+4. **Poder especial marco.** Se firma en DocuSign (28.6). La verificación de identidad va dentro del mismo sobre (ID Verification del plan de DocuSign). Con gananciales, el cónyuge es el segundo firmante del sobre y no crea cuenta. La firma doble está confirmada: hasta que firmen los dos, el titular sigue en `signing`.
+
+| `investorStatus` | Cuándo |
 |---|---|
-| **Lambda en VPC** | El RDS Proxy vive en la VPC. La Lambda debe declarar `vpc: { securityGroupIds, subnetIds }` en `serverless.yml`. |
-| **Salida a internet** | Una Lambda en VPC **pierde** el acceso a internet. Como necesita llegar a Cognito, SSM y S3, hay que añadir un **NAT Gateway** (con coste mensual fijo) o **VPC Endpoints** para esos tres servicios (más barato y más seguro). |
-| **Secreto en Secrets Manager** | El proxy se autentica contra la BD leyendo credenciales de Secrets Manager, no de SSM. Es un recurso adicional. |
-| **IAM** | El rol de ejecución necesita `rds-db:connect` sobre el ARN del proxy si se usa autenticación IAM. |
-| **Arranque en frío** | Adjuntar una ENI de VPC añade latencia al cold start (hoy mucho menor que antaño gracias a Hyperplane, pero no es cero). |
+| `onboarding` | Falta alguno de los pasos 1 a 3 |
+| `signing` | Sobre enviado. El titular, o el cónyuge, todavía no firmó |
+| `enabled` | DocuSign confirmó por webhook que firmaron todos y que la identidad se verificó |
+| `rejected` | La identidad no se verificó o alguien rechazó el sobre. Operaciones lo ve y puede reabrir el paso 4 |
 
-> ⚠️ **Decisión de coste.** El RDS Proxy tiene un coste por hora y por vCPU de la instancia, y el NAT Gateway otro. Si tu aplicación es de baja concurrencia, la parte **(a)** sola —`max: 1`— puede ser suficiente y es gratis. **Implementa (a) siempre, desde el primer día.** Implementa (b) cuando midas presión real de conexiones (`SELECT count(*) FROM pg_stat_activity;`) o cuando la aplicación pase a producción con tráfico real. Lo que **no** es aceptable es dejar el default de `max: 10` en Lambda.
+`GET /api/auth/me` incluye `investorStatus`. Una operación de dinero con otro estado responde 403 con el código `INVESTOR_NOT_ENABLED`. El cliente, con ese código, lleva al paso que falta. Cambiar los datos del paso 1 o 2 después de `enabled` vuelve a `signing`: el poder firmado es el de esos datos.
 
-El repo original **no tiene ninguna de las dos partes**. No encontré en el historial ni en `docs/` evidencia de que se haya evaluado; el `AGENTS.md` del proyecto lo lista como requisito pendiente (E2).
+---
+---
+## 11. Capa de datos: entidades, convenciones y migraciones
 
-### 19.4 Prefijo SSM unificado `/<org>/<app>/<stage>/`
+### 11.1 Convenciones que cumplen todas las entidades
 
-**Qué hace el original.** Hay **dos** convenciones de nombres conviviendo:
+🆕 **V2.**
 
-```yaml
-# serverless.yml — parámetros de configuración
-DB_HOST: ${ssm:/anka/db_host}
-COGNITO_USER_POOL_ID: ${ssm:/anka/cognito_user_pool_id}
-AWS_S3_BUCKET_NAME: ${ssm:/anka/aws_s3_bucket_name}
+| Tema | Convención |
+|---|---|
+| Nombres | `SnakeNamingStrategy`: `createdAt` → `created_at`. No escribir `name:` en cada columna |
+| Clave primaria | `uuid` con `gen_random_uuid()`, salvo `users.id`, que es el `sub` de Cognito |
+| Fechas | `timestamptz`. Nunca `timestamp` sin zona |
+| Dinero | `numeric(p, s)` en SQL, `string` en TypeScript, `decimal.js` para operar |
+| Enumeraciones | `varchar` + `@Check` + unión de constantes en TS. No `ENUM` de PostgreSQL: añadir un valor es un `ALTER TYPE` que no cabe en una transacción usable y rompe el despliegue (22.20) |
+| Concurrencia | `@VersionColumn()` en toda entidad que se edita. El `UPDATE` lleva `WHERE id = ? AND version = ?`; 0 filas es 409 |
+| Borrado | 🆕 V2.2. Papelera: `deletedAt` nulo significa viva. Listar y obtener filtran `deletedAt IS NULL`. Restaurar pone `deletedAt` en null y se audita. El índice único de la clave natural es parcial (`WHERE deleted_at IS NULL`) para poder reutilizar el código de una fila en la papelera. `users` no entra en la papelera: se bloquea. `audit_logs` no se borra |
+| `synchronize` | `false` siempre. El cambio de esquema es una migración |
+| Lista de entidades | Explícita en `src/database/entities.ts`. Un glob no sobrevive al bundle de esbuild |
+
+### 11.2 Entidades del núcleo
+
+```ts
+// src/modules/users/user.entity.ts
+import {
+  Check,
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  PrimaryColumn,
+  UpdateDateColumn,
+  VersionColumn,
+} from 'typeorm';
+
+export const USER_STATUS = {
+  ACTIVE: 'active',
+  BLOCKED: 'blocked',
+  OBSERVED: 'observed',
+  REJECTED: 'rejected',
+} as const;
+export type UserStatus = (typeof USER_STATUS)[keyof typeof USER_STATUS];
+
+export const COGNITO_STATUS = { UNCONFIRMED: 'unconfirmed', CONFIRMED: 'confirmed' } as const;
+export type CognitoStatus = (typeof COGNITO_STATUS)[keyof typeof COGNITO_STATUS];
+@Entity('users')
+@Check(`"user_status" IN ('active','blocked','observed','rejected')`)
+@Check(`"cognito_status" IN ('unconfirmed','confirmed')`)
+@Check(`"email" = lower("email")`)
+export class User {
+  /** `sub` de Cognito. No se genera: lo asigna Cognito al crear la identidad. */
+  @PrimaryColumn('uuid')
+  id: string;
+
+  /** Siempre en minúsculas (lo garantiza el CHECK); así el índice único sirve para buscar. */
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 320 })
+  email: string;
+
+  @Column({ type: 'varchar', length: 100 })
+  firstName: string;
+
+  @Column({ type: 'varchar', length: 100 })
+  lastName: string;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  phoneNumber: string | null;
+
+  @Column({ type: 'varchar', length: 20, default: COGNITO_STATUS.UNCONFIRMED })
+  cognitoStatus: CognitoStatus;
+
+  @Column({ type: 'varchar', length: 20, default: USER_STATUS.ACTIVE })
+  userStatus: UserStatus;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  acceptedTermsAt: Date | null;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updatedAt: Date;
+
+  /** Bloqueo optimista: dos ediciones concurrentes no se pisan en silencio (12.8). */
+  @VersionColumn({ default: 1 })
+  version: number;
+}
 ```
 
 ```ts
-// src/config/hydrate-ssm-secrets.ts — secretos
-const parameterName = (suffix: string) =>
-  `/anka/app-risk-backend/${stage}/${suffix}`;
+// src/modules/users/setting.entity.ts
+import { Column, Entity, PrimaryColumn, UpdateDateColumn } from 'typeorm';
+
+/** Parámetros globales editables sin redeploy. El valor es texto; el consumidor lo parsea. */
+@Entity('settings')
+export class Setting {
+  @PrimaryColumn({ type: 'varchar', length: 100 })
+  key: string;
+
+  @Column({ type: 'text' })
+  value: string;
+
+  /** Para qué sirve, tipo esperado y rango válido. Obligatorio documentarlo aquí. */
+  @Column({ type: 'text' })
+  description: string;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updatedAt: Date;
+}
 ```
-
-Es decir, la configuración vive en `/anka/<clave>` (plano, **sin stage**) y los secretos en `/anka/app-risk-backend/<stage>/<clave>`.
-
-**Por qué está mal.**
-
-1. **Sin stage, no hay aislamiento.** `/anka/db_host` es un valor único para toda la cuenta. Desplegar `qa` y `prod` en la misma cuenta significa que ambos leen el mismo host de base de datos. No hay forma de que `qa` apunte a una base distinta sin reescribir el parámetro, lo que rompería `prod`. Esto convierte el multi-stage en ficción.
-2. **Sin app, no hay aislamiento entre proyectos.** Si la organización despliega un segundo backend, `/anka/db_host` colisiona.
-3. **Dos convenciones duplican el coste cognitivo** y hacen que las políticas IAM tengan que enumerar dos patrones de ARN distintos, lo que invita a usar comodines amplios.
-
-**El cambio.** Una sola convención, con los tres niveles siempre presentes:
-
-```
-/<org>/<app>/<stage>/<clave>
-```
-
-`serverless.yml`:
-
-```yaml
-provider:
-  environment:
-    DB_HOST:              ${ssm:/<org>/<app>/${self:provider.stage}/db_host}
-    DB_PORT:              ${ssm:/<org>/<app>/${self:provider.stage}/db_port}
-    DB_USERNAME:          ${ssm:/<org>/<app>/${self:provider.stage}/db_username}
-    DB_NAME:              ${ssm:/<org>/<app>/${self:provider.stage}/db_name}
-    COGNITO_USER_POOL_ID: ${ssm:/<org>/<app>/${self:provider.stage}/cognito_user_pool_id}
-    COGNITO_CLIENT_ID:    ${ssm:/<org>/<app>/${self:provider.stage}/cognito_client_id}
-    COGNITO_REGION:       ${ssm:/<org>/<app>/${self:provider.stage}/cognito_region}
-    AWS_S3_BUCKET_NAME:   ${ssm:/<org>/<app>/${self:provider.stage}/s3_bucket_name}
-    ALLOWED_ORIGINS:      ${ssm:/<org>/<app>/${self:provider.stage}/allowed_origins}
-```
-
-`hydrate-ssm-secrets.ts` ya usa el patrón correcto; solo hay que parametrizarlo:
 
 ```ts
-// src/config/hydrate-ssm-secrets.ts (fragmento)
-const SSM_ORG = process.env.SSM_ORG ?? '<org>';
-const SSM_APP = process.env.SSM_APP ?? '<app>';
+// src/modules/users/user-terms-acceptance.entity.ts
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
+import { User } from './user.entity';
 
-const parameterName = (suffix: string): string =>
-  `/${SSM_ORG}/${SSM_APP}/${stage}/${suffix}`;
+/** Registro append-only de consentimiento: quién aceptó qué versión, desde dónde y cuándo. */
+@Entity('user_terms_acceptances')
+export class UserTermsAcceptance {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Index()
+  @Column('uuid')
+  userSub: string;
+
+  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'user_sub' })
+  user: User;
+
+  @Column({ type: 'varchar', length: 100 })
+  termsKey: string;
+
+  /** URL o versión vigente del documento aceptado. */
+  @Column({ type: 'text' })
+  termsVersion: string;
+
+  @Column({ type: 'varchar', length: 45 })
+  ip: string;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  requestId: string | null;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  acceptedAt: Date;
+}
 ```
 
-Y la política IAM se reduce a **un** patrón de ARN:
+```ts
+// src/modules/audit/audit-log.entity.ts
+import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+
+/**
+ * Bitácora de auditoría. Es append-only a nivel de base de datos (un trigger
+ * impide UPDATE y DELETE, ver la migración inicial). No tiene FK a `users`
+ * a propósito: la auditoría debe sobrevivir al borrado de lo que audita.
+ */
+@Entity('audit_logs')
+@Index(['actorSub', 'occurredAt'])
+@Index(['entityType', 'entityId'])
+export class AuditLog {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Index()
+  @CreateDateColumn({ type: 'timestamptz' })
+  occurredAt: Date;
+
+  /** `sub` del usuario, o null para acciones del sistema / anónimas. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  actorSub: string | null;
+
+  @Column({ type: 'varchar', length: 64 })
+  action: string;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  entityType: string | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  entityId: string | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  before: Record<string, unknown> | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  after: Record<string, unknown> | null;
+
+  @Column({ type: 'varchar', length: 45, nullable: true })
+  ip: string | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  requestId: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  details: string | null;
+}
+```
+
+```ts
+// src/modules/audit/audit.service.ts
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import type { EntityManager, Repository } from 'typeorm';
+import type { AuditAction } from '../../common/constants/audit-actions';
+import { AuditLog } from './audit-log.entity';
+
+export interface AuditEvent {
+  action: AuditAction;
+  actorSub: string | null;
+  ip?: string | null;
+  requestId?: string | null;
+  entityType?: string;
+  entityId?: string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  details?: string;
+}
+
+@Injectable()
+export class AuditService {
+  private readonly logger = new Logger(AuditService.name);
+
+  constructor(@InjectRepository(AuditLog) private readonly repo: Repository<AuditLog>) {}
+
+  /**
+   * Registra un evento. Pasar `manager` cuando el cambio auditado ocurre dentro
+   * de una transacción: así el registro de auditoría se confirma o se revierte
+   * junto con el cambio, y nunca existe uno sin el otro.
+   */
+  async record(event: AuditEvent, manager?: EntityManager): Promise<void> {
+    const repo = manager ? manager.getRepository(AuditLog) : this.repo;
+    await repo.save(
+      repo.create({
+        action: event.action,
+        actorSub: event.actorSub,
+        ip: event.ip ?? null,
+        requestId: event.requestId ?? null,
+        entityType: event.entityType ?? null,
+        entityId: event.entityId ?? null,
+        before: event.before ?? null,
+        after: event.after ?? null,
+        details: event.details ?? null,
+      }),
+      { reload: false },
+    );
+  }
+
+  /**
+   * Para eventos que no deben bloquear la respuesta si la auditoría falla
+   * (login, logout). El fallo queda en los logs y dispara la alarma de errores.
+   */
+  async recordSafe(event: AuditEvent): Promise<void> {
+    try {
+      await this.record(event);
+    } catch (error) {
+      this.logger.error({ err: error, action: event.action }, 'No se pudo registrar auditoría');
+    }
+  }
+}
+```
+
+```ts
+// src/modules/audit/audit.module.ts
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuditLog } from './audit-log.entity';
+import { AuditService } from './audit.service';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([AuditLog])],
+  providers: [AuditService],
+  exports: [AuditService],
+})
+export class AuditModule {}
+```
+
+```ts
+// src/modules/documents/document.entity.ts
+import {
+  Check,
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+} from 'typeorm';
+import { User } from '../users/user.entity';
+
+export const DOCUMENT_STATUS = {
+  PENDING_UPLOAD: 'pending_upload',
+  SCANNING: 'scanning',
+  PROCESSING: 'processing',
+  PROCESSED: 'processed',
+  FAILED: 'failed',
+  QUARANTINED: 'quarantined',
+} as const;
+export type DocumentStatus = (typeof DOCUMENT_STATUS)[keyof typeof DOCUMENT_STATUS];
+
+@Entity('documents')
+@Check(`"status" IN ('pending_upload','scanning','processing','processed','failed','quarantined')`)
+// Deduplicación garantizada por la base, incluso con dos subidas concurrentes (22.14).
+@Index(['entityId', 'documentType', 'sha256'], {
+  unique: true,
+  where: `"status" <> 'quarantined'`,
+})
+export class Document {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  filename: string;
+
+  @Column({ type: 'varchar', length: 1024 })
+  s3Key: string;
+
+  /** 🆕 V2.3. Id de la fila dueña del documento (depósito, retiro, propiedad o usuario). */
+  @Index()
+  @Column({ type: 'varchar', length: 64 })
+  entityId: string;
+
+  @Column({ type: 'varchar', length: 50 })
+  documentType: string;
+
+  @Column({ type: 'varchar', length: 20, default: DOCUMENT_STATUS.PENDING_UPLOAD })
+  status: DocumentStatus;
+
+  @Column({ type: 'char', length: 64 })
+  sha256: string;
+
+  @Column({ type: 'varchar', length: 100 })
+  contentType: string;
+
+  @Column({ type: 'integer' })
+  sizeBytes: number;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  validationStatus: string | null;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  parserVersion: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  processedAt: Date | null;
+
+  @Column({ type: 'text', nullable: true })
+  errorMessage: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  uploadedBySub: string | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'uploaded_by_sub' })
+  uploadedBy: User | null;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updatedAt: Date;
+}
+```
+
+`audit_logs` no tiene FK hacia `users`. Un usuario se puede desactivar; su rastro no debe depender de que la fila siga existiendo, y un `ON DELETE CASCADE` borraría la auditoría. `before`/`after` son `jsonb` con el diff que el servicio decidió guardar, no la fila entera por defecto.
+
+```ts
+// src/database/entities.ts
+import { IdempotencyKey } from '../common/idempotency/idempotency-key.entity';
+import { AuditLog } from '../modules/audit/audit-log.entity';
+import { Project } from '../modules/projects/project.entity';
+import { Document } from '../modules/documents/document.entity';
+import { Setting } from '../modules/users/setting.entity';
+import { UserTermsAcceptance } from '../modules/users/user-terms-acceptance.entity';
+import { User } from '../modules/users/user.entity';
+
+/**
+ * Lista explícita de entidades. Se usa en la app, en el CLI y en la Lambda
+ * migrator. Los globs no funcionan dentro de un bundle de esbuild, y una
+ * entidad olvidada produce migraciones que borran su tabla: el test
+ * `entities.spec.ts` falla si algún *.entity.ts no está aquí.
+ */
+export const ENTITIES = [
+  User,
+  Setting,
+  UserTermsAcceptance,
+  AuditLog,
+  Document,
+  IdempotencyKey,
+  Project,
+];
+```
+
+`Project` está en la lista porque es el módulo de ejemplo (12). Al sustituirlo por el dominio nuevo, se quita de esta lista y se añaden las entidades reales. Olvidar la lista es un fallo silencioso: TypeORM no mapea la tabla y el primer `getRepository` revienta en runtime, no al compilar.
+
+### 11.3 Roles de base de datos
+
+Hay dos roles y no se intercambian.
+
+| Rol | Contraseña | Cómo entra | Privilegios |
+|---|---|---|---|
+| `postgres` (maestro) | Secrets Manager, rotada cada 30 días por RDS | Solo la Lambda `migrator`, **directo a la instancia**, con TLS | Dueño del esquema: DDL, extensiones, el rol de la app |
+| `app_user` | Ninguna. `GRANT rds_iam` | La Lambda de la API y el worker, **a través de RDS Proxy**, con un token IAM de 15 min | `SELECT`/`INSERT`/`UPDATE`/`DELETE` sobre las tablas de la app. `UPDATE` y `DELETE` revocados sobre `audit_logs` |
+
+```ts
+// src/database/db-roles.ts
+import type { DataSource } from 'typeorm';
+
+/**
+ * Asegura el rol `app_user` (solo DML) que usa la API. Lo ejecuta la Lambda
+ * migrator como usuario maestro, después de las migraciones. Es idempotente.
+ *
+ * - En AWS, `app_user` es IAM-only (`rds_iam`): no tiene contraseña. La API
+ *   entra por RDS Proxy con un token IAM, y el proxy entra a la base también
+ *   con IAM (autenticación de extremo a extremo, 16.4).
+ * - En local, `app_user` no se usa (la app entra como `postgres`), pero el
+ *   rol se crea igual para que los permisos se prueben en CI.
+ * - Los privilegios por defecto hacen que toda tabla creada después por una
+ *   migración quede accesible para app_user sin GRANT explícito.
+ */
+export async function ensureAppRole(
+  db: DataSource,
+  opts: { iam: boolean; database: string },
+): Promise<void> {
+  await db.transaction(async (m) => {
+    const exists: unknown[] = await m.query(`SELECT 1 FROM pg_roles WHERE rolname = 'app_user'`);
+    if (exists.length === 0) {
+      await m.query(`CREATE ROLE app_user LOGIN`);
+    }
+    if (opts.iam) {
+      await m.query(`GRANT rds_iam TO app_user`);
+    }
+    await m.query(`GRANT CONNECT ON DATABASE ${quoteIdent(opts.database)} TO app_user`);
+    await m.query(`GRANT USAGE ON SCHEMA public TO app_user`);
+    await m.query(
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user`,
+    );
+    await m.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user`);
+    await m.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user`,
+    );
+    await m.query(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_user`,
+    );
+    // La bitácora es append-only también para la aplicación.
+    const audit: Array<{ t: string | null }> = await m.query(
+      `SELECT to_regclass('public.audit_logs') AS t`,
+    );
+    if (audit[0]?.t) {
+      await m.query(`REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM app_user`);
+    }
+  });
+}
+
+function quoteIdent(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+```
+
+`ensureAppRole` es idempotente y lo corre el migrator antes de las migraciones. No crea una contraseña: un rol con `LOGIN` y contraseña sería una puerta trasera al lado del IAM. El `REVOKE` de escritura sobre `audit_logs` se repite en cada corrida por si una migración nueva rehízo los grants.
+
+La API no puede conectarse como `postgres`. El proxy solo tiene el secreto de IAM de `app_user`, y el grupo de seguridad de la instancia solo acepta tráfico desde el proxy y desde el security group del migrator.
+
+### 11.4 Migraciones
+
+```ts
+// src/migrations/index.ts
+import { AddIdempotencyKeys1791480000000 } from './1791480000000-AddIdempotencyKeys';
+import { AddProjects1791414493019 } from './1791414493019-AddProjects';
+import { Init1791412463667 } from './1791412463667-Init';
+
+/**
+ * Lista explícita y ordenada de migraciones (misma razón que database/entities.ts).
+ * Al generar una migración nueva, añadirla AL FINAL de este array en el mismo commit.
+ */
+export const MIGRATIONS: Function[] = [
+  Init1791412463667,
+  AddProjects1791414493019,
+  AddIdempotencyKeys1791480000000,
+];
+```
+
+```ts
+// src/migrations/1791412463667-Init.ts
+import { MigrationInterface, QueryRunner } from 'typeorm';
+
+export class Init1791412463667 implements MigrationInterface {
+  name = 'Init1791412463667';
+
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(
+      `CREATE TABLE "audit_logs" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "occurred_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "actor_sub" character varying(64), "action" character varying(64) NOT NULL, "entity_type" character varying(64), "entity_id" character varying(64), "before" jsonb, "after" jsonb, "ip" character varying(45), "request_id" character varying(64), "details" text, CONSTRAINT "PK_1bb179d048bbc581caa3b013439" PRIMARY KEY ("id"))`,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_36cd4615fabad14abad075ffc9" ON "audit_logs"  ("occurred_at") `,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_7421efc125d95e413657efa3c6" ON "audit_logs"  ("entity_type", "entity_id") `,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_cf035c59c611eef2ca6eb1dfdd" ON "audit_logs"  ("actor_sub", "occurred_at") `,
+    );
+    await queryRunner.query(
+      `CREATE TABLE "users" ("id" uuid NOT NULL, "email" character varying(320) NOT NULL, "first_name" character varying(100) NOT NULL, "last_name" character varying(100) NOT NULL, "phone_number" character varying(20), "cognito_status" character varying(20) NOT NULL DEFAULT 'unconfirmed', "user_status" character varying(20) NOT NULL DEFAULT 'active', "accepted_terms_at" TIMESTAMP WITH TIME ZONE, "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "version" integer NOT NULL DEFAULT '1', CONSTRAINT "CHK_90033ffeb5b67effb487588d20" CHECK ("email" = lower("email")), CONSTRAINT "CHK_c08f4be6ab85765ad204f6ed12" CHECK ("cognito_status" IN ('unconfirmed','confirmed')), CONSTRAINT "CHK_a3a239f2a828d4517d20558bb5" CHECK ("user_status" IN ('active','blocked','observed','rejected')), CONSTRAINT "PK_a3ffb1c0c8416b9fc6f907b7433" PRIMARY KEY ("id"))`,
+    );
+    await queryRunner.query(
+      `CREATE UNIQUE INDEX "IDX_97672ac88f789774dd47f7c8be" ON "users"  ("email") `,
+    );
+    await queryRunner.query(
+      `CREATE TABLE "documents" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "filename" character varying(255) NOT NULL, "s3_key" character varying(1024) NOT NULL, "entity_id" character varying(64) NOT NULL, "document_type" character varying(50) NOT NULL, "status" character varying(20) NOT NULL DEFAULT 'pending_upload', "sha256" character(64) NOT NULL, "content_type" character varying(100) NOT NULL, "size_bytes" integer NOT NULL, "validation_status" character varying(30), "parser_version" character varying(30), "processed_at" TIMESTAMP WITH TIME ZONE, "error_message" text, "uploaded_by_sub" uuid, "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), CONSTRAINT "CHK_3b384f49fe6661383be6d5a1cf" CHECK ("status" IN ('pending_upload','scanning','processing','processed','failed','quarantined')), CONSTRAINT "PK_ac51aa5181ee2036f5ca482857c" PRIMARY KEY ("id"))`,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_affc3911eff37e11869f2fbd3b" ON "documents"  ("entity_id") `,
+    );
+    await queryRunner.query(
+      `CREATE UNIQUE INDEX "IDX_d7f225a1bd33741a7751c8a5c1" ON "documents"  ("entity_id", "document_type", "sha256") WHERE "status" <> 'quarantined'`,
+    );
+    await queryRunner.query(
+      `CREATE TABLE "settings" ("key" character varying(100) NOT NULL, "value" text NOT NULL, "description" text NOT NULL, "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), CONSTRAINT "PK_c8639b7626fa94ba8265628f214" PRIMARY KEY ("key"))`,
+    );
+    await queryRunner.query(
+      `CREATE TABLE "user_terms_acceptances" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "user_sub" uuid NOT NULL, "terms_key" character varying(100) NOT NULL, "terms_version" text NOT NULL, "ip" character varying(45) NOT NULL, "request_id" character varying(64), "accepted_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), CONSTRAINT "PK_4e2e665813b069bff3530d906fc" PRIMARY KEY ("id"))`,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_d3dfc323c3963a0414230da302" ON "user_terms_acceptances"  ("user_sub") `,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "documents" ADD CONSTRAINT "FK_6badfe35ef25ec8ff1cd337c7cf" FOREIGN KEY ("uploaded_by_sub") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "user_terms_acceptances" ADD CONSTRAINT "FK_d3dfc323c3963a0414230da3025" FOREIGN KEY ("user_sub") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE NO ACTION`,
+    );
+    // Bitácora append-only: ni siquiera el dueño de la tabla puede modificarla
+    // sin desactivar explícitamente el trigger (solo lo hace la purga por retención, 26.4).
+    await queryRunner.query(
+      `CREATE FUNCTION audit_logs_immutable() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit_logs es append-only'; END $$`,
+    );
+    await queryRunner.query(
+      `CREATE TRIGGER audit_logs_no_update BEFORE UPDATE OR DELETE ON "audit_logs" FOR EACH ROW EXECUTE FUNCTION audit_logs_immutable()`,
+    );
+    await queryRunner.query(
+      `CREATE TRIGGER audit_logs_no_truncate BEFORE TRUNCATE ON "audit_logs" FOR EACH STATEMENT EXECUTE FUNCTION audit_logs_immutable()`,
+    );
+  }
+
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`DROP TRIGGER IF EXISTS audit_logs_no_truncate ON "audit_logs"`);
+    await queryRunner.query(`DROP TRIGGER IF EXISTS audit_logs_no_update ON "audit_logs"`);
+    await queryRunner.query(`DROP FUNCTION IF EXISTS audit_logs_immutable()`);
+    await queryRunner.query(
+      `ALTER TABLE "user_terms_acceptances" DROP CONSTRAINT "FK_d3dfc323c3963a0414230da3025"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "documents" DROP CONSTRAINT "FK_6badfe35ef25ec8ff1cd337c7cf"`,
+    );
+    await queryRunner.query(`DROP INDEX "public"."IDX_d3dfc323c3963a0414230da302"`);
+    await queryRunner.query(`DROP TABLE "user_terms_acceptances"`);
+    await queryRunner.query(`DROP TABLE "settings"`);
+    await queryRunner.query(`DROP INDEX "public"."IDX_d7f225a1bd33741a7751c8a5c1"`);
+    await queryRunner.query(`DROP INDEX "public"."IDX_affc3911eff37e11869f2fbd3b"`);
+    await queryRunner.query(`DROP TABLE "documents"`);
+    await queryRunner.query(`DROP INDEX "public"."IDX_97672ac88f789774dd47f7c8be"`);
+    await queryRunner.query(`DROP TABLE "users"`);
+    await queryRunner.query(`DROP INDEX "public"."IDX_cf035c59c611eef2ca6eb1dfdd"`);
+    await queryRunner.query(`DROP INDEX "public"."IDX_7421efc125d95e413657efa3c6"`);
+    await queryRunner.query(`DROP INDEX "public"."IDX_36cd4615fabad14abad075ffc9"`);
+    await queryRunner.query(`DROP TABLE "audit_logs"`);
+  }
+}
+```
+
+```ts
+// src/migrations/1791414493019-AddProjects.ts
+import { MigrationInterface, QueryRunner } from 'typeorm';
+
+export class AddProjects1791414493019 implements MigrationInterface {
+  name = 'AddProjects1791414493019';
+
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(
+      `CREATE TABLE "projects" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "code" character varying(20) NOT NULL, "name" character varying(160) NOT NULL, "budget" numeric(14,2), "status" character varying(20) NOT NULL DEFAULT 'draft', "metadata" jsonb NOT NULL DEFAULT '{}', "starts_on" date, "owner_sub" uuid, "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "version" integer NOT NULL DEFAULT '1', CONSTRAINT "CHK_e3c0ee580426db9429c41d8f0e" CHECK ("status" IN ('draft','active','closed')), CONSTRAINT "PK_6271df0a7aed1d6c0691ce6ac50" PRIMARY KEY ("id"))`,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_a27865a7be17886e3088f4a650" ON "projects"  ("status") `,
+    );
+    await queryRunner.query(`CREATE UNIQUE INDEX "UQ_projects_code" ON "projects"  ("code") `);
+    await queryRunner.query(
+      `ALTER TABLE "projects" ADD CONSTRAINT "FK_bdab9cfaeebc84b34ca4c6d24ec" FOREIGN KEY ("owner_sub") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION`,
+    );
+  }
+
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(
+      `ALTER TABLE "projects" DROP CONSTRAINT "FK_bdab9cfaeebc84b34ca4c6d24ec"`,
+    );
+    await queryRunner.query(`DROP INDEX "public"."UQ_projects_code"`);
+    await queryRunner.query(`DROP INDEX "public"."IDX_a27865a7be17886e3088f4a650"`);
+    await queryRunner.query(`DROP TABLE "projects"`);
+  }
+}
+```
+
+```ts
+// src/migrations/1791480000000-AddIdempotencyKeys.ts
+import { MigrationInterface, QueryRunner } from 'typeorm';
+
+/** 🆕 V2.1. Escrita a mano con los nombres que fija la entidad (9.6). */
+export class AddIdempotencyKeys1791480000000 implements MigrationInterface {
+  name = 'AddIdempotencyKeys1791480000000';
+
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(
+      `CREATE TABLE "idempotency_keys" ("actor_sub" uuid NOT NULL, "key" uuid NOT NULL, "fingerprint" character(64) NOT NULL, "state" character varying(20) NOT NULL DEFAULT 'in_progress', "response_body" jsonb, "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL, CONSTRAINT "CHK_idempotency_keys_state" CHECK ("state" IN ('in_progress','completed')), CONSTRAINT "PK_idempotency_keys" PRIMARY KEY ("actor_sub", "key"))`,
+    );
+    await queryRunner.query(
+      `CREATE INDEX "IDX_idempotency_keys_expires_at" ON "idempotency_keys" ("expires_at")`,
+    );
+  }
+
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`DROP INDEX "public"."IDX_idempotency_keys_expires_at"`);
+    await queryRunner.query(`DROP TABLE "idempotency_keys"`);
+  }
+}
+```
+
+`AddIdempotencyKeys` es del núcleo y se queda aunque `AddProjects` se sustituya. Como se escribió a mano, la primera implementación corre `pnpm migration:generate src/migrations/Check` contra una base ya migrada: el resultado tiene que ser "No changes in database schema were found". Si propone algo, la entidad y el SQL no coinciden y se corrige la migración antes de aplicarla en ningún stage. `app_user` recibe permisos sobre la tabla por los privilegios por defecto (11.3).
+
+`MIGRATIONS` es un array escrito a mano, en orden. **No hay glob.** esbuild no puede resolver `migrations/*.ts` en tiempo de ejecución, y un glob que funciona con el CLI en local y no dentro de la Lambda es exactamente el fallo que esta lista evita. Cada migración nueva se importa aquí. El nombre de la clase tiene que sobrevivir a la minificación (`keepNames`, 6.11): TypeORM decide cuál está aplicada comparando el nombre de la clase con la tabla `migrations`.
+
+La migración `Init` está generada y luego **editada a mano** para añadir el trigger `audit_logs_immutable`, que rechaza `UPDATE`, `DELETE` y `TRUNCATE` sobre `audit_logs`. `migration:generate` no emite triggers. El trigger es la garantía; el `REVOKE` del rol es la segunda. Hace falta las dos: el maestro, que sí puede escribir, también queda frenado por el trigger.
+
+Reglas de una migración nueva:
+
+1. Compatible hacia atrás con el código que **todavía está sirviendo** tráfico. El pipeline aplica migraciones y después publica el código (17.2). Durante esos minutos conviven el esquema nuevo y el código viejo. Añadir una columna `NOT NULL` sin default, renombrar una columna o cambiar un tipo en el mismo paso rompe las peticiones en vuelo.
+2. El patrón seguro para un cambio incompatible es expandir y contraer, en **dos** despliegues: primero se añade lo nuevo (el código viejo lo ignora), se publica el código que lo usa, y en un despliegue posterior se retira lo viejo.
+3. `migration:generate` se corre contra una base local ya migrada. El SQL se lee entero antes de commitear. Se borran los `DROP` que el diff proponga por una entidad que TypeORM no vio (casi siempre: alguien olvidó añadirla a `entities.ts`).
+4. No se edita una migración ya aplicada en algún stage. Se añade otra.
+
+`AddProjects` es del módulo de ejemplo. En el dominio nuevo no se copia: se genera la migración de las entidades reales.
+
+### 11.5 Seeds
+
+```ts
+// src/database/seed-data.ts
+import type { DataSource } from 'typeorm';
+import { Setting } from '../modules/users/setting.entity';
+
+/** Toda clave lleva su descripción: qué consume el valor, de qué tipo es y qué rango admite. */
+export const DEFAULT_SETTINGS: Array<Pick<Setting, 'key' | 'value' | 'description'>> = [
+  {
+    key: 'terms_and_conditions_url',
+    value: '<TERMS_URL>',
+    description:
+      'URL pública de los términos vigentes. La muestra el registro y se guarda como versión aceptada en user_terms_acceptances.',
+  },
+];
+
+/** Idempotente: inserta las claves que falten y nunca pisa un valor editado. */
+export async function seedDefaults(db: DataSource): Promise<number> {
+  const result = await db
+    .createQueryBuilder()
+    .insert()
+    .into(Setting)
+    .values(DEFAULT_SETTINGS)
+    .orIgnore()
+    .returning(['key'])
+    .execute();
+  return (result.raw as unknown[]).length;
+}
+```
+
+```ts
+// src/database/seed.ts
+import dataSource from '../config/typeorm.config';
+import { seedDefaults } from './seed-data';
+
+/** `pnpm db:seed` en local. En AWS se usa la acción `seed` de la Lambda migrator. */
+async function main() {
+  await dataSource.initialize();
+  try {
+    const inserted = await seedDefaults(dataSource);
+    process.stdout.write(`Seeds aplicados: ${inserted} claves nuevas.\n`);
+  } finally {
+    await dataSource.destroy();
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+```
+
+`orIgnore()` más `returning(['key'])`: insertar de nuevo no falla y el recuento de "cuántas se insertaron" sale de las filas devueltas, no de un `COUNT(*)` posterior (que siempre daría el total). El migrator expone la acción `seed`. En local, `pnpm db:seed`.
+
+### 11.6 Lambda migrator
+
+```ts
+// src/lambda-migrator.ts
+import 'reflect-metadata';
+import { z } from 'zod';
+import { DataSource } from 'typeorm';
+import { buildDataSourceOptions } from './config/database.config';
+import { ensureAppRole } from './database/db-roles';
+import { ENTITIES } from './database/entities';
+import { seedDefaults } from './database/seed-data';
+import { MIGRATIONS } from './migrations';
+
+const envSchema = z.object({
+  STAGE: z.enum(['local', 'test', 'dev', 'qa', 'prod']),
+  AWS_REGION: z.string(),
+  // En AWS: ARN del secreto del usuario maestro (lo genera y rota RDS/CDK).
+  // Trae host, puerto, usuario y contraseña. En local se usan las DB_* sueltas.
+  DB_MASTER_SECRET_ARN: z.string().optional(),
+  DB_HOST: z.string().optional(),
+  DB_PORT: z.coerce.number().default(5432),
+  DB_USERNAME: z.string().optional(),
+  DB_PASSWORD: z.string().optional(),
+  DB_NAME: z.string().min(1),
+  DB_SSL: z.stringbool().default(false),
+  // true en AWS: app_user recibe rds_iam (IAM-only).
+  DB_APP_USER_IAM: z.stringbool().default(false),
+  COGNITO_USER_POOL_ID: z.string().optional(),
+});
+
+type MigratorEnv = z.infer<typeof envSchema>;
+
+/**
+ * Credenciales del usuario maestro. Se leen en CADA invocación: Secrets
+ * Manager las rota cada 30 días y una copia en caché quedaría obsoleta.
+ * El migrator entra DIRECTO a la instancia (no por el proxy, que solo admite
+ * IAM), con TLS validado contra los CA de Amazon (NODE_EXTRA_CA_CERTS, 16.7).
+ */
+async function masterCredentials(env: MigratorEnv) {
+  if (!env.DB_MASTER_SECRET_ARN) {
+    if (!env.DB_HOST || !env.DB_USERNAME) throw new Error('Faltan DB_HOST/DB_USERNAME');
+    return {
+      host: env.DB_HOST,
+      port: env.DB_PORT,
+      username: env.DB_USERNAME,
+      password: env.DB_PASSWORD,
+    };
+  }
+  const { SecretsManagerClient, GetSecretValueCommand } =
+    await import('@aws-sdk/client-secrets-manager');
+  const res = await new SecretsManagerClient({ region: env.AWS_REGION }).send(
+    new GetSecretValueCommand({ SecretId: env.DB_MASTER_SECRET_ARN }),
+  );
+  const s = JSON.parse(res.SecretString ?? '{}') as {
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+  };
+  return { host: s.host, port: Number(s.port), username: s.username, password: s.password };
+}
+
+const eventSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('migrate') }),
+  z.object({ action: z.literal('status') }),
+  z.object({ action: z.literal('seed') }),
+  z.object({ action: z.literal('revert'), confirm: z.literal('REVERT_ONE') }),
+  z.object({
+    action: z.literal('create-admin'),
+    email: z.email().transform((v) => v.toLowerCase()),
+    firstName: z.string().min(1).max(100),
+    lastName: z.string().min(1).max(100),
+  }),
+]);
+
+type CreateAdminEvent = Extract<z.infer<typeof eventSchema>, { action: 'create-admin' }>;
+
+/**
+ * Alta de un administrador: Cognito le envía una invitación con contraseña
+ * temporal (al entrar resolverá NEW_PASSWORD_REQUIRED y MFA_SETUP), se le
+ * añade al grupo admin y se crea su fila local. Idempotente por email.
+ */
+async function createAdmin(db: DataSource, poolId: string, region: string, e: CreateAdminEvent) {
+  const cognito = await import('@aws-sdk/client-cognito-identity-provider');
+  const client = new cognito.CognitoIdentityProviderClient({ region });
+  let sub: string | undefined;
+  try {
+    const res = await client.send(
+      new cognito.AdminCreateUserCommand({
+        UserPoolId: poolId,
+        Username: e.email,
+        DesiredDeliveryMediums: ['EMAIL'],
+        UserAttributes: [
+          { Name: 'email', Value: e.email },
+          { Name: 'email_verified', Value: 'true' },
+          { Name: 'given_name', Value: e.firstName },
+          { Name: 'family_name', Value: e.lastName },
+        ],
+      }),
+    );
+    sub = res.User?.Attributes?.find((a) => a.Name === 'sub')?.Value;
+  } catch (error) {
+    if ((error as { name?: string }).name !== 'UsernameExistsException') throw error;
+    const res = await client.send(
+      new cognito.AdminGetUserCommand({ UserPoolId: poolId, Username: e.email }),
+    );
+    sub = res.UserAttributes?.find((a) => a.Name === 'sub')?.Value;
+  }
+  if (!sub) throw new Error('Cognito no devolvió el sub del usuario');
+  await client.send(
+    new cognito.AdminAddUserToGroupCommand({
+      UserPoolId: poolId,
+      Username: e.email,
+      GroupName: '<ROL_B>',
+    }),
+  );
+  await db.query(
+    `INSERT INTO users (id, email, first_name, last_name, cognito_status, user_status)
+     VALUES ($1, $2, $3, $4, 'confirmed', 'active')
+     ON CONFLICT (id) DO NOTHING`,
+    [sub, e.email, e.firstName, e.lastName],
+  );
+  return sub;
+}
+
+/**
+ * Lambda de operaciones de base de datos. La invoca el CI (17.4), nunca un
+ * usuario, y vive en la VPC porque la base no es accesible desde internet.
+ * Conecta como usuario maestro: es el ÚNICO componente con permisos DDL.
+ */
+export const handler = async (rawEvent: unknown) => {
+  const env = envSchema.parse(process.env);
+  const event = eventSchema.parse(rawEvent);
+  const creds = await masterCredentials(env);
+  const db = new DataSource({
+    ...buildDataSourceOptions({
+      DB_HOST: creds.host,
+      DB_PORT: creds.port,
+      DB_USERNAME: creds.username,
+      DB_PASSWORD: creds.password,
+      DB_NAME: env.DB_NAME,
+      DB_IAM_AUTH: false,
+      DB_SSL: env.DB_SSL,
+      DB_POOL_MAX: 1,
+      AWS_REGION: env.AWS_REGION,
+      STAGE: env.STAGE,
+    }),
+    entities: ENTITIES,
+    migrations: MIGRATIONS,
+  });
+  await db.initialize();
+  try {
+    switch (event.action) {
+      case 'status': {
+        const pending = await db.showMigrations();
+        return { ok: true, pending };
+      }
+      case 'migrate': {
+        const applied = await db.runMigrations({ transaction: 'each' });
+        await ensureAppRole(db, { iam: env.DB_APP_USER_IAM, database: env.DB_NAME });
+        return { ok: true, applied: applied.map((m) => m.name) };
+      }
+      case 'seed': {
+        // Solo inserta claves de `settings` que falten. Nunca datos de prueba: es seguro en prod.
+        const inserted = await seedDefaults(db);
+        return { ok: true, inserted };
+      }
+      case 'create-admin': {
+        if (!env.COGNITO_USER_POOL_ID) throw new Error('COGNITO_USER_POOL_ID no está configurado');
+        const sub = await createAdmin(db, env.COGNITO_USER_POOL_ID, env.AWS_REGION, event);
+        return { ok: true, sub };
+      }
+      case 'revert': {
+        await db.undoLastMigration({ transaction: 'each' });
+        return { ok: true, reverted: 1 };
+      }
+    }
+  } finally {
+    await db.destroy();
+  }
+};
+```
+
+Acciones del evento `{ "action": "..." }`:
+
+| Acción | Efecto | Guardia |
+|---|---|---|
+| `migrate` | `ensureAppRole` y `runMigrations` | ninguna: es idempotente |
+| `status` | lista migraciones pendientes | ninguna |
+| `seed` | claves de `settings` que falten | ninguna |
+| `revert` | revierte **una** migración | el evento tiene que traer `confirm: "REVERT_ONE"` |
+| `create-admin` | `AdminCreateUser` + grupo `<ROL_B>` + fila local | idempotente: si el usuario ya existe, no lo recrea ni le pisa el estado |
+
+`create-admin` es el alta del primer administrador, cuando el self-signup está cerrado o cuando hace falta un usuario antes de que nadie pueda entrar. El evento lleva `email`, `name` y una contraseña temporal que Cognito obliga a cambiar (`NEW_PASSWORD_REQUIRED`, que el flujo de retos de la sección 10 ya sabe completar).
+
+La contraseña del maestro se lee **en cada invocación**. Cachearla en el entorno caliente deja la Lambda rota el día que RDS rota el secreto (cada 30 días) hasta el siguiente cold start.
+
+---
+## 12. Anatomía de un módulo de feature
+
+🆕 **V2 — plantilla.** El recurso `projects` no es del dominio nuevo: es el módulo de referencia, compilado y cubierto por la suite, que enseña la forma. Al implementar el dominio se **sustituye esta carpeta** por los módulos reales y se conserva todo lo demás: DTO con class-validator, paginación, búsqueda con comodines escapados, 409 ante `23505`, bloqueo optimista, auditoría del antes/después en la misma transacción, y `@Roles` en la clase con una excepción de administrador donde haga falta.
+
+### 12.1 Forma de la carpeta
+
+```
+src/modules/<feature>/
+├── <feature>.entity.ts
+├── <feature>.service.ts
+├── <feature>.controller.ts
+├── <feature>.module.ts
+└── dto/<feature>.dto.ts
+```
+
+El módulo se registra en `app.module.ts` y la entidad en `src/database/entities.ts`. Sin los dos, no existe.
+
+### 12.2 El ejemplo
+
+```ts
+// src/modules/projects/project.entity.ts
+import {
+  Check,
+  Column,
+  CreateDateColumn,
+  DeleteDateColumn,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+  VersionColumn,
+} from 'typeorm';
+import { User } from '../users/user.entity';
+
+/** Estados: varchar + constante, nunca ENUM de PostgreSQL (11.1). */
+export const PROJECT_STATUS = { DRAFT: 'draft', ACTIVE: 'active', CLOSED: 'closed' } as const;
+export type ProjectStatus = (typeof PROJECT_STATUS)[keyof typeof PROJECT_STATUS];
+
+@Entity('projects')
+@Check(`"status" IN ('draft','active','closed')`)
+@Index('UQ_projects_code', ['code'], { unique: true, where: '"deleted_at" IS NULL' })
+export class Project {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  /** Clave natural de negocio. Única: el 409 lo garantiza la base, no una consulta previa. */
+  @Column({ type: 'varchar', length: 20 })
+  code: string;
+
+  @Column({ type: 'varchar', length: 160 })
+  name: string;
+
+  /** Dinero: numeric(14,2) en la base, string en TS (11.1). */
+  @Column({ type: 'numeric', precision: 14, scale: 2, nullable: true })
+  budget: string | null;
+
+  @Index()
+  @Column({ type: 'varchar', length: 20, default: PROJECT_STATUS.DRAFT })
+  status: ProjectStatus;
+
+  @Column({ type: 'jsonb', default: {} })
+  metadata: Record<string, unknown>;
+
+  /** Fecha de calendario sin hora: date + string (11.1). */
+  @Column({ type: 'date', nullable: true })
+  startsOn: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  ownerSub: string | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'owner_sub' })
+  owner: User | null;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updatedAt: Date;
+
+  /** 🆕 V2.2. Null = en uso. Con fecha = en la papelera (11.1). */
+  @DeleteDateColumn({ type: 'timestamptz' })
+  deletedAt: Date | null;
+
+  @VersionColumn({ default: 1 })
+  version: number;
+}
+```
+
+```ts
+// src/modules/projects/dto/project.dto.ts
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsDateString,
+  IsIn,
+  IsInt,
+  IsNumberString,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import { PageQueryDto } from '../../../common/pagination/page';
+import { PROJECT_STATUS, type ProjectStatus } from '../project.entity';
+
+const STATUSES = Object.values(PROJECT_STATUS);
+const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+
+export class CreateProjectDto {
+  @ApiProperty({ example: 'PRJ-00042' })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
+  @Matches(/^[A-Z]{3}-\d{5}$/, { message: 'El código debe tener el formato XXX-00000.' })
+  code: string;
+
+  @ApiProperty({ example: 'Implementación ERP' })
+  @Transform(trim)
+  @IsString()
+  @Length(1, 160)
+  name: string;
+
+  @ApiPropertyOptional({
+    example: '15000.50',
+    description: 'Monto como string para no perder precisión',
+  })
+  @IsOptional()
+  @IsNumberString({ no_symbols: false }, { message: 'El presupuesto debe ser un número decimal.' })
+  @MaxLength(17)
+  budget?: string;
+
+  @ApiPropertyOptional({ example: '2026-11-01', description: 'Fecha YYYY-MM-DD' })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  startsOn?: string;
+}
+
+export class UpdateProjectDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @Length(1, 160)
+  name?: string;
+
+  @ApiPropertyOptional({ enum: STATUSES })
+  @IsOptional()
+  @IsIn(STATUSES)
+  status?: ProjectStatus;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  @MaxLength(17)
+  budget?: string;
+
+  /** Versión que el cliente leyó. Si otro usuario guardó antes, la API responde 409. */
+  @ApiProperty({ example: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  version: number;
+}
+
+export class QueryProjectsDto extends PageQueryDto {
+  @ApiPropertyOptional({ enum: STATUSES })
+  @IsOptional()
+  @IsIn(STATUSES)
+  status?: ProjectStatus;
+
+  @ApiPropertyOptional({ description: 'Busca en código y nombre' })
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(80)
+  q?: string;
+}
+
+/** Respuesta pública: nunca se devuelve la entidad cruda (12.1). */
+export class ProjectDto {
+  @ApiProperty({ format: 'uuid' }) id: string;
+  @ApiProperty() code: string;
+  @ApiProperty() name: string;
+  @ApiProperty({ nullable: true, type: String }) budget: string | null;
+  @ApiProperty({ enum: STATUSES }) status: ProjectStatus;
+  @ApiProperty({ nullable: true, type: String }) startsOn: string | null;
+  @ApiProperty() version: number;
+  @ApiProperty({ format: 'date-time' }) updatedAt: string;
+}
+```
+
+```ts
+// src/modules/projects/projects.service.ts
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { Brackets, type DataSource, type Repository } from 'typeorm';
+import { AUDIT_ACTIONS } from '../../common/constants/audit-actions';
+import { isUniqueViolation } from '../../common/database/pg-errors';
+import { type PageDto, toPage } from '../../common/pagination/page';
+import { AuditService } from '../audit/audit.service';
+import type { ActorContext } from '../users/users.service';
+import type {
+  CreateProjectDto,
+  ProjectDto,
+  QueryProjectsDto,
+  UpdateProjectDto,
+} from './dto/project.dto';
+import { Project, PROJECT_STATUS } from './project.entity';
+
+const AUDITED_FIELDS = ['name', 'status', 'budget'] as const;
+
+@Injectable()
+export class ProjectsService {
+  constructor(
+    @InjectRepository(Project) private readonly repo: Repository<Project>,
+    @InjectDataSource() private readonly db: DataSource,
+    private readonly audit: AuditService,
+  ) {}
+
+  async create(dto: CreateProjectDto, actor: ActorContext): Promise<ProjectDto> {
+    try {
+      return await this.db.transaction(async (m) => {
+        const repo = m.getRepository(Project);
+        // El id lo genera la base: save() hace un INSERT (nunca un UPDATE de otra fila).
+        const project = await repo.save(
+          repo.create({
+            code: dto.code,
+            name: dto.name,
+            budget: dto.budget ?? null,
+            startsOn: dto.startsOn ?? null,
+            status: PROJECT_STATUS.DRAFT,
+            ownerSub: actor.actorSub,
+          }),
+        );
+        await this.audit.record(
+          {
+            action: AUDIT_ACTIONS.PROJECT_CREATED,
+            actorSub: actor.actorSub,
+            ip: actor.ip,
+            requestId: actor.requestId,
+            entityType: 'project',
+            entityId: project.id,
+            after: pick(project),
+          },
+          m,
+        );
+        return toDto(project);
+      });
+    } catch (error) {
+      if (isUniqueViolation(error, 'UQ_projects_code')) {
+        throw new ConflictException(`Ya existe un proyecto con el código ${dto.code}.`);
+      }
+      throw error;
+    }
+  }
+
+  async findById(id: string): Promise<ProjectDto> {
+    const project = await this.repo.findOneBy({ id });
+    if (!project) throw new NotFoundException('Proyecto no encontrado.');
+    return toDto(project);
+  }
+
+  async list(q: QueryProjectsDto): Promise<PageDto<ProjectDto>> {
+    const qb = this.repo
+      .createQueryBuilder('p')
+      .orderBy('p.createdAt', 'DESC')
+      .addOrderBy('p.id', 'ASC');
+    if (q.status) qb.andWhere('p.status = :status', { status: q.status });
+    if (q.q) {
+      qb.andWhere(
+        new Brackets((w) =>
+          w.where('p.code ILIKE :q', { q: `%${escapeLike(q.q!)}%` }).orWhere('p.name ILIKE :q'),
+        ),
+      );
+    }
+    const [rows, total] = await qb.take(q.limit).skip(q.offset).getManyAndCount();
+    return toPage(rows.map(toDto), total, q);
+  }
+
+  /**
+   * Bloqueo optimista: el UPDATE solo afecta a la fila si su versión sigue
+   * siendo la que leyó el cliente. Si otro usuario guardó antes, 0 filas → 409.
+   */
+  async update(id: string, dto: UpdateProjectDto, actor: ActorContext): Promise<ProjectDto> {
+    return this.db.transaction(async (m) => {
+      const repo = m.getRepository(Project);
+      const current = await repo.findOneBy({ id });
+      if (!current) throw new NotFoundException('Proyecto no encontrado.');
+      const changes: Partial<Pick<Project, 'name' | 'status' | 'budget'>> = {};
+      if (dto.name !== undefined) changes.name = dto.name;
+      if (dto.status !== undefined) changes.status = dto.status;
+      if (dto.budget !== undefined) changes.budget = dto.budget;
+
+      const result = await repo
+        .createQueryBuilder()
+        .update(Project)
+        .set({ ...changes, version: () => 'version + 1' })
+        .where('id = :id AND version = :version', { id, version: dto.version })
+        .execute();
+      if (result.affected === 0) {
+        throw new ConflictException(
+          'Otro usuario modificó este proyecto. Recarga y vuelve a intentarlo.',
+        );
+      }
+      const updated = await repo.findOneByOrFail({ id });
+      await this.audit.record(
+        {
+          action: AUDIT_ACTIONS.PROJECT_UPDATED,
+          actorSub: actor.actorSub,
+          ip: actor.ip,
+          requestId: actor.requestId,
+          entityType: 'project',
+          entityId: id,
+          before: pick(current),
+          after: pick(updated),
+        },
+        m,
+      );
+      return toDto(updated);
+    });
+  }
+}
+
+function toDto(p: Project): ProjectDto {
+  return {
+    id: p.id,
+    code: p.code,
+    name: p.name,
+    budget: p.budget,
+    status: p.status,
+    startsOn: p.startsOn,
+    version: p.version,
+    updatedAt: (p.updatedAt ?? new Date()).toISOString(),
+  };
+}
+
+function pick(p: Project): Record<string, unknown> {
+  return Object.fromEntries(AUDITED_FIELDS.map((k) => [k, p[k] ?? null]));
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+```
+
+```ts
+// src/modules/projects/projects.controller.ts
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser, type CurrentUserPayload } from '../../common/auth/current-user';
+import { ADMIN_ROLE, Roles } from '../../common/auth/roles';
+import { ReqCtx, type RequestContext } from '../../common/http/request-context';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
+import { ApiPageResponse } from '../../common/pagination/page';
+import {
+  CreateProjectDto,
+  ProjectDto,
+  QueryProjectsDto,
+  UpdateProjectDto,
+} from './dto/project.dto';
+import { ProjectsService } from './projects.service';
+
+@ApiTags('Proyectos')
+@Controller('projects')
+// Default de la clase: cualquier método puede sobrescribirlo con su propio @Roles.
+@Roles('<ROL_A>', ADMIN_ROLE)
+export class ProjectsController {
+  constructor(private readonly projects: ProjectsService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Listar proyectos (paginado, con filtro y búsqueda)' })
+  @ApiPageResponse(ProjectDto)
+  list(@Query() q: QueryProjectsDto) {
+    return this.projects.list(q);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Obtener un proyecto' })
+  @ApiOkResponse({ type: ProjectDto })
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.projects.findById(id);
+  }
+
+  @Post()
+  @Idempotent()
+  @ApiOperation({ summary: 'Crear un proyecto' })
+  @ApiCreatedResponse({ type: ProjectDto })
+  create(
+    @Body() dto: CreateProjectDto,
+    @CurrentUser() user: CurrentUserPayload,
+    @ReqCtx() ctx: RequestContext,
+  ) {
+    return this.projects.create(dto, { actorSub: user.sub, ip: ctx.ip, requestId: ctx.requestId });
+  }
+
+  @Patch(':id')
+  @Roles(ADMIN_ROLE)
+  @ApiOperation({ summary: 'Editar un proyecto (admin). Exige la versión leída: 409 si cambió' })
+  @ApiOkResponse({ type: ProjectDto })
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateProjectDto,
+    @CurrentUser() user: CurrentUserPayload,
+    @ReqCtx() ctx: RequestContext,
+  ) {
+    return this.projects.update(id, dto, {
+      actorSub: user.sub,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+  }
+}
+```
+
+```ts
+// src/modules/projects/projects.module.ts
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuditModule } from '../audit/audit.module';
+import { Project } from './project.entity';
+import { ProjectsController } from './projects.controller';
+import { ProjectsService } from './projects.service';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([Project]), AuditModule],
+  controllers: [ProjectsController],
+  providers: [ProjectsService],
+  exports: [ProjectsService],
+})
+export class ProjectsModule {}
+```
+
+Puntos que se copian aunque el recurso se llame de otra forma:
+
+- **`insert` contra `save`.** Aquí el id lo genera la base, así que `save()` es correcto: no hay una clave que pueda coincidir con otra fila. Cuando el id lo pone el cliente (como `users.id` = sub), se usa `insert()` (10.6).
+- **Todo `POST` que crea lleva `@Idempotent()`** (9.6). Sin él, el doble clic de un usuario sobre "Crear" le devuelve un 409 por su propio proyecto.
+- **La violación de unicidad se traduce.** `UQ_projects_code` → 409 con un mensaje de negocio. El resto de los errores de base se propagan y el filtro los convierte en 500 sin SQL en el cuerpo.
+- **La búsqueda escapa `%`, `_` y `\`** antes de armar el `ILIKE`. Si no, un usuario que escribe `%` lista toda la tabla.
+- **El `UPDATE` optimista** es `WHERE id = :id AND version = :version`. Cero filas afectadas es 409, no un reintento silencioso. El cliente relee y reintenta si quiere.
+- **La auditoría va dentro de la transacción** del cambio. Si el insert de `audit_logs` falla, el cambio también. `before`/`after` son los campos que importan, no un `SELECT *` volcado a JSON.
+- **`@Roles('<ROL_A>', '<ROL_B>')` en la clase** y `@Roles('<ROL_B>')` en el método que es solo de administración. El guard de método pisa al de clase. No hace falta repetir `@UseGuards`: los guards son globales (22.21).
+
+### 12.3 Qué no se copia de un CRUD genérico
+
+- 🆕 V2.2. `DELETE` no borra la fila: pone `deletedAt` y audita `*_DELETED`. Restaurar es otro endpoint de `<ROL_B>` que limpia `deletedAt`. Un `find` que no filtre la papelera es un bug.
+- No hay `findOneById` ni `Connection`: no existen en TypeORM 1.1. La búsqueda es `findOneBy({ id })` y las transacciones son `dataSource.transaction`.
+- No se pasa `null` o `undefined` dentro de un `where` "para ignorar el filtro": TypeORM 1.1 lanza. El filtro opcional se omite del objeto.
+
+---
+## 13. Documentos y S3
+
+🆕 **V2.** El navegador sube el archivo **directo a S3** con una URL prefirmada. La API no ve los bytes en producción (sí en local, donde no hay bucket). Entre la subida y el procesamiento pasa un antivirus.
+
+### 13.1 Estados
+
+`pending_upload` → `scanning` → `processing` → `processed`
+
+Desde `scanning` o `processing` se puede ir a `failed` (error recuperable: el mensaje queda en la fila) o a `quarantined` (GuardDuty marcó malware). Un objeto en cuarentena no se descarga y no cuenta para la unicidad `(entityId, documentType, sha256)`.
+
+La unicidad es un índice parcial `WHERE status <> 'quarantined'`. Dos subidas concurrentes del mismo archivo no pueden crear dos filas válidas (22.14): la pierde el `INSERT`, no un `SELECT` previo.
+
+### 13.2 Contrato
+
+| Método | Ruta | Quién | Qué hace |
+|---|---|---|---|
+| `POST` | `/api/documents/uploads` | sesión | Crea la fila en `pending_upload` y devuelve la URL prefirmada, las cabeceras que hay que enviar y la caducidad (300 s) |
+| `PUT` | `/api/documents/:id/content` | sesión, **solo local** | Recibe el binario, comprueba tamaño y sha256, simula un escaneo limpio |
+| `GET` | `/api/documents` | sesión | Lista por `entityId` |
+| `GET` | `/api/documents/:id/download` | sesión | URL prefirmada de descarga de 60 s, auditada |
+
+`POST /uploads` exige `contentType` permitido (en el núcleo, solo `application/pdf`), `sizeBytes` ≤ 20 MiB y `sha256` en hexadecimal de 64 caracteres. 🆕 V2.3. Los tipos de documento son los de 28.8: `constancia_deposito` y `constancia_retiro` aceptan además `image/jpeg` e `image/png` (la foto del voucher); `escritura`, `partida_registral`, `poder_firmado`, `constancia_retencion` y `tasacion` solo PDF. `entityId` es el id de la fila dueña (depósito, retiro, propiedad o usuario), y `entityType` dice cuál.
+
+### 13.3 La URL prefirmada
+
+El PUT del navegador tiene que mandar, tal cual se firmaron:
+
+- `Content-Type`
+- `Content-Length`
+- `x-amz-checksum-sha256` (el sha256 en base64, no en hex)
+
+Esas cabeceras van en `signableHeaders` y `x-amz-checksum-sha256` además en `unhoistableHeaders`. Si el SDK la "hoistea" al query string, el navegador no la envía como cabecera y la firma no cuadra. El cliente S3 está creado con `requestChecksumCalculation: 'WHEN_REQUIRED'` (7.5); si no, el SDK mete un CRC32 que la firma no espera.
+
+Verificado el 07/10/2026: la URL generada trae `X-Amz-SignedHeaders=content-length;content-type;host;x-amz-checksum-sha256`, `X-Amz-Expires=300` y no contiene `crc32`.
+
+La clave del objeto es `incoming/<documentId>`. El bucket no es público. El worker la mueve de sitio lógico cambiando el estado, no hace falta reescribir el objeto para marcarlo.
+
+### 13.4 Del bucket al worker
+
+En AWS la cadena es:
+
+1. El navegador hace `PUT` a `incoming/<id>`.
+2. GuardDuty Malware Protection for S3 etiqueta el objeto y publica en EventBridge el evento `GuardDuty Malware Protection Object Scan Result`.
+3. Una regla de EventBridge entrega a la cola SQS `<app-short>-<stage>-ingest`. Visibilidad 90 min (un procesamiento lento no debe devolver el mensaje mientras sigue en curso), DLQ tras 3 recepciones, alarma sobre la DLQ (16.6).
+4. La Lambda `ingest-worker` consume por lote, con `batchItemFailures`: solo se reintenta el mensaje que falló.
+
+El resultado `NO_THREATS_FOUND` pasa la fila a `processing` y llama al procesador de dominio. Cualquier otro resultado (`THREATS_FOUND` y los estados de error del escaneo) deja la fila en `quarantined` y no llama al procesador.
+
+El procesador de dominio del núcleo es un stub que devuelve OK: el dominio nuevo lo sustituye (parseo, validación de negocio). Tiene que ser idempotente: un reintento de SQS puede entregar el mismo mensaje dos veces. La fila ya en `processed` se reconoce y se sale sin repetir el efecto.
+
+La clave del evento llega URL-encoded (`incoming/a%20b`). Se decodifica antes de buscar (22.17).
+
+En local no hay GuardDuty. `PUT /content` verifica tamaño y hash y llama al mismo procesador con un resultado limpio. La suite cubre ese camino y, por separado, `processScanResult` con un evento sintético.
+
+### 13.5 Código
+
+```ts
+// src/modules/documents/dto/document.dto.ts
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform, Type } from 'class-transformer';
+import { IsIn, IsInt, IsString, Length, Matches, Max, Min } from 'class-validator';
+import { PageQueryDto } from '../../../common/pagination/page';
+import { DOCUMENT_STATUS, type DocumentStatus } from '../document.entity';
+
+/** 🆕 V2.3. Tipos de documento de PROPIA (28.8). */
+export const DOCUMENT_TYPES = [
+  'constancia_deposito',
+  'constancia_retiro',
+  'escritura',
+  'partida_registral',
+  'poder_firmado',
+  'constancia_retencion',
+  'tasacion',
+] as const;
+export type DocumentType = (typeof DOCUMENT_TYPES)[number];
+export const ALLOWED_CONTENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png'] as const;
+/** Las imágenes solo valen para la foto de un voucher. El servicio rechaza el resto con 400. */
+export const IMAGE_DOCUMENT_TYPES: readonly DocumentType[] = ['constancia_deposito', 'constancia_retiro'];
+export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+
+export class CreateUploadDto {
+  @ApiProperty({ format: 'uuid', description: 'Id de la fila dueña del documento (depósito, retiro, propiedad o usuario)' })
+  @Matches(/^[A-Za-z0-9-]{1,64}$/)
+  entityId: string;
+
+  @ApiProperty({ enum: DOCUMENT_TYPES })
+  @IsIn(DOCUMENT_TYPES)
+  documentType: (typeof DOCUMENT_TYPES)[number];
+
+  @ApiProperty({ example: 'Estado financiero 2026.pdf' })
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(1, 255)
+  filename: string;
+
+  @ApiProperty({ enum: ALLOWED_CONTENT_TYPES })
+  @IsIn(ALLOWED_CONTENT_TYPES, { message: 'Solo se aceptan archivos PDF, JPEG o PNG.' })
+  contentType: (typeof ALLOWED_CONTENT_TYPES)[number];
+
+  @ApiProperty({ example: 482133, maximum: MAX_DOCUMENT_BYTES })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(MAX_DOCUMENT_BYTES, { message: 'El archivo supera el tamaño máximo de 20 MB.' })
+  sizeBytes: number;
+
+  @ApiProperty({
+    description: 'SHA-256 del archivo en hexadecimal (64 caracteres), calculado en el navegador',
+  })
+  @Matches(/^[a-f0-9]{64}$/, { message: 'sha256 debe ser hexadecimal de 64 caracteres.' })
+  sha256: string;
+}
+
+export class UploadIntentDto {
+  @ApiProperty({ format: 'uuid' }) documentId: string;
+  @ApiProperty({ enum: ['upload', 'duplicate'] }) result: 'upload' | 'duplicate';
+  @ApiPropertyOptional({ description: 'URL presignada (PUT). Caduca en 5 minutos' })
+  uploadUrl?: string;
+  @ApiPropertyOptional({
+    description: 'Cabeceras que el PUT DEBE enviar tal cual (forman parte de la firma)',
+  })
+  headers?: Record<string, string>;
+}
+
+export class DocumentDto {
+  @ApiProperty({ format: 'uuid' }) id: string;
+  @ApiProperty() entityId: string;
+  @ApiProperty() documentType: string;
+  @ApiProperty() filename: string;
+  @ApiProperty({ enum: Object.values(DOCUMENT_STATUS) }) status: DocumentStatus;
+  @ApiProperty() sizeBytes: number;
+  @ApiProperty({ nullable: true, type: String }) errorMessage: string | null;
+  @ApiProperty({ format: 'date-time' }) createdAt: string;
+}
+
+export class QueryDocumentsDto extends PageQueryDto {
+  @ApiProperty({ example: '20123456789' })
+  @Matches(/^[A-Za-z0-9-]{1,64}$/)
+  entityId: string;
+}
+```
+
+```ts
+// src/modules/documents/documents.service.ts
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { createHash, randomUUID } from 'node:crypto';
+import type { DataSource, Repository } from 'typeorm';
+import { AUDIT_ACTIONS } from '../../common/constants/audit-actions';
+import { isUniqueViolation } from '../../common/database/pg-errors';
+import { type PageDto, toPage } from '../../common/pagination/page';
+import {
+  getS3Client,
+  localUploadPath,
+  shouldUseLocalDocumentStorage,
+} from '../../config/aws-s3.client';
+import type { EnvConfig } from '../../config/env.validation';
+import { AuditService } from '../audit/audit.service';
+import type { ActorContext } from '../users/users.service';
+import { Document, DOCUMENT_STATUS } from './document.entity';
+import type {
+  CreateUploadDto,
+  DocumentDto,
+  QueryDocumentsDto,
+  UploadIntentDto,
+} from './dto/document.dto';
+import { processScanResult } from './ingest.processor';
+
+const UPLOAD_URL_TTL_SECONDS = 300;
+const DOWNLOAD_URL_TTL_SECONDS = 60;
+/** incoming/<entityId>/<tipo>/<documentId>.pdf — el nombre original NUNCA forma parte de la clave. */
+export const incomingKey = (entityId: string, type: string, id: string) =>
+  `incoming/${entityId}/${type}/${id}.pdf`;
+
+@Injectable()
+export class DocumentsService {
+  private readonly bucket: string;
+  readonly localMode = shouldUseLocalDocumentStorage();
+
+  constructor(
+    @InjectRepository(Document) private readonly repo: Repository<Document>,
+    @InjectDataSource() private readonly db: DataSource,
+    private readonly audit: AuditService,
+    config: ConfigService<EnvConfig, true>,
+  ) {
+    this.bucket = config.get('DOCS_BUCKET', { infer: true });
+  }
+
+  /**
+   * Paso 1 de la subida: registra el documento y devuelve una URL presignada.
+   * La firma incluye Content-Type, Content-Length y el checksum SHA-256: S3
+   * rechaza un archivo distinto, de otro tamaño o de otro tipo al declarado.
+   */
+  async createUpload(dto: CreateUploadDto, actor: ActorContext): Promise<UploadIntentDto> {
+    const id = randomUUID();
+    const s3Key = incomingKey(dto.entityId, dto.documentType, id);
+    try {
+      await this.repo.insert({
+        id,
+        entityId: dto.entityId,
+        documentType: dto.documentType,
+        filename: dto.filename,
+        contentType: dto.contentType,
+        sizeBytes: dto.sizeBytes,
+        sha256: dto.sha256,
+        s3Key,
+        status: DOCUMENT_STATUS.PENDING_UPLOAD,
+        uploadedBySub: actor.actorSub,
+      });
+    } catch (error) {
+      // Mismo contenido ya subido para esa entidad y tipo: no se duplica (índice único parcial).
+      if (isUniqueViolation(error)) {
+        const existing = await this.repo.findOneByOrFail({
+          entityId: dto.entityId,
+          documentType: dto.documentType,
+          sha256: dto.sha256,
+        });
+        return { documentId: existing.id, result: 'duplicate' };
+      }
+      throw error;
+    }
+    await this.audit.recordSafe({
+      action: AUDIT_ACTIONS.GENERATE_PRESIGNED_URL,
+      actorSub: actor.actorSub,
+      ip: actor.ip,
+      requestId: actor.requestId,
+      entityType: 'document',
+      entityId: id,
+    });
+
+    if (this.localMode) {
+      return {
+        documentId: id,
+        result: 'upload',
+        uploadUrl: `/api/documents/${id}/content`,
+        headers: { 'content-type': dto.contentType },
+      };
+    }
+    const { url, headers } = await presignUpload(this.bucket, s3Key, dto);
+    return { documentId: id, result: 'upload', uploadUrl: url, headers };
+  }
+
+  /**
+   * Solo en desarrollo local sin AWS: recibe el binario, verifica tamaño y hash,
+   * lo guarda en .local-uploads/ y simula un escaneo limpio del antivirus.
+   */
+  async receiveLocalContent(id: string, body: Buffer): Promise<DocumentDto> {
+    if (!this.localMode) throw new NotFoundException();
+    const doc = await this.repo.findOneBy({ id });
+    if (!doc || doc.status !== DOCUMENT_STATUS.PENDING_UPLOAD)
+      throw new NotFoundException('Documento no encontrado.');
+    if (
+      body.length !== doc.sizeBytes ||
+      createHash('sha256').update(body).digest('hex') !== doc.sha256
+    ) {
+      throw new BadRequestException('El archivo no coincide con el tamaño o el hash declarados.');
+    }
+    const path = localUploadPath(doc.s3Key);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, body);
+    await processScanResult(
+      {
+        'detail-type': 'GuardDuty Malware Protection Object Scan Result',
+        detail: {
+          scanStatus: 'COMPLETED',
+          s3ObjectDetails: { bucketName: 'local', objectKey: doc.s3Key },
+          scanResultDetails: { scanResultStatus: 'NO_THREATS_FOUND' },
+        },
+      },
+      {
+        db: this.db,
+        s3: { move: () => Promise.resolve() },
+        process: () => Promise.resolve({ validationStatus: 'OK' }),
+        parserVersion: 'local',
+      },
+    );
+    return toDto(await this.repo.findOneByOrFail({ id }));
+  }
+
+  async list(q: QueryDocumentsDto): Promise<PageDto<DocumentDto>> {
+    const [rows, total] = await this.repo.findAndCount({
+      where: { entityId: q.entityId },
+      order: { createdAt: 'DESC' },
+      take: q.limit,
+      skip: q.offset,
+    });
+    return toPage(rows.map(toDto), total, q);
+  }
+
+  /** URL de descarga de 60 s. Solo documentos procesados, y queda auditada. */
+  async downloadUrl(id: string, actor: ActorContext): Promise<{ url: string }> {
+    const doc = await this.repo.findOneBy({ id });
+    if (!doc) throw new NotFoundException('Documento no encontrado.');
+    if (doc.status !== DOCUMENT_STATUS.PROCESSED) {
+      throw new ConflictException('El documento todavía no está disponible.');
+    }
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOWNLOAD_DOCUMENT,
+      actorSub: actor.actorSub,
+      ip: actor.ip,
+      requestId: actor.requestId,
+      entityType: 'document',
+      entityId: id,
+    });
+    if (this.localMode) return { url: `file://${localUploadPath(doc.s3Key)}` };
+    const safeName = doc.filename.replace(/[^\w.\- ]/g, '_');
+    const url = await getSignedUrl(
+      getS3Client(),
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: doc.s3Key,
+        ResponseContentDisposition: `attachment; filename="${safeName}"`,
+      }),
+      { expiresIn: DOWNLOAD_URL_TTL_SECONDS },
+    );
+    return { url };
+  }
+}
+
+/**
+ * URL PUT presignada. Content-Type, Content-Length y x-amz-checksum-sha256 quedan
+ * dentro de la firma: el navegador debe enviarlos exactamente con esos valores.
+ */
+export async function presignUpload(
+  bucket: string,
+  key: string,
+  file: { contentType: string; sizeBytes: number; sha256: string },
+): Promise<{ url: string; headers: Record<string, string> }> {
+  const checksum = Buffer.from(file.sha256, 'hex').toString('base64');
+  const url = await getSignedUrl(
+    getS3Client(),
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: file.contentType,
+      ContentLength: file.sizeBytes,
+      ChecksumSHA256: checksum,
+    }),
+    {
+      expiresIn: UPLOAD_URL_TTL_SECONDS,
+      // Por defecto el presigner NO firma content-type: sin esto se podría subir otro tipo de archivo.
+      signableHeaders: new Set(['content-type']),
+      unhoistableHeaders: new Set(['x-amz-checksum-sha256']),
+    },
+  );
+  return { url, headers: { 'content-type': file.contentType, 'x-amz-checksum-sha256': checksum } };
+}
+
+function toDto(d: Document): DocumentDto {
+  return {
+    id: d.id,
+    entityId: d.entityId,
+    documentType: d.documentType,
+    filename: d.filename,
+    status: d.status,
+    sizeBytes: d.sizeBytes,
+    errorMessage: d.errorMessage,
+    createdAt: d.createdAt.toISOString(),
+  };
+}
+```
+
+```ts
+// src/modules/documents/documents.controller.ts
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put, Query, Req } from '@nestjs/common';
+import { ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
+import { CurrentUser, type CurrentUserPayload } from '../../common/auth/current-user';
+import { ADMIN_ROLE, Roles } from '../../common/auth/roles';
+import { ReqCtx, type RequestContext } from '../../common/http/request-context';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
+import { ApiPageResponse } from '../../common/pagination/page';
+import { DocumentsService } from './documents.service';
+import {
+  CreateUploadDto,
+  DocumentDto,
+  QueryDocumentsDto,
+  UploadIntentDto,
+} from './dto/document.dto';
+
+@ApiTags('Documentos')
+@Controller('documents')
+@Roles('<ROL_A>', ADMIN_ROLE)
+export class DocumentsController {
+  constructor(private readonly documents: DocumentsService) {}
+
+  @Post('uploads')
+  // El reintento devuelve la misma URL. Si ya caducó, S3 responde 403 al PUT y el cliente
+  // empieza otra subida con otra clave.
+  @Idempotent()
+  @ApiOperation({ summary: 'Registrar una subida y obtener la URL presignada (PUT directo a S3)' })
+  @ApiCreatedResponse({ type: UploadIntentDto })
+  createUpload(
+    @Body() dto: CreateUploadDto,
+    @CurrentUser() user: CurrentUserPayload,
+    @ReqCtx() ctx: RequestContext,
+  ) {
+    return this.documents.createUpload(dto, {
+      actorSub: user.sub,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+  }
+
+  @Put(':id/content')
+  @ApiOperation({
+    summary: 'Solo desarrollo local sin AWS: recibe el binario (en AWS el PUT va a S3)',
+  })
+  @ApiOkResponse({ type: DocumentDto })
+  receiveLocal(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) {
+    return this.documents.receiveLocalContent(
+      id,
+      Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
+    );
+  }
+
+  @Get()
+  @ApiOperation({ summary: 'Documentos de una entidad (paginado)' })
+  @ApiPageResponse(DocumentDto)
+  list(@Query() q: QueryDocumentsDto) {
+    return this.documents.list(q);
+  }
+
+  @Get(':id/download')
+  @ApiOperation({ summary: 'URL de descarga (60 s). Queda auditada' })
+  download(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: CurrentUserPayload,
+    @ReqCtx() ctx: RequestContext,
+  ) {
+    return this.documents.downloadUrl(id, {
+      actorSub: user.sub,
+      ip: ctx.ip,
+      requestId: ctx.requestId,
+    });
+  }
+}
+```
+
+```ts
+// src/modules/documents/documents.module.ts
+import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import express from 'express';
+import { AuditModule } from '../audit/audit.module';
+import { Document } from './document.entity';
+import { DocumentsController } from './documents.controller';
+import { DocumentsService } from './documents.service';
+import { MAX_DOCUMENT_BYTES } from './dto/document.dto';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([Document]), AuditModule],
+  controllers: [DocumentsController],
+  providers: [DocumentsService],
+})
+export class DocumentsModule implements NestModule {
+  // Cuerpo binario solo en la ruta de subida local; el resto de la API sigue siendo JSON.
+  configure(consumer: MiddlewareConsumer): void {
+    consumer
+      .apply(express.raw({ type: 'application/pdf', limit: MAX_DOCUMENT_BYTES }))
+      .forRoutes({ path: 'documents/:id/content', method: RequestMethod.PUT });
+  }
+}
+```
+
+```ts
+// src/modules/documents/ingest.processor.ts
+import type { DataSource } from 'typeorm';
+import { Document, DOCUMENT_STATUS } from './document.entity';
+
+/** Evento "GuardDuty Malware Protection Object Scan Result" (lo que EventBridge deja en SQS). */
+export interface ScanResultEvent {
+  'detail-type': string;
+  detail: {
+    scanStatus: 'COMPLETED' | 'SKIPPED' | 'FAILED';
+    s3ObjectDetails: { bucketName: string; objectKey: string; versionId?: string };
+    scanResultDetails?: { scanResultStatus?: string; threats?: Array<{ name: string }> | null };
+  };
+}
+
+/** Lo mínimo que el procesador necesita de S3: mover un objeto. Inyectable para tests. */
+export interface ObjectMover {
+  move(bucket: string, fromKey: string, toKey: string): Promise<void>;
+}
+
+/** Procesamiento de dominio de un archivo limpio. Lo implementa cada proyecto (🟦). */
+export type DomainProcessor = (
+  doc: Document,
+  rawKey: string,
+) => Promise<{ validationStatus: string }>;
+
+export type IngestOutcome = 'processed' | 'quarantined' | 'failed' | 'skipped';
+
+/**
+ * Máquina de estados de 13.5:
+ *   pending_upload → scanning → processing → processed
+ *                        ├────────────────→ quarantined (amenaza o no escaneable)
+ *                        └────────────────→ failed      (error del procesador; reintentable)
+ * Idempotente: SQS entrega al menos una vez; un documento que ya salió de
+ * `scanning` se ignora.
+ */
+export async function processScanResult(
+  event: ScanResultEvent,
+  deps: { db: DataSource; s3: ObjectMover; process: DomainProcessor; parserVersion: string },
+): Promise<IngestOutcome> {
+  const { bucketName, objectKey } = event.detail.s3ObjectDetails;
+  // Las claves de los eventos llegan URL-encoded (22.17).
+  const key = decodeURIComponent(objectKey.replace(/\+/g, ' '));
+  const repo = deps.db.getRepository(Document);
+  const doc = await repo.findOneBy({ s3Key: key });
+  if (
+    !doc ||
+    (doc.status !== DOCUMENT_STATUS.SCANNING && doc.status !== DOCUMENT_STATUS.PENDING_UPLOAD)
+  ) {
+    return 'skipped';
+  }
+
+  const verdict = event.detail.scanResultDetails?.scanResultStatus;
+  if (event.detail.scanStatus !== 'COMPLETED' || verdict !== 'NO_THREATS_FOUND') {
+    const quarantineKey = key.replace(/^incoming\//, 'quarantine/');
+    await deps.s3.move(bucketName, key, quarantineKey);
+    await repo.update(doc.id, {
+      status: DOCUMENT_STATUS.QUARANTINED,
+      s3Key: quarantineKey,
+      validationStatus: verdict ?? event.detail.scanStatus,
+      errorMessage:
+        (event.detail.scanResultDetails?.threats ?? []).map((t) => t.name).join(', ') || null,
+    });
+    return 'quarantined';
+  }
+
+  const rawKey = key.replace(/^incoming\//, 'raw/');
+  await deps.s3.move(bucketName, key, rawKey);
+  await repo.update(doc.id, { status: DOCUMENT_STATUS.PROCESSING, s3Key: rawKey });
+  try {
+    const result = await deps.process({ ...doc, s3Key: rawKey }, rawKey);
+    await repo.update(doc.id, {
+      status: DOCUMENT_STATUS.PROCESSED,
+      validationStatus: result.validationStatus,
+      parserVersion: deps.parserVersion,
+      processedAt: new Date(),
+      errorMessage: null,
+    });
+    return 'processed';
+  } catch (error) {
+    // Nunca dejar un documento en `processing`: el error queda en la fila para la UI.
+    await repo.update(doc.id, {
+      status: DOCUMENT_STATUS.FAILED,
+      validationStatus: 'PARSER_ERROR',
+      errorMessage: String(error instanceof Error ? error.message : error).slice(0, 2000),
+    });
+    return 'failed';
+  }
+}
+```
+
+```ts
+// src/modules/documents/presign.spec.ts
+import { describe, expect, it } from 'vitest';
+import { presignUpload } from './documents.service';
+
+describe('presignUpload', () => {
+  it('firma tipo, tamaño y SHA-256, sin checksum CRC32 por defecto y con caducidad de 5 min', async () => {
+    process.env.AWS_ACCESS_KEY_ID = 'AKIAIOSFODNN7EXAMPLE';
+    process.env.AWS_SECRET_ACCESS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    process.env.AWS_REGION = 'us-east-1';
+    const sha256 = 'a'.repeat(64);
+    const { url, headers } = await presignUpload('docs', 'incoming/E1/t/x.pdf', {
+      contentType: 'application/pdf',
+      sizeBytes: 1234,
+      sha256,
+    });
+    const u = new URL(url);
+    const signed = u.searchParams.get('X-Amz-SignedHeaders') ?? '';
+    expect(signed.split(';')).toEqual(
+      expect.arrayContaining(['content-length', 'content-type', 'host', 'x-amz-checksum-sha256']),
+    );
+    expect(u.searchParams.get('X-Amz-Expires')).toBe('300');
+    expect(url).not.toMatch(/crc32/i);
+    expect(headers['x-amz-checksum-sha256']).toBe(Buffer.from(sha256, 'hex').toString('base64'));
+  });
+});
+```
+
+```ts
+// src/lambda-ingest.ts
+import 'reflect-metadata';
+import type { SQSBatchResponse, SQSEvent } from 'aws-lambda';
+import { DataSource } from 'typeorm';
+import { buildDataSourceOptions } from './config/database.config';
+import { validateEnv } from './config/env.validation';
+import { hydrateSecrets } from './config/hydrate-secrets';
+import { ENTITIES } from './database/entities';
+import {
+  type DomainProcessor,
+  type ObjectMover,
+  processScanResult,
+  type ScanResultEvent,
+} from './modules/documents/ingest.processor';
+
+const PARSER_VERSION = '1.0.0';
+
+// 🟦 Sustituir por el procesamiento real del dominio (extracción, validación…).
+const processDocument: DomainProcessor = () => Promise.resolve({ validationStatus: 'OK' });
+
+let ready: Promise<{ db: DataSource; s3: ObjectMover }> | undefined;
+
+const log = (entry: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(entry)}\n`);
+
+async function init() {
+  await hydrateSecrets();
+  const env = validateEnv(process.env);
+  const db = new DataSource({
+    ...buildDataSourceOptions({ ...env, DB_POOL_MAX: 1 }),
+    entities: ENTITIES,
+  });
+  await db.initialize();
+  const { CopyObjectCommand, DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+  const { getS3Client } = await import('./config/aws-s3.client');
+  const client = getS3Client();
+  const s3: ObjectMover = {
+    async move(bucket, from, to) {
+      await client.send(
+        new CopyObjectCommand({
+          Bucket: bucket,
+          Key: to,
+          CopySource: `${bucket}/${encodeURIComponent(from)}`,
+          MetadataDirective: 'COPY',
+          TaggingDirective: 'COPY',
+        }),
+      );
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: from }));
+    },
+  };
+  return { db, s3 };
+}
+
+/**
+ * Worker de ingesta. Recibe por SQS (batchSize 1) el resultado del antivirus.
+ * Devuelve los mensajes fallidos para que SQS los reintente; tras 3 intentos
+ * van a la DLQ y salta la alarma (16.5).
+ */
+export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
+  ready ??= init().catch((error: unknown) => {
+    ready = undefined;
+    throw error;
+  });
+  const { db, s3 } = await ready;
+  const failures: SQSBatchResponse['batchItemFailures'] = [];
+  for (const record of event.Records) {
+    try {
+      const outcome = await processScanResult(JSON.parse(record.body) as ScanResultEvent, {
+        db,
+        s3,
+        process: processDocument,
+        parserVersion: PARSER_VERSION,
+      });
+      log({ level: 'info', msg: 'ingest', messageId: record.messageId, outcome });
+    } catch (error) {
+      log({
+        level: 'error',
+        msg: 'ingest failed',
+        messageId: record.messageId,
+        err: String(error),
+      });
+      failures.push({ itemIdentifier: record.messageId });
+    }
+  }
+  return { batchItemFailures: failures };
+};
+```
+
+`express.raw()` se aplica solo a `PUT documents/:id/content`. El resto de las rutas siguen con el JSON parser. Hace falta la dependencia directa `express` (pnpm no expone la transitiva) y el tipo `rawBody` que el controlador lee como `Buffer`. Montar `raw()` a nivel global rompe el `ValidationPipe` de todas las rutas JSON (22.3).
+
+---
+## 14. Jobs programados (cron Lambda)
+
+🆕 **V2.** El núcleo **no trae un job de dominio**. El original tenía uno (sincronización de tipos de cambio) que es lógica de negocio y no se copia. Esta sección es el patrón para cuando el dominio necesite un cron. El worker de la sección 13 es el ejemplo real, compilado, de una Lambda que no es la API.
+
+### 14.1 Handler
+
+```ts
+// src/lambda-<job>.ts
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import { Logger } from 'nestjs-pino';
+import { AppModule } from './app.module';
+import { JobService } from './modules/<feature>/<job>.service';
+
+let cached: Promise<{ close(): Promise<void>; get(token: unknown): JobService }> | null = null;
+
+async function context() {
+  const app = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
+  app.useLogger(app.get(Logger));
+  return app;
+}
+
+export async function handler(): Promise<{ processed: number }> {
+  if (!cached) cached = context();
+  try {
+    const app = await cached;
+    const result = await app.get(JobService).run();
+    process.stdout.write(JSON.stringify({ job: '<job>', processed: result.processed }) + '\n');
+    return result;
+  } catch (err) {
+    cached = null;
+    throw err;
+  }
+}
+```
+
+Misma regla que `lambda.ts`: si el arranque falla, se tira la promesa cacheada. No se corren migraciones aquí. El log es una línea JSON a stdout (CloudWatch la indexa) con un número, no un "job ok".
+
+Se añade la entrada en `scripts/bundle.mjs`:
+
+```js
+'job-<nombre>': 'dist/lambda-<job>.js',
+```
+
+### 14.2 Programación en CDK
+
+EventBridge evalúa el cron en **UTC** y usa seis campos. Exactamente uno de `día-del-mes` y `día-de-la-semana` es `?`.
+
+```ts
+import { Rule, Schedule } from 'aws-cdk-lib/aws-events';
+import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
+
+new Rule(this, 'WeekdayMorning', {
+  description: '08:00 America/Lima (UTC-5) de lunes a viernes. EventBridge solo habla UTC.',
+  schedule: Schedule.cron({ minute: '0', hour: '13', weekDay: 'MON-FRI' }),
+  targets: [new LambdaFunction(fn)],
+});
+```
+
+La función se define con `lambda-defaults.ts` (mismo VPC, mismo rol de base IAM, memoria y timeout acordes al lote). Un cron de `timeout` 30 s que procesa "todo lo pendiente" va a empezar a fallar; se procesa un lote con tope y el resto espera a la siguiente pasada.
+
+### 14.3 Reglas
+
+1. **Idempotente.** EventBridge puede entregar dos veces. `upsert` por clave natural, o una fila de control con restricción única.
+2. **Alarma sobre `Errors`** de esa función, al mismo topic SNS que el resto (24.3). Un cron que falla en silencio no existe.
+3. **Un endpoint manual** `@Roles('<ROL_B>')` que llama a `service.run()`, para forzarlo sin esperar al cron y para probarlo.
+4. **No hay lista de funciones que actualizar a mano.** CDK publica todas las funciones del stack. El fallo de la v1 (el script de deploy olvidaba el cron) no tiene equivalente aquí.
+
+---
+## 15. Testing
+
+🆕 **V2.** Vitest 5 + Supertest + PostgreSQL 17 real. Cognito no se llama: se sustituye el cliente y se firman access tokens con una clave RSA local.
+
+### 15.1 Qué cubre cada nivel
+
+| Comando | Dónde | Contra qué |
+|---|---|---|
+| `pnpm test` | `src/**/*.spec.ts` | Proceso, sin base. Entorno, entidades (columnas), IP, URL prefirmada |
+| `pnpm test:e2e` | `test/**/*.e2e-spec.ts` | PostgreSQL real, app Nest completa, cookies, guards |
+| `pnpm test:e2e:cov` | lo mismo, con umbral | El gate de CI |
+
+Medido el 07/10/2026: 10 tests unitarios, 44 e2e, cobertura de líneas 78.22 %, ramas 58.86 %, funciones 85.46 %. Umbrales en `vitest.e2e.config.mts`: líneas 70, funciones 70, ramas 50.
+
+### 15.2 El arnés
+
+```ts
+// test/support/test-app.ts
+import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import type { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { DataSource } from 'typeorm';
+import { vi } from 'vitest';
+
+export const TEST_ENV = {
+  NODE_ENV: 'test',
+  STAGE: 'test',
+  LOG_LEVEL: 'warn',
+  APP_ORIGIN: 'http://127.0.0.1:4200',
+  AWS_REGION: 'us-east-1',
+  DOCS_BUCKET: 'test-bucket',
+  COGNITO_USER_POOL_ID: 'us-east-1_TEST12345',
+  COGNITO_CLIENT_ID: 'test-client-id',
+  COGNITO_CLIENT_SECRET: 'test-client-secret',
+  DB_HOST: process.env.DB_HOST ?? 'localhost',
+  DB_PORT: process.env.DB_PORT ?? '5432',
+  DB_USERNAME: process.env.DB_USERNAME ?? 'postgres',
+  DB_PASSWORD: process.env.DB_PASSWORD ?? 'postgres',
+  DB_NAME: process.env.DB_NAME_TEST ?? '<app_snake>_test',
+  DB_SSL: 'false',
+};
+Object.assign(process.env, TEST_ENV);
+
+const ISSUER = `https://cognito-idp.${TEST_ENV.AWS_REGION}.amazonaws.com/${TEST_ENV.COGNITO_USER_POOL_ID}`;
+const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const PUBLIC_PEM = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+
+/** Firma un JWT RS256 como lo haría Cognito. `overrides` permite fabricar tokens inválidos. */
+export function signAccessToken(
+  claims: { sub: string; groups?: string[] } & Record<string, unknown>,
+  opts: { alg?: 'RS256' | 'HS256'; expiresIn?: number } = {},
+): string {
+  const now = Math.floor(Date.now() / 1000);
+  const { groups, ...rest } = claims;
+  const payload = {
+    iss: ISSUER,
+    token_use: 'access',
+    client_id: TEST_ENV.COGNITO_CLIENT_ID,
+    username: claims.sub,
+    iat: now,
+    exp: now + (opts.expiresIn ?? 900),
+    jti: randomUUID(),
+    ...(groups ? { 'cognito:groups': groups } : {}),
+    ...rest,
+  };
+  const enc = (v: object) => Buffer.from(JSON.stringify(v)).toString('base64url');
+  const head = enc({ alg: opts.alg ?? 'RS256', typ: 'JWT', kid: 'test' });
+  const body = enc(payload);
+  const signature =
+    opts.alg === 'HS256'
+      ? Buffer.from('forged').toString('base64url')
+      : sign('RSA-SHA256', Buffer.from(`${head}.${body}`), privateKey).toString('base64url');
+  return `${head}.${body}.${signature}`;
+}
+
+export interface TestContext {
+  app: INestApplication;
+  db: DataSource;
+  cognitoSend: ReturnType<typeof vi.fn>;
+}
+
+export async function createTestApp(): Promise<TestContext> {
+  const { AppModule } = await import('../../src/app.module');
+  const { configureApp } = await import('../../src/configure-app');
+  const { COGNITO_CLIENT } = await import('../../src/modules/auth/cognito.provider');
+  const { JWT_KEY_PROVIDER } = await import('../../src/modules/auth/jwt-key.provider');
+  const { buildDataSourceOptions } = await import('../../src/config/database.config');
+  const { ENTITIES } = await import('../../src/database/entities');
+  const { MIGRATIONS } = await import('../../src/migrations');
+
+  const db = new DataSource({
+    ...buildDataSourceOptions({
+      DB_HOST: TEST_ENV.DB_HOST,
+      DB_PORT: Number(TEST_ENV.DB_PORT),
+      DB_USERNAME: TEST_ENV.DB_USERNAME,
+      DB_PASSWORD: TEST_ENV.DB_PASSWORD,
+      DB_NAME: TEST_ENV.DB_NAME,
+      DB_IAM_AUTH: false,
+      DB_SSL: false,
+      AWS_REGION: TEST_ENV.AWS_REGION,
+      STAGE: 'test',
+    }),
+    entities: ENTITIES,
+    migrations: MIGRATIONS,
+    logging: false,
+  });
+  await db.initialize();
+  // dropDatabase() borra tablas pero no funciones ni triggers: se recrea el esquema entero.
+  await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
+  await db.runMigrations();
+
+  const cognitoSend = vi.fn();
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(COGNITO_CLIENT)
+    .useValue({ send: cognitoSend })
+    .overrideProvider(JWT_KEY_PROVIDER)
+    .useValue((_req: unknown, _raw: unknown, done: (e: unknown, key?: string) => void) =>
+      done(null, PUBLIC_PEM),
+    )
+    .compile();
+  const app = moduleRef.createNestApplication({ bufferLogs: true });
+  configureApp(app);
+  await app.init();
+  return { app, db, cognitoSend };
+}
+
+export async function insertUser(
+  db: DataSource,
+  overrides: Partial<{ id: string; email: string; userStatus: string }> = {},
+): Promise<string> {
+  const id = overrides.id ?? randomUUID();
+  await db.query(
+    `INSERT INTO users (id, email, first_name, last_name, cognito_status, user_status)
+     VALUES ($1, $2, 'Ana', 'Pérez', 'confirmed', $3)`,
+    [id, overrides.email ?? `${id.slice(0, 8)}@ejemplo.com`, overrides.userStatus ?? 'active'],
+  );
+  return id;
+}
+```
+
+Cada archivo e2e llama a `createTestApp()`, que:
+
+1. Hace `DROP SCHEMA public CASCADE` y lo recrea. `dropDatabase()` de TypeORM no tira las funciones ni el trigger, y el siguiente `runMigrations` choca con `audit_logs_immutable`.
+2. Corre las migraciones y el seed.
+3. Sustituye `COGNITO_CLIENT` por un fake con los métodos que el servicio llama, y `JWT_KEY_PROVIDER` por un `JwksClient` de mentira que devuelve la clave pública del par RSA generado en el proceso.
+4. `signAccessToken()` firma un access token RS256 con `token_use`, `client_id` e `iss` correctos. Los tests de rechazo construyen tokens a los que les falta uno de los tres.
+
+La base de test es `DB_NAME_TEST` o, por defecto, `<app_snake>_test`. No es la base de desarrollo. En CI el servicio de GitHub Actions se llama `app_test` (el workflow exporta `DB_NAME_TEST=app_test`).
+
+### 15.3 Las suites
+
+```ts
+// test/auth.e2e-spec.ts
+import request from 'supertest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createTestApp, insertUser, signAccessToken, type TestContext } from './support/test-app';
+
+const AT = '<app-short>_at';
+const RT = '<app-short>_rt';
+const MFA = '<app-short>_mfa';
+
+function cookieHeader(res: request.Response): string[] {
+  const raw = res.headers['set-cookie'] as unknown;
+  return Array.isArray(raw) ? (raw as string[]) : raw ? [raw as string] : [];
+}
+function findCookie(res: request.Response, name: string): string | undefined {
+  return cookieHeader(res).find((c) => c.startsWith(`${name}=`));
+}
+
+describe('Autenticación y sesión (e2e)', () => {
+  let ctx: TestContext;
+  let http: ReturnType<typeof request>;
+
+  beforeAll(async () => {
+    ctx = await createTestApp();
+    http = request(ctx.app.getHttpServer());
+  });
+  afterAll(async () => {
+    await ctx.app.close();
+    await ctx.db.destroy();
+  });
+  beforeEach(() => ctx.cognitoSend.mockReset());
+
+  it('login correcto: emite cookies httpOnly + SameSite=Strict, nunca tokens en el cuerpo, y audita', async () => {
+    const sub = await insertUser(ctx.db);
+    const accessToken = signAccessToken({ sub });
+    ctx.cognitoSend.mockResolvedValueOnce({
+      AuthenticationResult: { AccessToken: accessToken, RefreshToken: 'rt-1', ExpiresIn: 900 },
+    });
+
+    const res = await http
+      .post('/api/auth/login')
+      .send({ email: 'Ana@Ejemplo.com', password: 'x' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('authenticated');
+    expect(JSON.stringify(res.body)).not.toContain(accessToken);
+    expect(findCookie(res, AT)).toMatch(/HttpOnly/);
+    expect(findCookie(res, AT)).toMatch(/SameSite=Strict/);
+    expect(findCookie(res, RT)).toMatch(/Path=\/api\/auth/);
+    const sentEmail = ctx.cognitoSend.mock.calls[0][0].input.AuthParameters.USERNAME;
+    expect(sentEmail).toBe('ana@ejemplo.com');
+    const audit = await ctx.db.query(
+      `SELECT action, actor_sub FROM audit_logs WHERE action='USER_LOGIN'`,
+    );
+    expect(audit).toContainEqual({ action: 'USER_LOGIN', actor_sub: sub });
+  });
+
+  it('login con MFA: devuelve el reto y lo completa con la cookie de reto', async () => {
+    const sub = await insertUser(ctx.db);
+    ctx.cognitoSend
+      .mockResolvedValueOnce({
+        ChallengeName: 'SOFTWARE_TOKEN_MFA',
+        Session: 'cognito-session',
+        ChallengeParameters: { USER_ID_FOR_SRP: sub },
+      })
+      .mockResolvedValueOnce({
+        AuthenticationResult: {
+          AccessToken: signAccessToken({ sub }),
+          RefreshToken: 'rt',
+          ExpiresIn: 900,
+        },
+      });
+
+    const step1 = await http
+      .post('/api/auth/login')
+      .send({ email: 'mfa@ejemplo.com', password: 'x' });
+    expect(step1.body).toEqual({ status: 'challenge', challenge: 'SOFTWARE_TOKEN_MFA' });
+    const mfaCookie = findCookie(step1, MFA)!.split(';')[0];
+
+    const step2 = await http
+      .post('/api/auth/challenge')
+      .set('Cookie', mfaCookie)
+      .send({ challenge: 'SOFTWARE_TOKEN_MFA', code: '123456' });
+
+    expect(step2.status).toBe(200);
+    expect(step2.body.status).toBe('authenticated');
+    const respond = ctx.cognitoSend.mock.calls[1][0].input;
+    expect(respond.ChallengeResponses).toMatchObject({
+      USERNAME: sub,
+      SOFTWARE_TOKEN_MFA_CODE: '123456',
+    });
+    expect(respond.Session).toBe('cognito-session');
+  });
+
+  it('reto sin cookie de reto → 401', async () => {
+    const res = await http
+      .post('/api/auth/challenge')
+      .send({ challenge: 'SOFTWARE_TOKEN_MFA', code: '123456' });
+    expect(res.status).toBe(401);
+  });
+
+  it('credenciales incorrectas → 401 genérico (anti-enumeración) y auditoría de fallo', async () => {
+    ctx.cognitoSend.mockRejectedValueOnce(
+      Object.assign(new Error('x'), { name: 'UserNotFoundException' }),
+    );
+    const res = await http
+      .post('/api/auth/login')
+      .send({ email: 'nadie@ejemplo.com', password: 'x' });
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe('Correo o contraseña incorrectos.');
+    expect(res.body.requestId).toBeTruthy();
+  });
+
+  it('/auth/me con sesión válida devuelve el perfil local y la expiración', async () => {
+    const sub = await insertUser(ctx.db, { email: 'perfil@ejemplo.com' });
+    const res = await http
+      .get('/api/auth/me')
+      .set('Cookie', `${AT}=${signAccessToken({ sub, groups: ['<ROL_A>'] })}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      sub,
+      email: 'perfil@ejemplo.com',
+      groups: ['<ROL_A>'],
+      userStatus: 'active',
+    });
+    expect(new Date(res.body.sessionExpiresAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it.each([
+    ['usuario bloqueado', { userStatus: 'blocked' }, {}, {}, 'Tu cuenta fue bloqueada'],
+    ['ID token en vez de access token', {}, { token_use: 'id' }, {}, 'La sesión no es válida.'],
+    ['token de otro App Client', {}, { client_id: 'otro-cliente' }, {}, 'La sesión no es válida.'],
+    ['emisor distinto', {}, { iss: 'https://evil.example' }, {}, 'La sesión no es válida.'],
+    ['token expirado', {}, {}, { expiresIn: -60 }, 'La sesión expiró.'],
+    [
+      'algoritmo HS256 (confusión de algoritmo)',
+      {},
+      {},
+      { alg: 'HS256' as const },
+      'La sesión no es válida.',
+    ],
+  ])('rechaza con 401: %s', async (_name, user, claims, opts, message) => {
+    const sub = await insertUser(ctx.db, user);
+    const res = await http
+      .get('/api/auth/me')
+      .set('Cookie', `${AT}=${signAccessToken({ sub, ...claims }, opts)}`);
+    expect(res.status).toBe(401);
+    expect(res.body.message).toContain(message);
+  });
+
+  it('usuario válido en Cognito pero inexistente en la base → 401 (falla cerrado)', async () => {
+    const res = await http
+      .get('/api/auth/me')
+      .set('Cookie', `${AT}=${signAccessToken({ sub: '11111111-1111-4111-8111-111111111111' })}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('RBAC: sin rol admin → 403; con rol admin → 200 y auditoría con antes/después', async () => {
+    const target = await insertUser(ctx.db);
+    const user = await insertUser(ctx.db);
+    const admin = await insertUser(ctx.db);
+    const body = { userStatus: 'blocked' };
+
+    const denied = await http
+      .patch(`/api/users/${target}/status`)
+      .set('Cookie', `${AT}=${signAccessToken({ sub: user, groups: ['<ROL_A>'] })}`)
+      .send(body);
+    expect(denied.status).toBe(403);
+
+    const ok = await http
+      .patch(`/api/users/${target}/status`)
+      .set('Cookie', `${AT}=${signAccessToken({ sub: admin, groups: ['<ROL_B>'] })}`)
+      .set('x-request-id', 'e2e-rbac-0001')
+      .send(body);
+    expect(ok.status).toBe(200);
+    const [row] = await ctx.db.query(
+      `SELECT actor_sub, before, after, request_id FROM audit_logs WHERE entity_id = $1`,
+      [target],
+    );
+    expect(row).toEqual({
+      actor_sub: admin,
+      before: { userStatus: 'active' },
+      after: { userStatus: 'blocked' },
+      request_id: 'e2e-rbac-0001',
+    });
+  });
+
+  it('refresh: rota el refresh token; un token reutilizado cierra la sesión', async () => {
+    const sub = await insertUser(ctx.db);
+    ctx.cognitoSend.mockResolvedValueOnce({
+      AuthenticationResult: {
+        AccessToken: signAccessToken({ sub }),
+        RefreshToken: 'rt-2',
+        ExpiresIn: 900,
+      },
+    });
+    const ok = await http.post('/api/auth/refresh').set('Cookie', `${RT}=rt-1`);
+    expect(ok.status).toBe(200);
+    expect(findCookie(ok, RT)).toContain('rt-2');
+    expect(ctx.cognitoSend.mock.calls[0][0].input).toMatchObject({
+      ClientSecret: 'test-client-secret',
+      RefreshToken: 'rt-1',
+    });
+
+    ctx.cognitoSend.mockRejectedValueOnce(
+      Object.assign(new Error('x'), { name: 'RefreshTokenReuseException' }),
+    );
+    const reused = await http.post('/api/auth/refresh').set('Cookie', `${RT}=rt-1`);
+    expect(reused.status).toBe(401);
+    expect(findCookie(reused, AT)).toMatch(/Expires=Thu, 01 Jan 1970/);
+  });
+
+  it('logout: revoca el refresh token, limpia cookies y audita al usuario aunque el token haya expirado', async () => {
+    const sub = await insertUser(ctx.db);
+    ctx.cognitoSend.mockResolvedValueOnce({});
+    const expired = signAccessToken({ sub }, { expiresIn: -60 });
+    const res = await http
+      .post('/api/auth/logout')
+      .set('Sec-Fetch-Site', 'same-origin')
+      .set('Cookie', [`${AT}=${expired}`, `${RT}=rt-9`]);
+    expect(res.status).toBe(204);
+    expect(ctx.cognitoSend.mock.calls[0][0].input).toMatchObject({ Token: 'rt-9' });
+    expect(findCookie(res, RT)).toMatch(/Expires=Thu, 01 Jan 1970/);
+    const rows = await ctx.db.query(
+      `SELECT 1 FROM audit_logs WHERE action='USER_LOGOUT' AND actor_sub=$1`,
+      [sub],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it('CSRF: una mutación cross-site se rechaza aunque traiga cookies', async () => {
+    const res = await http
+      .post('/api/auth/logout')
+      .set('Sec-Fetch-Site', 'cross-site')
+      .set('Cookie', `${RT}=x`);
+    expect(res.status).toBe(403);
+  });
+
+  it('auditoría inmutable: la base rechaza UPDATE sobre audit_logs', async () => {
+    await expect(ctx.db.query(`UPDATE audit_logs SET action = 'X'`)).rejects.toThrow(/append-only/);
+  });
+});
+```
+
+```ts
+// test/auth-flows.e2e-spec.ts
+import { randomUUID } from 'node:crypto';
+import request from 'supertest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createTestApp, insertUser, signAccessToken, type TestContext } from './support/test-app';
+
+const MFA = '<app-short>_mfa';
+const AT = '<app-short>_at';
+const cognitoError = (name: string) => Object.assign(new Error(name), { name });
+const cookieOf = (res: request.Response, name: string) =>
+  ((res.headers['set-cookie'] as unknown as string[] | undefined) ?? [])
+    .find((c) => c.startsWith(`${name}=`))
+    ?.split(';')[0];
+
+describe('Registro, recuperación y retos (e2e)', () => {
+  let ctx: TestContext;
+  let http: ReturnType<typeof request>;
+
+  beforeAll(async () => {
+    ctx = await createTestApp();
+    http = request(ctx.app.getHttpServer());
+  });
+  afterAll(async () => {
+    await ctx.app.close();
+    await ctx.db.destroy();
+  });
+  beforeEach(() => ctx.cognitoSend.mockReset());
+
+  const signup = (email: string) => ({
+    email,
+    password: 'Contraseña-Segura-1',
+    firstName: 'Ana',
+    lastName: 'Pérez',
+    acceptedTerms: true,
+  });
+
+  it('signup: crea usuario, consentimiento y auditoría en una transacción', async () => {
+    const sub = randomUUID();
+    ctx.cognitoSend.mockResolvedValueOnce({ UserSub: sub });
+    const res = await http.post('/api/auth/signup').send(signup('Nueva@Ejemplo.com'));
+    expect(res.status).toBe(201);
+    const [user] = await ctx.db.query(`SELECT email, cognito_status FROM users WHERE id=$1`, [sub]);
+    expect(user).toEqual({ email: 'nueva@ejemplo.com', cognito_status: 'unconfirmed' });
+    const terms = await ctx.db.query(
+      `SELECT terms_version FROM user_terms_acceptances WHERE user_sub=$1`,
+      [sub],
+    );
+    expect(terms).toHaveLength(1);
+    const audit = await ctx.db.query(
+      `SELECT 1 FROM audit_logs WHERE action='USER_SIGNUP' AND actor_sub=$1`,
+      [sub],
+    );
+    expect(audit).toHaveLength(1);
+  });
+
+  it('signup: email existente responde igual que uno nuevo (anti-enumeración)', async () => {
+    ctx.cognitoSend.mockRejectedValueOnce(cognitoError('UsernameExistsException'));
+    const res = await http.post('/api/auth/signup').send(signup('repetido@ejemplo.com'));
+    expect(res.status).toBe(201);
+    expect(res.body.message).toContain('código');
+  });
+
+  it('signup: si la base falla, borra la identidad de Cognito (rollback)', async () => {
+    const existing = await insertUser(ctx.db);
+    ctx.cognitoSend.mockResolvedValueOnce({ UserSub: existing }).mockResolvedValueOnce({});
+    const res = await http.post('/api/auth/signup').send(signup('choque@ejemplo.com'));
+    expect(res.status).toBe(500);
+    const rollback = ctx.cognitoSend.mock.calls[1][0];
+    expect(rollback.constructor.name).toBe('AdminDeleteUserCommand');
+    expect(rollback.input.Username).toBe(existing);
+  });
+
+  it('signup: contraseña débil → 400 con el mensaje de la política', async () => {
+    const res = await http
+      .post('/api/auth/signup')
+      .send({ ...signup('debil@ejemplo.com'), password: 'corta' });
+    expect(res.status).toBe(400);
+    expect(res.body.message.join(' ')).toContain('12 y 128');
+  });
+
+  it('confirm: marca la cuenta como confirmada', async () => {
+    await insertUser(ctx.db, { email: 'confirmar@ejemplo.com' });
+    await ctx.db.query(
+      `UPDATE users SET cognito_status='unconfirmed' WHERE email='confirmar@ejemplo.com'`,
+    );
+    ctx.cognitoSend.mockResolvedValueOnce({});
+    const res = await http
+      .post('/api/auth/confirm')
+      .send({ email: 'confirmar@ejemplo.com', code: '123456' });
+    expect(res.status).toBe(200);
+    const [row] = await ctx.db.query(
+      `SELECT cognito_status FROM users WHERE email='confirmar@ejemplo.com'`,
+    );
+    expect(row.cognito_status).toBe('confirmed');
+  });
+
+  it('confirm: código incorrecto → 400', async () => {
+    ctx.cognitoSend.mockRejectedValueOnce(cognitoError('CodeMismatchException'));
+    const res = await http
+      .post('/api/auth/confirm')
+      .send({ email: 'x@ejemplo.com', code: '000000' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('El código no es correcto.');
+  });
+
+  it.each(['resend-code', 'forgot-password'])(
+    '%s: usuario inexistente responde 200 genérico',
+    async (path) => {
+      ctx.cognitoSend.mockRejectedValueOnce(cognitoError('UserNotFoundException'));
+      const res = await http.post(`/api/auth/${path}`).send({ email: 'nadie@ejemplo.com' });
+      expect(res.status).toBe(200);
+      expect(res.body.message).toContain('Si el correo está registrado');
+    },
+  );
+
+  it('confirm-password: restablece y audita', async () => {
+    const sub = await insertUser(ctx.db, { email: 'reset@ejemplo.com' });
+    ctx.cognitoSend.mockResolvedValueOnce({});
+    const res = await http
+      .post('/api/auth/confirm-password')
+      .send({ email: 'reset@ejemplo.com', code: '123456', newPassword: 'Contraseña-Nueva-22' });
+    expect(res.status).toBe(200);
+    const audit = await ctx.db.query(
+      `SELECT 1 FROM audit_logs WHERE action='USER_CONFIRM_PASSWORD' AND actor_sub=$1`,
+      [sub],
+    );
+    expect(audit).toHaveLength(1);
+  });
+
+  it('demasiados intentos en Cognito → 429', async () => {
+    ctx.cognitoSend.mockRejectedValueOnce(cognitoError('TooManyRequestsException'));
+    const res = await http.post('/api/auth/login').send({ email: 'x@ejemplo.com', password: 'x' });
+    expect(res.status).toBe(429);
+  });
+
+  it('invitación: NEW_PASSWORD_REQUIRED → MFA_SETUP → secreto TOTP → sesión', async () => {
+    const sub = await insertUser(ctx.db, { email: 'invitado@ejemplo.com' });
+    ctx.cognitoSend
+      .mockResolvedValueOnce({
+        ChallengeName: 'NEW_PASSWORD_REQUIRED',
+        Session: 's1',
+        ChallengeParameters: { USER_ID_FOR_SRP: sub },
+      })
+      .mockResolvedValueOnce({ ChallengeName: 'MFA_SETUP', Session: 's2', ChallengeParameters: {} })
+      .mockResolvedValueOnce({ SecretCode: 'JBSWY3DPEHPK3PXP', Session: 's3' })
+      .mockResolvedValueOnce({ Status: 'SUCCESS', Session: 's4' })
+      .mockResolvedValueOnce({
+        AuthenticationResult: {
+          AccessToken: signAccessToken({ sub }),
+          RefreshToken: 'rt',
+          ExpiresIn: 900,
+        },
+      });
+
+    const login = await http
+      .post('/api/auth/login')
+      .send({ email: 'invitado@ejemplo.com', password: 'temporal' });
+    expect(login.body).toEqual({ status: 'challenge', challenge: 'NEW_PASSWORD_REQUIRED' });
+
+    const pwd = await http
+      .post('/api/auth/challenge')
+      .set('Cookie', cookieOf(login, MFA)!)
+      .send({ challenge: 'NEW_PASSWORD_REQUIRED', newPassword: 'Contraseña-Segura-1' });
+    expect(pwd.body).toEqual({ status: 'challenge', challenge: 'MFA_SETUP' });
+    expect(ctx.cognitoSend.mock.calls[1][0].input.ChallengeResponses).toMatchObject({
+      USERNAME: sub,
+      NEW_PASSWORD: 'Contraseña-Segura-1',
+    });
+
+    const setup = await http
+      .post('/api/auth/challenge/mfa-setup')
+      .set('Cookie', cookieOf(pwd, MFA)!);
+    expect(setup.status).toBe(200);
+    expect(setup.body.secretCode).toBe('JBSWY3DPEHPK3PXP');
+    expect(setup.body.otpauthUri).toMatch(
+      /^otpauth:\/\/totp\/.+invitado%40ejemplo\.com\?secret=JBSWY3DPEHPK3PXP&issuer=/,
+    );
+
+    const done = await http
+      .post('/api/auth/challenge')
+      .set('Cookie', cookieOf(setup, MFA)!)
+      .send({ challenge: 'MFA_SETUP', code: '123456' });
+    expect(done.body.status).toBe('authenticated');
+    expect(ctx.cognitoSend.mock.calls[3][0].input).toMatchObject({
+      Session: 's3',
+      UserCode: '123456',
+    });
+    expect(ctx.cognitoSend.mock.calls[4][0].input).toMatchObject({
+      ChallengeName: 'MFA_SETUP',
+      Session: 's4',
+    });
+    const enrolled = await ctx.db.query(
+      `SELECT 1 FROM audit_logs WHERE action='USER_MFA_ENROLLED' AND actor_sub=$1`,
+      [sub],
+    );
+    expect(enrolled).toHaveLength(1);
+  });
+
+  it('logout-all: cierra la sesión global con el access token', async () => {
+    const sub = await insertUser(ctx.db);
+    const token = signAccessToken({ sub });
+    ctx.cognitoSend.mockResolvedValueOnce({});
+    const res = await http.post('/api/auth/logout-all').set('Cookie', `${AT}=${token}`);
+    expect(res.status).toBe(204);
+    expect(ctx.cognitoSend.mock.calls[0][0].input).toEqual({ AccessToken: token });
+  });
+
+  it('health y terms-link son públicos', async () => {
+    expect((await http.get('/api/health')).body).toMatchObject({ status: 'ok' });
+    expect((await http.get('/api/auth/terms-link')).body).toEqual({ url: '<TERMS_URL>' });
+  });
+});
+```
+
+```ts
+// test/projects.e2e-spec.ts
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTestApp, insertUser, signAccessToken, type TestContext } from './support/test-app';
+
+const AT = '<app-short>_at';
+
+describe('Módulo de ejemplo: proyectos (e2e)', () => {
+  let ctx: TestContext;
+  let http: ReturnType<typeof request>;
+  let operador: string;
+  let admin: string;
+
+  beforeAll(async () => {
+    ctx = await createTestApp();
+    http = request(ctx.app.getHttpServer());
+    operador = `${AT}=${signAccessToken({ sub: await insertUser(ctx.db), groups: ['<ROL_A>'] })}`;
+    admin = `${AT}=${signAccessToken({ sub: await insertUser(ctx.db), groups: ['<ROL_B>'] })}`;
+  });
+  afterAll(async () => {
+    await ctx.app.close();
+    await ctx.db.destroy();
+  });
+
+  it('crea, normaliza el código y devuelve el DTO público (sin campos internos)', async () => {
+    const res = await http
+      .post('/api/projects')
+      .set('Cookie', operador)
+      .send({ code: ' prj-00001 ', name: 'ERP', budget: '15000.50', startsOn: '2026-11-01' });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      code: 'PRJ-00001',
+      budget: '15000.50',
+      startsOn: '2026-11-01',
+      status: 'draft',
+      version: 1,
+    });
+    expect(res.body).not.toHaveProperty('ownerSub');
+    expect(res.body).not.toHaveProperty('metadata');
+  });
+
+  it('código duplicado → 409 (lo detecta la restricción única, sin carrera)', async () => {
+    const results = await Promise.all(
+      [1, 2].map(() =>
+        http
+          .post('/api/projects')
+          .set('Cookie', operador)
+          .send({ code: 'PRJ-00002', name: 'Doble' }),
+      ),
+    );
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+  });
+
+  it('validación: formato de código, fecha y campos desconocidos → 400', async () => {
+    const res = await http
+      .post('/api/projects')
+      .set('Cookie', operador)
+      .send({ code: 'MAL', name: 'x', startsOn: '01/11/2026', extra: true });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toEqual(
+      expect.arrayContaining([
+        'property extra should not exist',
+        'El código debe tener el formato XXX-00000.',
+      ]),
+    );
+  });
+
+  it('lista paginada con total, filtro y búsqueda', async () => {
+    for (let i = 10; i < 15; i++) {
+      await http
+        .post('/api/projects')
+        .set('Cookie', operador)
+        .send({ code: `ABC-000${i}`, name: `Proyecto ${i}` });
+    }
+    const page = await http.get('/api/projects?limit=2&offset=0&q=abc').set('Cookie', operador);
+    expect(page.status).toBe(200);
+    expect(page.body).toMatchObject({ total: 5, limit: 2, offset: 0 });
+    expect(page.body.items).toHaveLength(2);
+
+    const tooBig = await http.get('/api/projects?limit=1000').set('Cookie', operador);
+    expect(tooBig.status).toBe(400);
+  });
+
+  it('búsqueda: los comodines de LIKE del usuario se escapan', async () => {
+    const res = await http.get('/api/projects?q=%25').set('Cookie', operador);
+    expect(res.body.total).toBe(0);
+  });
+
+  it('editar: solo admin; versión vieja → 409; auditoría con antes/después', async () => {
+    const created = await http
+      .post('/api/projects')
+      .set('Cookie', operador)
+      .send({ code: 'OPT-00001', name: 'Original' });
+    const id = created.body.id as string;
+
+    const forbidden = await http
+      .patch(`/api/projects/${id}`)
+      .set('Cookie', operador)
+      .send({ name: 'X', version: 1 });
+    expect(forbidden.status).toBe(403);
+
+    const first = await http
+      .patch(`/api/projects/${id}`)
+      .set('Cookie', admin)
+      .send({ name: 'Editado', version: 1 });
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ name: 'Editado', version: 2 });
+
+    const stale = await http
+      .patch(`/api/projects/${id}`)
+      .set('Cookie', admin)
+      .send({ status: 'active', version: 1 });
+    expect(stale.status).toBe(409);
+
+    const [audit] = await ctx.db.query(
+      `SELECT before, after FROM audit_logs WHERE action = 'PROJECT_UPDATED' AND entity_id = $1`,
+      [id],
+    );
+    expect(audit.before).toMatchObject({ name: 'Original' });
+    expect(audit.after).toMatchObject({ name: 'Editado' });
+  });
+
+  it('id con formato inválido → 400; inexistente → 404', async () => {
+    expect((await http.get('/api/projects/no-es-uuid').set('Cookie', operador)).status).toBe(400);
+    expect(
+      (await http.get('/api/projects/00000000-0000-4000-8000-000000000000').set('Cookie', operador))
+        .status,
+    ).toBe(404);
+  });
+});
+```
+
+```ts
+// test/documents.e2e-spec.ts
+import { createHash } from 'node:crypto';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTestApp, insertUser, signAccessToken, type TestContext } from './support/test-app';
+
+const AT = '<app-short>_at';
+const pdf = Buffer.from('%PDF-1.7\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
+const sha = createHash('sha256').update(pdf).digest('hex');
+
+describe('Documentos en modo local (e2e)', () => {
+  let ctx: TestContext;
+  let http: ReturnType<typeof request>;
+  let cookie: string;
+
+  beforeAll(async () => {
+    ctx = await createTestApp();
+    http = request(ctx.app.getHttpServer());
+    cookie = `${AT}=${signAccessToken({ sub: await insertUser(ctx.db), groups: ['<ROL_A>'] })}`;
+  });
+  afterAll(async () => {
+    await ctx.app.close();
+    await ctx.db.destroy();
+  });
+
+  const intent = {
+    entityId: '20123456789',
+    documentType: 'escritura',
+    filename: 'EEFF 2026.pdf',
+    contentType: 'application/pdf',
+    sizeBytes: pdf.length,
+    sha256: sha,
+  };
+
+  it('subida completa: intención → PUT local → procesado → listado → descarga auditada', async () => {
+    const created = await http.post('/api/documents/uploads').set('Cookie', cookie).send(intent);
+    expect(created.status).toBe(201);
+    expect(created.body.result).toBe('upload');
+    const put = await http
+      .put(created.body.uploadUrl)
+      .set('Cookie', cookie)
+      .set('Content-Type', 'application/pdf')
+      .send(pdf);
+    expect(put.status).toBe(200);
+    expect(put.body.status).toBe('processed');
+
+    const list = await http.get('/api/documents?entityId=20123456789').set('Cookie', cookie);
+    expect(list.body.total).toBe(1);
+
+    const dl = await http
+      .get(`/api/documents/${created.body.documentId}/download`)
+      .set('Cookie', cookie);
+    expect(dl.status).toBe(200);
+    const audit = await ctx.db.query(
+      `SELECT action FROM audit_logs WHERE entity_id = $1 ORDER BY occurred_at`,
+      [created.body.documentId],
+    );
+    expect(audit.map((a: { action: string }) => a.action)).toEqual([
+      'GENERATE_PRESIGNED_URL',
+      'DOWNLOAD_DOCUMENT',
+    ]);
+  });
+
+  it('mismo contenido otra vez → duplicate, sin fila nueva', async () => {
+    const again = await http.post('/api/documents/uploads').set('Cookie', cookie).send(intent);
+    expect(again.body.result).toBe('duplicate');
+    const [{ count }] = await ctx.db.query(
+      `SELECT count(*)::int AS count FROM documents WHERE sha256 = $1`,
+      [sha],
+    );
+    expect(count).toBe(1);
+  });
+
+  it('archivo que no coincide con el hash declarado → 400', async () => {
+    const other = { ...intent, sha256: 'b'.repeat(64) };
+    const created = await http.post('/api/documents/uploads').set('Cookie', cookie).send(other);
+    const put = await http
+      .put(created.body.uploadUrl)
+      .set('Cookie', cookie)
+      .set('Content-Type', 'application/pdf')
+      .send(pdf);
+    expect(put.status).toBe(400);
+  });
+
+  it('validación: tipo no permitido, tamaño excesivo → 400', async () => {
+    const res = await http
+      .post('/api/documents/uploads')
+      .set('Cookie', cookie)
+      .send({ ...intent, contentType: 'image/gif', sizeBytes: 50 * 1024 * 1024 });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toEqual(
+      expect.arrayContaining([
+        'Solo se aceptan archivos PDF, JPEG o PNG.',
+        'El archivo supera el tamaño máximo de 20 MB.',
+      ]),
+    );
+  });
+});
+```
+
+```ts
+// test/ingest.e2e-spec.ts
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Document } from '../src/modules/documents/document.entity';
+import { processScanResult, type ScanResultEvent } from '../src/modules/documents/ingest.processor';
+import { createTestApp, type TestContext } from './support/test-app';
+
+const event = (
+  key: string,
+  verdict: string,
+  scanStatus: 'COMPLETED' | 'FAILED' = 'COMPLETED',
+): ScanResultEvent => ({
+  'detail-type': 'GuardDuty Malware Protection Object Scan Result',
+  detail: {
+    scanStatus,
+    s3ObjectDetails: {
+      bucketName: 'docs',
+      objectKey: encodeURIComponent(key).replace(/%2F/g, '/'),
+    },
+    scanResultDetails: {
+      scanResultStatus: verdict,
+      threats: verdict === 'THREATS_FOUND' ? [{ name: 'EICAR-Test-File' }] : null,
+    },
+  },
+});
+
+describe('Worker de ingesta (e2e)', () => {
+  let ctx: TestContext;
+  beforeAll(async () => {
+    ctx = await createTestApp();
+  });
+  afterAll(async () => {
+    await ctx.app.close();
+    await ctx.db.destroy();
+  });
+
+  async function newDoc(): Promise<Document> {
+    const sha = randomUUID().replace(/-/g, '').padEnd(64, '0');
+    return ctx.db.getRepository(Document).save({
+      filename: 'Estado financiero 2026.pdf',
+      s3Key: `incoming/20123456789/escritura/${randomUUID()}-${sha.slice(0, 8)} doc.pdf`,
+      entityId: '20123456789',
+      documentType: 'escritura',
+      status: 'scanning',
+      sha256: sha,
+      contentType: 'application/pdf',
+      sizeBytes: 1024,
+    });
+  }
+
+  it('archivo limpio: se mueve a raw/, se procesa y queda processed (idempotente)', async () => {
+    const doc = await newDoc();
+    const s3 = { move: vi.fn().mockResolvedValue(undefined) };
+    const deps = {
+      db: ctx.db,
+      s3,
+      process: vi.fn().mockResolvedValue({ validationStatus: 'OK' }),
+      parserVersion: '1.0.0',
+    };
+    expect(await processScanResult(event(doc.s3Key, 'NO_THREATS_FOUND'), deps)).toBe('processed');
+    expect(s3.move).toHaveBeenCalledWith('docs', doc.s3Key, doc.s3Key.replace('incoming/', 'raw/'));
+    const saved = await ctx.db.getRepository(Document).findOneByOrFail({ id: doc.id });
+    expect(saved).toMatchObject({
+      status: 'processed',
+      parserVersion: '1.0.0',
+      s3Key: doc.s3Key.replace('incoming/', 'raw/'),
+    });
+    // Segunda entrega del mismo evento (SQS es at-least-once): no hace nada.
+    expect(await processScanResult(event(doc.s3Key, 'NO_THREATS_FOUND'), deps)).toBe('skipped');
+  });
+
+  it('amenaza: va a quarantine/ con el nombre de la amenaza', async () => {
+    const doc = await newDoc();
+    const s3 = { move: vi.fn().mockResolvedValue(undefined) };
+    const outcome = await processScanResult(event(doc.s3Key, 'THREATS_FOUND'), {
+      db: ctx.db,
+      s3,
+      process: vi.fn(),
+      parserVersion: '1.0.0',
+    });
+    expect(outcome).toBe('quarantined');
+    const saved = await ctx.db.getRepository(Document).findOneByOrFail({ id: doc.id });
+    expect(saved).toMatchObject({ status: 'quarantined', errorMessage: 'EICAR-Test-File' });
+  });
+
+  it('error del procesador: queda failed con el mensaje, nunca colgado en processing', async () => {
+    const doc = await newDoc();
+    const outcome = await processScanResult(event(doc.s3Key, 'NO_THREATS_FOUND'), {
+      db: ctx.db,
+      s3: { move: vi.fn().mockResolvedValue(undefined) },
+      process: vi.fn().mockRejectedValue(new Error('PDF corrupto')),
+      parserVersion: '1.0.0',
+    });
+    expect(outcome).toBe('failed');
+    const saved = await ctx.db.getRepository(Document).findOneByOrFail({ id: doc.id });
+    expect(saved).toMatchObject({
+      status: 'failed',
+      errorMessage: 'PDF corrupto',
+      validationStatus: 'PARSER_ERROR',
+    });
+  });
+});
+```
+
+Al añadir un módulo de dominio se añade su `*.e2e-spec.ts` siguiendo `projects`: feliz, 401 sin cookie, 403 sin rol, 409 de conflicto, 400 de validación. No se mockea el repositorio. Si el test necesita un usuario, se inserta la fila y se firma un token con su `sub`.
+
+### 15.4 Lo que la suite no prueba
+
+El primer despliegue real (Cognito, RDS Proxy, CloudFront, GuardDuty) no cabe en esta suite. Lo cubre `scripts/synth-check.sh` a nivel de plantilla CloudFormation y `scripts/ci/smoke.sh` contra el stage desplegado. Los dos están en las secciones 16 y 17. Decir "los tests pasan" no sustituye el smoke de un stage.
+
+---
+## 16. Infraestructura como código (AWS CDK)
+
+🆕 **V2.** Todo lo que en la v1 se creaba a mano o en `serverless.yml` es un stack CDK. cdk-nag con el pack `AwsSolutions` es un gate: `cdk synth` falla si aparece un hallazgo sin justificar.
+
+Verificado el 07/10/2026 con `scripts/synth-check.sh`, marcadores sustituidos por valores ficticios, región `sa-east-1` (hay referencias entre regiones: el WAF y el certificado viven en `us-east-1`):
+
+| Síntesis | Stacks | Recursos (aprox.) |
+|---|---|---|
+| `dev`, `qa` | 9 | 147 |
+| `prod` | 9 | 148 (CodeDeploy del canary) |
+| `ci=nonprod`, `ci=prod` | 1 | 8 |
+
+Cero hallazgos sin una entrada en `infra/lib/nag.ts`.
+
+### 16.1 Cómo se sintetiza
+
+Archivo: `infra/cdk.json`
 
 ```json
 {
-  "Sid": "ReadAppParameters",
-  "Effect": "Allow",
-  "Action": ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
-  "Resource": "arn:aws:ssm:<REGION>:<AWS_ACCOUNT_ID>:parameter/<org>/<app>/*"
+  "app": "npx tsx bin/app.ts",
+  "watch": {
+    "include": [
+      "bin/**",
+      "lib/**"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": [
+      "aws"
+    ],
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:validateSnapshotRemovalPolicy": true,
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "@aws-cdk/aws-rds:preventRenderingDeprecatedCredentials": true,
+    "@aws-cdk/aws-lambda:useCdkManagedLogGroup": true,
+    "@aws-cdk/core:defaultCrossStackReferences": "weak"
+  }
 }
 ```
 
-**Migración si ya tienes parámetros viejos**: crea los nuevos, despliega, verifica, y solo entonces borra los viejos. Nunca al revés — `${ssm:...}` se resuelve en tiempo de empaquetado y un parámetro ausente hace fallar el `serverless package` con un mensaje poco claro.
+```ts
+// infra/bin/app.ts
+#!/usr/bin/env node
+import { App, type Stack, Tags, Validations } from 'aws-cdk-lib';
+import { AwsSolutionsChecks } from 'cdk-nag';
+import { AlertsStack } from '../lib/alerts-stack';
+import { ApiStack } from '../lib/api-stack';
+import { AuthStack } from '../lib/auth-stack';
+import { CiStack } from '../lib/ci-stack';
+import { CONFIG, type Stage } from '../lib/config';
+import { DataStack } from '../lib/data-stack';
+import { EdgeStack } from '../lib/edge-stack';
+import { MigratorStack } from '../lib/migrator-stack';
+import { acknowledgeIamWildcards, acknowledgeNagFindings } from '../lib/nag';
+import { APP, ORG } from '../lib/naming';
+import { NetworkStack } from '../lib/network-stack';
+import { StorageStack } from '../lib/storage-stack';
+import { WebStack } from '../lib/web-stack';
 
-### 19.5 CloudFormation en los tres stages
+/**
+ * Uso:
+ *   cdk deploy --all -c stage=dev            → todos los stacks de un stage
+ *   cdk deploy -c ci=nonprod <app-short>-ci  → roles de CI de la cuenta no-prod (una vez, admin)
+ */
+const app = new App();
+Tags.of(app).add('app', APP);
+Tags.of(app).add('owner', ORG);
+Tags.of(app).add('managed-by', 'cdk');
+// Reglas AWS Solutions: un hallazgo no reconocido hace fallar `cdk synth` (y el CI).
+Validations.of(app).addPlugins(new AwsSolutionsChecks(app));
 
-**Qué hace el original.** Solo existe el stack de CloudFormation de `dev`. `scripts/ci/deploy-functions.sh` tiene una **doble topología** para sobrevivir a esto:
+const ciAccount = app.node.tryGetContext('ci') as 'nonprod' | 'prod' | undefined;
+if (ciAccount) {
+  const cfg = ciAccount === 'prod' ? CONFIG.prod : CONFIG.dev;
+  const ci = new CiStack(app, `${APP}-ci`, ciAccount === 'prod' ? ['prod'] : ['dev', 'qa'], {
+    env: { account: cfg.account, region: cfg.region },
+  });
+  acknowledgeIamWildcards([ci]);
+} else {
+  const stage = app.node.tryGetContext('stage') as Stage | undefined;
+  if (!stage || !(stage in CONFIG)) throw new Error('Indica el stage: -c stage=dev|qa|prod');
+  const cfg = CONFIG[stage];
+  Tags.of(app).add('stage', stage);
 
-```bash
-if aws cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
-  # camino A: resolver nombres físicos desde el stack
-  resolve_physical "$LOGICAL_ID"
-else
-  # camino B: adivinar el nombre como "<service>-<stage>-<function>"
-  FALLBACK_DEPLOY_BUCKET="app-risk-backend-dev-serverlessdeploymentbucket-kmr5xvqbleym"
-fi
+  const env = { account: cfg.account, region: cfg.region };
+  const crossRegion = cfg.region !== 'us-east-1';
+  const id = (layer: string) => `${APP}-${stage}-${layer}`;
+
+  const stacks: Stack[] = [];
+  const track = <T extends Stack>(s: T): T => (stacks.push(s), s);
+
+  track(new AlertsStack(app, id('alerts'), cfg, { env }));
+  const network = track(new NetworkStack(app, id('network'), cfg, { env }));
+  const data = track(new DataStack(app, id('data'), cfg, network.vpc, { env }));
+  const auth = track(new AuthStack(app, id('auth'), cfg, { env }));
+  const storage = track(new StorageStack(app, id('storage'), cfg, { env }));
+  track(
+    new MigratorStack(
+      app,
+      id('migrator'),
+      cfg,
+      { vpc: network.vpc, data, userPool: auth.userPool },
+      { env },
+    ),
+  );
+  const api = track(
+    new ApiStack(
+      app,
+      id('api'),
+      cfg,
+      {
+        vpc: network.vpc,
+        data,
+        userPool: auth.userPool,
+        userPoolClient: auth.client,
+        clientSecret: auth.clientSecret,
+      },
+      { env },
+    ),
+  );
+  const edge = track(
+    new EdgeStack(app, id('edge'), cfg, {
+      env: { account: cfg.account, region: 'us-east-1' },
+      crossRegionReferences: crossRegion,
+    }),
+  );
+  track(
+    new WebStack(
+      app,
+      id('web'),
+      cfg,
+      {
+        certificate: edge.certificate,
+        webAclArn: edge.webAclArn,
+        apiId: api.httpApi.apiId,
+        originVerifySecret: api.originVerifySecret,
+      },
+      { env, crossRegionReferences: crossRegion },
+    ),
+  );
+  api.addStackDependency(storage, 'La API usa el bucket y la cola de ingesta por nombre');
+  stacks.at(-1)!.addStackDependency(storage, 'CloudFront escribe sus logs en el bucket de logs');
+  acknowledgeNagFindings(stacks, cfg);
+  acknowledgeIamWildcards(stacks);
+}
 ```
 
-y `preflight-deploy.sh` **sale temprano** sin verificar nada si el stack no existe.
+`cdk.json` fija `@aws-cdk/core:defaultCrossStackReferences` en `weak`. Las referencias fuertes entre estos stacks se cruzan (la API necesita el bucket, el bucket necesita el ARN de la cola, la red necesita los dos) y CDK se niega a sintetizar por un ciclo. Las referencias débiles son nombres y ARNs **deterministas** que cada stack calcula con `naming.ts`, no exports de CloudFormation. El precio es que CDK ya no ordena el despliegue por esas referencias: el pipeline despliega en el orden de la sección 17, a propósito.
 
-**Por qué está mal.**
+Dos modos de `cdk`:
 
-1. **Hay un nombre de bucket hardcodeado con un sufijo aleatorio de CloudFormation** (`...-kmr5xvqbleym`). Ese sufijo lo generó CloudFormation al crear el stack de `dev`. Si alguien borra y recrea el stack, el sufijo cambia y el script se rompe de una forma difícil de diagnosticar. Peor: los stages `qa` y `prod` estarían subiendo sus artefactos al bucket de despliegue **de dev**.
-2. **Deriva de infraestructura.** Sin stack, no hay fuente de verdad de qué recursos existen en `qa`/`prod`: se crearon a mano, y nadie sabe si su `timeout`, `memorySize` o política IAM coinciden con lo que dice `serverless.yml`.
-3. **La doble topología duplica el código del script**, y la rama "sin stack" es la que **menos** se prueba porque dev —la que se usa a diario— sí tiene stack.
+- `-c stage=dev|qa|prod` sintetiza los nueve stacks de un stage.
+- `-c ci=nonprod|prod` sintetiza solo el stack de OIDC de esa cuenta. Se despliega **una vez por cuenta**, antes que cualquier stage.
 
-**El cambio.** Crear el stack en los tres stages con un despliegue completo, **una vez por stage**, manualmente y bajo revisión:
+No se llama `stack.addDependency` (está deprecado). Cuando hace falta un orden dentro de la app, es `node.addDependency` / `addStackDependency`.
 
-```bash
-# Ejecutado por una persona con credenciales de infraestructura, NO por el CI.
-npx serverless@3 deploy --stage qa   --region <REGION>
-npx serverless@3 deploy --stage prod --region <REGION>
+### 16.2 Configuración por stage
+
+```ts
+// infra/lib/config.ts
+import { RetentionDays } from 'aws-cdk-lib/aws-logs';
+
+export type Stage = 'dev' | 'qa' | 'prod';
+
+export interface StageConfig {
+  stage: Stage;
+  account: string;
+  region: string;
+  /** Dominio público del stage: front y API bajo el mismo origen. */
+  domainName: string;
+  hostedZoneId: string;
+  hostedZoneName: string;
+  alertEmail: string;
+  sentryDsn?: string;
+  auth: {
+    /** ESSENTIALS: rotación de refresh token y MFA. PLUS: además protección contra amenazas (más costo por usuario). */
+    featurePlan: 'ESSENTIALS' | 'PLUS';
+    selfSignup: boolean;
+    /** REQUIRED: todo usuario configura TOTP en su primer login. OPTIONAL: cada usuario decide. */
+    mfa: 'REQUIRED' | 'OPTIONAL';
+  };
+  network: { maxAzs: number; natGateways: number };
+  db: {
+    instanceClass: string;
+    multiAz: boolean;
+    allocatedStorageGb: number;
+    maxAllocatedStorageGb: number;
+    backupRetentionDays: number;
+    deletionProtection: boolean;
+  };
+  api: {
+    memoryMb: number;
+    /** Instancias precalentadas del alias `live` (elimina arranques en frío; cuesta por hora). */
+    provisionedConcurrency: number;
+    throttleRatePerSecond: number;
+    throttleBurst: number;
+    /** Despliegue gradual con CodeDeploy y rollback automático por alarma. */
+    canary: boolean;
+  };
+  /** Países (ISO 3166-1 alfa-2) desde los que se sirve la app. Vacío = sin restricción. */
+  geoAllowList: string[];
+  logRetentionDays: RetentionDays;
+  monthlyBudgetUsd: number;
+}
+
+const common = {
+  region: '<REGION>',
+  hostedZoneId: '<HOSTED_ZONE_ID>',
+  hostedZoneName: '<DOMINIO_BASE>',
+  alertEmail: '<ALERT_EMAIL>',
+  sentryDsn: '<SENTRY_DSN_BACKEND>',
+};
+
+export const GITHUB = {
+  org: '<GITHUB_ORG>',
+  backendRepo: '<app>',
+  frontendRepo: '<app-frontend>',
+};
+
+export const CONFIG: Record<Stage, StageConfig> = {
+  dev: {
+    ...common,
+    stage: 'dev',
+    account: '<ACCOUNT_NONPROD>',
+    domainName: 'app-dev.<DOMINIO_BASE>',
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'REQUIRED' },
+    network: { maxAzs: 2, natGateways: 1 },
+    db: {
+      instanceClass: 't4g.micro',
+      multiAz: false,
+      allocatedStorageGb: 20,
+      maxAllocatedStorageGb: 50,
+      backupRetentionDays: 7,
+      deletionProtection: false,
+    },
+    api: {
+      memoryMb: 1536,
+      provisionedConcurrency: 0,
+      throttleRatePerSecond: 50,
+      throttleBurst: 100,
+      canary: false,
+    },
+    geoAllowList: [],
+    logRetentionDays: RetentionDays.ONE_MONTH,
+    monthlyBudgetUsd: 150,
+  },
+  qa: {
+    ...common,
+    stage: 'qa',
+    account: '<ACCOUNT_NONPROD>',
+    domainName: 'app-qa.<DOMINIO_BASE>',
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'REQUIRED' },
+    network: { maxAzs: 2, natGateways: 1 },
+    db: {
+      instanceClass: 't4g.small',
+      multiAz: false,
+      allocatedStorageGb: 20,
+      maxAllocatedStorageGb: 100,
+      backupRetentionDays: 7,
+      deletionProtection: false,
+    },
+    api: {
+      memoryMb: 1536,
+      provisionedConcurrency: 0,
+      throttleRatePerSecond: 50,
+      throttleBurst: 100,
+      canary: false,
+    },
+    geoAllowList: [],
+    logRetentionDays: RetentionDays.ONE_MONTH,
+    monthlyBudgetUsd: 200,
+  },
+  prod: {
+    ...common,
+    stage: 'prod',
+    account: '<ACCOUNT_PROD>',
+    domainName: 'app.<DOMINIO_BASE>',
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'REQUIRED' },
+    network: { maxAzs: 2, natGateways: 1 },
+    db: {
+      instanceClass: 't4g.small',
+      multiAz: false,
+      allocatedStorageGb: 20,
+      maxAllocatedStorageGb: 100,
+      backupRetentionDays: 35,
+      deletionProtection: true,
+    },
+    api: {
+      memoryMb: 1769,
+      provisionedConcurrency: 1,
+      throttleRatePerSecond: 50,
+      throttleBurst: 100,
+      canary: true,
+    },
+    geoAllowList: ['PE'],
+    logRetentionDays: RetentionDays.THIRTEEN_MONTHS,
+    monthlyBudgetUsd: 400,
+  },
+};
 ```
 
-Después, **eliminar la rama de fallback** de `deploy-functions.sh` y dejar únicamente el camino que resuelve nombres físicos desde el stack:
+Los tres stages están en el mismo archivo para que un cambio de tamaño de instancia o de memoria sea un diff revisable, no un clic en la consola. 🆕 V2.2. Prod se separa en: otra cuenta, deletion protection, backup de 35 días, una instancia provisionada (para que el primer clic no espere un arranque en frío), canary, filtro geográfico `PE` y retención de logs de 13 meses. No hay Multi-AZ ni un segundo NAT: la caída tolerable es de horas y el primer año son menos de 100 usuarios (ADR-13). `dev` y `qa` dejan `geoAllowList` vacío para poder entrar desde fuera de Perú.
 
-```bash
-# scripts/ci/deploy-functions.sh (fragmento, versión simplificada)
-if ! aws cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
-  echo "::error::El stack $STACK_NAME no existe. Ejecuta un despliegue completo"
-  echo "::error::(`serverless deploy --stage $STAGE`) antes de usar este pipeline."
-  exit 1
-fi
+`auth.featurePlan` queda en `ESSENTIALS` (ADR-13): con menos de 100 usuarios no se paga Cognito Plus. `geoAllowList` de prod es `['PE']`. Vacío, como en dev y qa, deja el WAF sin filtro geográfico.
 
-DEPLOY_BUCKET="$(resolve_physical ServerlessDeploymentBucket)"
+`selfSignup: true` y `mfa: 'REQUIRED'` acompañan al user pool. Cerrar el alta es poner `selfSignup: false` y dar de alta a la gente con `create-admin` o con `AdminCreateUser`.
+
+### 16.3 Nombres
+
+```ts
+// infra/lib/naming.ts
+import type { StageConfig } from './config';
+
+export const APP = '<app-short>';
+export const ORG = '<org>';
+
+/** Nombre físico de un recurso según la convención de 1.2. */
+export const name = (cfg: StageConfig, suffix: string) => `${APP}-${cfg.stage}-${suffix}`;
+
+/** Prefijo de secretos y parámetros SSM: /<org>/<app-short>/<stage>/ */
+export const paramPath = (cfg: StageConfig, key: string) => `/${ORG}/${APP}/${cfg.stage}/${key}`;
+
+/**
+ * Tema SNS de alarmas, creado por AlertsStack con nombre determinista. Los
+ * demás stacks lo referencian por ARN (sin exports entre stacks, que impiden
+ * cambiar o borrar recursos sin desplegar en orden).
+ */
+/** Nombres deterministas de los recursos de StorageStack: otros stacks los referencian sin exports. */
+export const docsBucketName = (cfg: StageConfig) => `${name(cfg, 'docs')}-${cfg.account}`;
+export const logsBucketName = (cfg: StageConfig) => `${name(cfg, 'logs')}-${cfg.account}`;
+export const ingestQueueArn = (cfg: StageConfig) =>
+  `arn:aws:sqs:${cfg.region}:${cfg.account}:${name(cfg, 'ingest')}`;
+
+export const alertsTopicArn = (cfg: StageConfig) =>
+  `arn:aws:sns:${cfg.region}:${cfg.account}:${name(cfg, 'alerts')}`;
 ```
 
-Fallar ruidosamente es mejor que adivinar un nombre de bucket.
+Una función `name(stage, ...partes)` y helpers para los ARNs que se referencian entre stacks sin export: cola de ingesta, topic de alarmas, buckets. Si un nombre se calcula en dos sitios con dos plantillas, la referencia débil apunta a un recurso que no existe y el fallo aparece en el despliegue, no en el synth. Todo pasa por este archivo.
 
-### 19.6 `engines.node` alineado con el runtime de Lambda
+### 16.4 Red y datos
 
-**Qué hace el original.** Tres números distintos para la misma cosa:
+```ts
+// infra/lib/network-stack.ts
+import { Stack, type StackProps } from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
 
-| Lugar | Valor |
+export class NetworkStack extends Stack {
+  readonly vpc: ec2.Vpc;
+  private readonly azs: string[];
+
+  constructor(scope: Construct, id: string, cfg: StageConfig, props: StackProps) {
+    super(scope, id, props);
+    this.azs = ['a', 'b', 'c'].slice(0, cfg.network.maxAzs).map((z) => `${cfg.region}${z}`);
+
+    this.vpc = new ec2.Vpc(this, 'Vpc', {
+      availabilityZones: this.azs,
+      natGateways: cfg.network.natGateways,
+      subnetConfiguration: [
+        { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
+        // Lambdas: salen a internet (Cognito JWKS, Sentry) por el NAT.
+        { name: 'app', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 22 },
+        // Base de datos y proxy: sin ruta a internet en ninguna dirección.
+        { name: 'data', subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 },
+      ],
+      gatewayEndpoints: {
+        // Tráfico a S3 sin pasar por el NAT: más barato y más rápido.
+        S3: { service: ec2.GatewayVpcEndpointAwsService.S3 },
+      },
+    });
+
+    this.vpc.addFlowLog('FlowLogs', {
+      destination: ec2.FlowLogDestination.toCloudWatchLogs(
+        new logs.LogGroup(this, 'FlowLogsGroup', { retention: logs.RetentionDays.ONE_MONTH }),
+      ),
+      trafficType: ec2.FlowLogTrafficType.REJECT,
+    });
+  }
+
+  /**
+   * Zonas explícitas: así `cdk synth` no consulta la cuenta (funciona en CI sin
+   * credenciales) y el resultado es determinista. Verificar que existen en la
+   * región con `aws ec2 describe-availability-zones`.
+   */
+  override get availabilityZones(): string[] {
+    return this.azs;
+  }
+}
+```
+
+```ts
+// infra/lib/data-stack.ts
+import { Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as rds from 'aws-cdk-lib/aws-rds';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { name, paramPath } from './naming';
+
+export const DB_NAME = '<app_snake>';
+export const APP_DB_USER = 'app_user';
+
+export class DataStack extends Stack {
+  readonly instance: rds.DatabaseInstance;
+  readonly proxy: rds.DatabaseProxy;
+  /** SG que deben tener las Lambdas que hablan con el proxy. */
+  readonly proxyClientSg: ec2.SecurityGroup;
+  /** SG del migrator: es el único cliente que entra directo a la instancia. */
+  readonly migratorSg: ec2.SecurityGroup;
+
+  constructor(scope: Construct, id: string, cfg: StageConfig, vpc: ec2.IVpc, props: StackProps) {
+    super(scope, id, props);
+    const isProd = cfg.stage === 'prod';
+
+    const dbSg = new ec2.SecurityGroup(this, 'DbSg', {
+      vpc,
+      allowAllOutbound: false,
+      description: 'RDS',
+    });
+    const proxySg = new ec2.SecurityGroup(this, 'ProxySg', { vpc, description: 'RDS Proxy' });
+    this.proxyClientSg = new ec2.SecurityGroup(this, 'ProxyClientSg', {
+      vpc,
+      description: 'Clientes del proxy',
+    });
+    this.migratorSg = new ec2.SecurityGroup(this, 'MigratorSg', {
+      vpc,
+      description: 'Lambda migrator',
+    });
+    proxySg.addIngressRule(this.proxyClientSg, ec2.Port.tcp(5432), 'Lambdas -> proxy');
+    dbSg.addIngressRule(proxySg, ec2.Port.tcp(5432), 'proxy -> db');
+    dbSg.addIngressRule(this.migratorSg, ec2.Port.tcp(5432), 'migrator -> db');
+
+    const parameterGroup = new rds.ParameterGroup(this, 'Params', {
+      engine: rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_17 }),
+      parameters: {
+        'rds.force_ssl': '1',
+        log_min_duration_statement: '500',
+        'pg_stat_statements.track': 'all',
+        idle_in_transaction_session_timeout: '60000',
+      },
+    });
+
+    this.instance = new rds.DatabaseInstance(this, 'Db', {
+      instanceIdentifier: name(cfg, 'db'),
+      engine: rds.DatabaseInstanceEngine.postgres({ version: rds.PostgresEngineVersion.VER_17 }),
+      instanceType: new ec2.InstanceType(cfg.db.instanceClass),
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [dbSg],
+      databaseName: DB_NAME,
+      // Usuario maestro con contraseña generada en Secrets Manager. Solo lo usa
+      // el migrator (y una persona en caso de emergencia, con registro en CloudTrail).
+      credentials: rds.Credentials.fromGeneratedSecret('postgres', {
+        secretName: paramPath(cfg, 'db-master'),
+      }),
+      iamAuthentication: true,
+      multiAz: cfg.db.multiAz,
+      allocatedStorage: cfg.db.allocatedStorageGb,
+      maxAllocatedStorage: cfg.db.maxAllocatedStorageGb,
+      storageType: rds.StorageType.GP3,
+      storageEncrypted: true,
+      parameterGroup,
+      backupRetention: Duration.days(cfg.db.backupRetentionDays),
+      preferredBackupWindow: '07:00-08:00',
+      preferredMaintenanceWindow: 'sun:08:30-sun:09:30',
+      deletionProtection: cfg.db.deletionProtection,
+      removalPolicy: isProd ? RemovalPolicy.SNAPSHOT : RemovalPolicy.DESTROY,
+      enablePerformanceInsights: true,
+      cloudwatchLogsExports: ['postgresql'],
+      autoMinorVersionUpgrade: true,
+      copyTagsToSnapshot: true,
+    });
+
+    // Rotación automática de la contraseña maestra (la app no la usa: no hay corte).
+    this.instance.addRotationSingleUser({ automaticallyAfter: Duration.days(30) });
+
+    // Con IAM de extremo a extremo el PROXY también se autentica con IAM ante la
+    // base: su rol necesita rds-db:connect sobre el usuario de BD (CDK no lo añade solo).
+    const proxyRole = new iam.Role(this, 'ProxyRole', {
+      assumedBy: new iam.ServicePrincipal('rds.amazonaws.com'),
+    });
+    proxyRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['rds-db:connect'],
+        resources: [
+          `arn:${this.partition}:rds-db:${this.region}:${this.account}:dbuser:${this.instance.instanceResourceId}/${APP_DB_USER}`,
+        ],
+      }),
+    );
+
+    this.proxy = new rds.DatabaseProxy(this, 'Proxy', {
+      role: proxyRole,
+      dbProxyName: name(cfg, 'proxy'),
+      proxyTarget: rds.ProxyTarget.fromInstance(this.instance),
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [proxySg],
+      requireTLS: true,
+      iamAuth: true,
+      // IAM de extremo a extremo: cliente → proxy y proxy → base. Ningún rol de
+      // aplicación tiene contraseña; los usuarios de BD llevan GRANT rds_iam (11.5).
+      defaultAuthScheme: rds.DefaultAuthScheme.IAM_AUTH,
+      idleClientTimeout: Duration.minutes(15),
+      borrowTimeout: Duration.seconds(10),
+    });
+  }
+}
+```
+
+La VPC tiene subredes públicas (solo NAT), privadas de aplicación (Lambdas) y privadas aisladas (RDS). Sin ruta a internet desde las aisladas. Endpoint gateway de S3 para que el worker y la API hablen con S3 sin NAT. Flow logs a CloudWatch.
+
+`NetworkStack` pisa `availabilityZones` para devolver zonas ficticias durante el synth. Sin eso, CDK intenta llamar a la API de EC2 para descubrir las AZ y `cdk synth` no se puede correr en CI sin credenciales de la cuenta destino. En el despliegue real CDK usa las AZ de la cuenta; el override solo afecta a la síntesis offline. Está limitado a dos AZ, que es `maxAzs`.
+
+RDS PostgreSQL 17, cifrado, backups, Performance Insights, deletion protection solo en prod. El proxy exige TLS y su `DefaultAuthScheme` es `IAM_AUTH`. **CDK no añade solo el permiso `rds-db:connect` al rol del proxy** cuando el esquema es IAM: el stack lo escribe explícito sobre `dbuser/<dbiResourceId>/app_user`. Sin esa línea el proxy no puede entregar conexiones y el síntoma es un timeout, no un 403 claro.
+
+El secreto del maestro lo rota RDS cada 30 días. Lo lee el migrator. La Lambda de la API no tiene permiso de `secretsmanager:GetSecretValue` sobre ese secreto.
+
+### 16.5 Cognito
+
+```ts
+// infra/lib/auth-stack.ts
+import { Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { name, paramPath } from './naming';
+
+export const ROLE_A = '<ROL_A>';
+export const ROLE_B = '<ROL_B>';
+export const ROLE_C = '<ROL_C>';
+export const ROLE_D = '<ROL_D>';
+
+export class AuthStack extends Stack {
+  readonly userPool: cognito.UserPool;
+  readonly client: cognito.UserPoolClient;
+  readonly clientSecret: secretsmanager.Secret;
+
+  constructor(scope: Construct, id: string, cfg: StageConfig, props: StackProps) {
+    super(scope, id, props);
+    const isProd = cfg.stage === 'prod';
+
+    this.userPool = new cognito.UserPool(this, 'Users', {
+      userPoolName: name(cfg, 'users'),
+      // Essentials: rotación de refresh token, MFA por email, política de contraseñas ampliada.
+      featurePlan:
+        cfg.auth.featurePlan === 'PLUS' ? cognito.FeaturePlan.PLUS : cognito.FeaturePlan.ESSENTIALS,
+      ...(cfg.auth.featurePlan === 'PLUS'
+        ? {
+            featurePlan: cognito.FeaturePlan.PLUS,
+            standardThreatProtectionMode: cognito.StandardThreatProtectionMode.FULL_FUNCTION,
+          }
+        : {}),
+      signInAliases: { email: true },
+      signInCaseSensitive: false,
+      selfSignUpEnabled: cfg.auth.selfSignup,
+      autoVerify: { email: true },
+      keepOriginal: { email: true },
+      standardAttributes: {
+        email: { required: true, mutable: true },
+        givenName: { required: true, mutable: true },
+        familyName: { required: true, mutable: true },
+        phoneNumber: { required: false, mutable: true },
+      },
+      mfa: cfg.auth.mfa === 'REQUIRED' ? cognito.Mfa.REQUIRED : cognito.Mfa.OPTIONAL,
+      mfaSecondFactor: { otp: true, sms: false },
+      // Debe coincidir con PASSWORD_RULE de auth.dto.ts.
+      passwordPolicy: {
+        minLength: 12,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+        tempPasswordValidity: Duration.days(3),
+        passwordHistorySize: 5,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      deletionProtection: isProd,
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      // Para producción, enviar con SES desde el dominio propio (16.5): el correo
+      // por defecto de Cognito tiene un cupo diario muy bajo.
+      // email: cognito.UserPoolEmail.withSES({ fromEmail: 'no-reply@<DOMINIO_BASE>', sesRegion: cfg.region }),
+    });
+
+    for (const group of [ROLE_A, ROLE_B, ROLE_C, ROLE_D]) {
+      new cognito.CfnUserPoolGroup(this, `Group${group.replace(/\W/g, '')}`, {
+        userPoolId: this.userPool.userPoolId,
+        groupName: group,
+      });
+    }
+
+    this.client = this.userPool.addClient('Backend', {
+      userPoolClientName: name(cfg, 'backend'),
+      generateSecret: true,
+      authFlows: { userPassword: true, userSrp: false, adminUserPassword: false, custom: false },
+      accessTokenValidity: Duration.minutes(15),
+      idTokenValidity: Duration.minutes(15),
+      refreshTokenValidity: Duration.days(30),
+      // Cada renovación emite un refresh token nuevo; el anterior vale 10 s más (reintentos).
+      refreshTokenRotationGracePeriod: Duration.seconds(10),
+      enableTokenRevocation: true,
+      preventUserExistenceErrors: true,
+    });
+
+    // El secreto del App Client, copiado a Secrets Manager para que la Lambda
+    // lo lea al arrancar sin que aparezca en su configuración.
+    this.clientSecret = new secretsmanager.Secret(this, 'ClientSecret', {
+      secretName: paramPath(cfg, 'cognito-client-secret'),
+      secretStringValue: this.client.userPoolClientSecret,
+    });
+  }
+}
+```
+
+User pool con el plan de `config`, MFA por software token, política de contraseña (mínimo 12, los cuatro tipos de carácter, historial 5), recuperación por email. El app client tiene secreto y `USER_PASSWORD_AUTH` (hace falta para el `SECRET_HASH` de la sección 10). Rotación de refresh token activada, `RetryGracePeriodSeconds: 10`.
+
+El secreto del client se copia a Secrets Manager en `/<org>/<app-short>/<stage>/cognito-client`. La Lambda recibe el ARN, no el valor.
+
+El correo de Cognito sale por el email por defecto de la cuenta (cuota baja, remitente `no-reply@verificationemail.com`). Conectar SES es trabajo pendiente: no está en el stack porque exige una identidad verificada en la misma región y una decisión de dominio de correo (Anexo A). Hasta entonces el alta y el "olvidé mi contraseña" funcionan, con ese remitente y ese límite.
+
+### 16.6 Buckets, antivirus, colas, alarmas, migrator
+
+```ts
+// infra/lib/storage-stack.ts
+import { Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as guardduty from 'aws-cdk-lib/aws-guardduty';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { alertsTopicArn, docsBucketName, logsBucketName, name } from './naming';
+
+export class StorageStack extends Stack {
+  readonly docsBucket: s3.Bucket;
+  readonly logsBucket: s3.Bucket;
+  readonly ingestQueue: sqs.Queue;
+  readonly ingestDlq: sqs.Queue;
+
+  constructor(scope: Construct, id: string, cfg: StageConfig, props: StackProps) {
+    super(scope, id, props);
+    const isProd = cfg.stage === 'prod';
+    const removal = isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
+
+    this.logsBucket = new s3.Bucket(this, 'Logs', {
+      bucketName: logsBucketName(cfg),
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      // CloudFront escribe sus logs con ACL: el bucket de logs necesita ACLs de propietario.
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_PREFERRED,
+      lifecycleRules: [{ expiration: Duration.days(isProd ? 400 : 90) }],
+      removalPolicy: removal,
+      autoDeleteObjects: !isProd,
+    });
+
+    // El bucket del sitio (WebStack) escribe aquí sus logs de acceso. Como WebStack
+    // referencia este bucket por nombre, el permiso se declara aquí explícitamente.
+    this.logsBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        principals: [new iam.ServicePrincipal('logging.s3.amazonaws.com')],
+        actions: ['s3:PutObject'],
+        resources: [this.logsBucket.arnForObjects('web/*')],
+        conditions: {
+          ArnLike: {
+            'aws:SourceArn': `arn:${this.partition}:s3:::${name(cfg, 'web')}-${this.account}`,
+          },
+          StringEquals: { 'aws:SourceAccount': this.account },
+        },
+      }),
+    );
+
+    this.docsBucket = new s3.Bucket(this, 'Docs', {
+      bucketName: docsBucketName(cfg),
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.KMS_MANAGED,
+      bucketKeyEnabled: true,
+      enforceSSL: true,
+      versioned: true,
+      serverAccessLogsBucket: this.logsBucket,
+      serverAccessLogsPrefix: 'docs/',
+      cors: [
+        {
+          // Solo el PUT presignado desde el navegador (13.6).
+          allowedMethods: [s3.HttpMethods.PUT],
+          allowedOrigins: [`https://${cfg.domainName}`],
+          allowedHeaders: [
+            'content-type',
+            'content-md5',
+            'x-amz-checksum-sha256',
+            'x-amz-sdk-checksum-algorithm',
+          ],
+          maxAge: 3600,
+        },
+      ],
+      lifecycleRules: [
+        { prefix: 'incoming/', expiration: Duration.days(2) },
+        { prefix: 'quarantine/', expiration: Duration.days(90) },
+        { noncurrentVersionExpiration: Duration.days(90) },
+        { abortIncompleteMultipartUploadAfter: Duration.days(1) },
+      ],
+      removalPolicy: removal,
+      autoDeleteObjects: !isProd,
+    });
+
+    // ── Antivirus: GuardDuty escanea todo lo que cae en incoming/ ────────────
+    const scanRole = new iam.Role(this, 'MalwareScanRole', {
+      assumedBy: new iam.ServicePrincipal('malware-protection-plan.guardduty.amazonaws.com'),
+    });
+    scanRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          's3:GetObject',
+          's3:GetObjectVersion',
+          's3:GetObjectTagging',
+          's3:PutObjectTagging',
+          's3:PutObjectVersionTagging',
+          's3:GetObjectVersionTagging',
+        ],
+        resources: [this.docsBucket.arnForObjects('*')],
+      }),
+    );
+    scanRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          's3:ListBucket',
+          's3:GetBucketNotification',
+          's3:PutBucketNotification',
+          's3:GetBucketLocation',
+        ],
+        resources: [this.docsBucket.bucketArn],
+      }),
+    );
+    scanRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'events:PutRule',
+          'events:DeleteRule',
+          'events:PutTargets',
+          'events:RemoveTargets',
+          'events:DescribeRule',
+          'events:ListTargetsByRule',
+        ],
+        resources: [
+          `arn:aws:events:${this.region}:${this.account}:rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*`,
+        ],
+      }),
+    );
+    scanRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['kms:GenerateDataKey', 'kms:Decrypt'],
+        resources: ['*'],
+        conditions: { StringLike: { 'kms:ViaService': `s3.${this.region}.amazonaws.com` } },
+      }),
+    );
+    const plan = new guardduty.CfnMalwareProtectionPlan(this, 'MalwarePlan', {
+      role: scanRole.roleArn,
+      protectedResource: {
+        s3Bucket: { bucketName: this.docsBucket.bucketName, objectPrefixes: ['incoming/'] },
+      },
+      actions: { tagging: { status: 'ENABLED' } },
+    });
+    plan.node.addDependency(scanRole);
+
+    // ── Cola de ingesta con reintentos y cola de errores ─────────────────────
+    this.ingestDlq = new sqs.Queue(this, 'IngestDlq', {
+      queueName: name(cfg, 'ingest-dlq'),
+      retentionPeriod: Duration.days(14),
+      enforceSSL: true,
+    });
+    this.ingestQueue = new sqs.Queue(this, 'IngestQueue', {
+      queueName: name(cfg, 'ingest'),
+      // ≥ 6 × timeout del worker (recomendación de AWS para orígenes SQS de Lambda).
+      visibilityTimeout: Duration.minutes(90),
+      retentionPeriod: Duration.days(4),
+      enforceSSL: true,
+      deadLetterQueue: { queue: this.ingestDlq, maxReceiveCount: 3 },
+    });
+
+    // El resultado del escaneo (limpio o con amenaza) llega por EventBridge.
+    new events.Rule(this, 'ScanResult', {
+      eventPattern: {
+        source: ['aws.guardduty'],
+        detailType: ['GuardDuty Malware Protection Object Scan Result'],
+        detail: { s3ObjectDetails: { bucketName: [this.docsBucket.bucketName] } },
+      },
+      targets: [new targets.SqsQueue(this.ingestQueue)],
+    });
+
+    new cloudwatch.Alarm(this, 'IngestDlqNotEmpty', {
+      alarmName: name(cfg, 'ingest-dlq-not-empty'),
+      metric: this.ingestDlq.metricApproximateNumberOfMessagesVisible({
+        period: Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(
+      new cwActions.SnsAction(sns.Topic.fromTopicArn(this, 'Alerts', alertsTopicArn(cfg))),
+    );
+  }
+}
+```
+
+```ts
+// infra/lib/alerts-stack.ts
+import { Stack, type StackProps } from 'aws-cdk-lib';
+import * as budgets from 'aws-cdk-lib/aws-budgets';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { name } from './naming';
+
+/** Primer stack de cada stage: el tema de alarmas y el presupuesto mensual. */
+export class AlertsStack extends Stack {
+  constructor(scope: Construct, id: string, cfg: StageConfig, props: StackProps) {
+    super(scope, id, props);
+
+    const topic = new sns.Topic(this, 'Alerts', {
+      topicName: name(cfg, 'alerts'),
+      enforceSSL: true,
+    });
+    topic.addSubscription(new subs.EmailSubscription(cfg.alertEmail));
+    // Para Slack/Teams: suscribir AWS Chatbot (Amazon Q Developer in chat applications) a este tema.
+
+    new budgets.CfnBudget(this, 'MonthlyBudget', {
+      budget: {
+        budgetName: name(cfg, 'monthly'),
+        budgetType: 'COST',
+        timeUnit: 'MONTHLY',
+        budgetLimit: { amount: cfg.monthlyBudgetUsd, unit: 'USD' },
+        costFilters: { TagKeyValue: [`user:stage$${cfg.stage}`] },
+      },
+      notificationsWithSubscribers: [80, 100].map((threshold) => ({
+        notification: {
+          notificationType: threshold === 100 ? 'FORECASTED' : 'ACTUAL',
+          comparisonOperator: 'GREATER_THAN',
+          threshold,
+          thresholdType: 'PERCENTAGE',
+        },
+        subscribers: [{ subscriptionType: 'EMAIL', address: cfg.alertEmail }],
+      })),
+    });
+  }
+}
+```
+
+```ts
+// infra/lib/migrator-stack.ts
+import { Duration, Stack, type StackProps } from 'aws-cdk-lib';
+import type * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { DB_NAME, type DataStack } from './data-stack';
+import { lambdaDefaults } from './lambda-defaults';
+import { paramPath } from './naming';
+
+/**
+ * Lambda de operaciones de base de datos (migraciones, roles, seeds, alta de
+ * admins). Stack propio para que el CI la actualice e INVOQUE antes de
+ * publicar el código nuevo de la API (17.4).
+ */
+export class MigratorStack extends Stack {
+  readonly fn: lambda.Function;
+
+  constructor(
+    scope: Construct,
+    id: string,
+    cfg: StageConfig,
+    deps: { vpc: ec2.IVpc; data: DataStack; userPool: cognito.IUserPool },
+    props: StackProps,
+  ) {
+    super(scope, id, props);
+
+    this.fn = new lambda.Function(this, 'Migrator', {
+      ...lambdaDefaults(this, cfg, 'migrator'),
+      memorySize: 512,
+      timeout: Duration.minutes(5),
+      vpc: deps.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [deps.data.migratorSg],
+      // Nadie la invoca en paralelo: una migración a la vez.
+      reservedConcurrentExecutions: 1,
+      environment: {
+        STAGE: cfg.stage,
+        DB_MASTER_SECRET_ARN: deps.data.instance.secret!.secretArn,
+        DB_NAME,
+        DB_SSL: 'true',
+        DB_APP_USER_IAM: 'true',
+        COGNITO_USER_POOL_ID: deps.userPool.userPoolId,
+        // Carga los CA de Amazon (incluido el de RDS) que el runtime trae en disco
+        // pero no activa por defecto desde Node 20.
+        NODE_EXTRA_CA_CERTS: '/var/runtime/ca-cert.pem',
+      },
+    });
+    deps.data.instance.secret!.grantRead(this.fn);
+    this.fn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'cognito-idp:AdminCreateUser',
+          'cognito-idp:AdminGetUser',
+          'cognito-idp:AdminAddUserToGroup',
+        ],
+        resources: [deps.userPool.userPoolArn],
+      }),
+    );
+
+    new ssm.StringParameter(this, 'MigratorName', {
+      parameterName: paramPath(cfg, 'migrator-function'),
+      stringValue: this.fn.functionName,
+    });
+  }
+}
+```
+
+Documentos: bucket cifrado con KMS propia del stage, bloqueo de acceso público, versionado, lifecycle que aborta multipart a los 7 días y expira los objetos en `incoming/` que nadie llegó a confirmar. El bucket de logs recibe los access logs de CloudFront y del bucket de documentos.
+
+GuardDuty Malware Protection es un `CfnMalwareProtectionPlan` sobre el prefijo `incoming/`. El resultado no dispara la Lambda: pasa por EventBridge y SQS. La cola tiene DLQ, `maxReceiveCount: 3`, visibilidad de 90 minutos, y una alarma de "hay mensajes en la DLQ" publicada en el topic de alertas.
+
+Ese topic es `<app-short>-<stage>-alerts`. Su ARN se **calcula**, no se exporta, para que la API y el borde puedan suscribir alarmas sin una dependencia de stack circular. La suscripción de email es `<ALERT_EMAIL>`. El presupuesto mensual (`monthlyBudgetUsd` en la config) publica en el mismo topic al 80 % y al 100 %.
+
+El migrator es una Lambda dentro de la VPC, sin URL pública, con permiso de leer el secreto del maestro, de `rds-db:connect` como `postgres` no aplica (entra con contraseña a la instancia) y de `AdminCreateUser` / `AdminAddUserToGroup` / `AdminGetUser` sobre el pool del stage. El grupo de seguridad de RDS acepta su tráfico en el puerto 5432.
+
+### 16.7 API
+
+```ts
+// infra/lib/lambda-defaults.ts
+import * as path from 'node:path';
+import { Duration } from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { name } from './naming';
+
+/** Bundle precompilado por `pnpm bundle` (6.11). El mismo artefacto se promueve dev → qa → prod. */
+export const lambdaCode = (fn: string) =>
+  lambda.Code.fromAsset(path.join(__dirname, '..', '..', '.lambda', fn), { exclude: ['*.map'] });
+
+/** Propiedades comunes a todas las Lambdas del proyecto. */
+export function lambdaDefaults(scope: Construct, cfg: StageConfig, fn: string) {
+  return {
+    functionName: name(cfg, fn),
+    runtime: lambda.Runtime.NODEJS_24_X,
+    architecture: lambda.Architecture.ARM_64,
+    handler: 'index.handler',
+    code: lambdaCode(fn),
+    tracing: lambda.Tracing.ACTIVE,
+    loggingFormat: lambda.LoggingFormat.JSON,
+    logGroup: new logs.LogGroup(scope, `${fn}Logs`, {
+      logGroupName: `/aws/lambda/${name(cfg, fn)}`,
+      retention: cfg.logRetentionDays,
+    }),
+    timeout: Duration.seconds(29),
+  } satisfies Partial<lambda.FunctionProps>;
+}
+```
+
+```ts
+// infra/lib/api-stack.ts
+import { Duration, Stack, type StackProps } from 'aws-cdk-lib';
+import * as apigw from 'aws-cdk-lib/aws-apigatewayv2';
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as codedeploy from 'aws-cdk-lib/aws-codedeploy';
+import type * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { APP_DB_USER, DB_NAME, type DataStack } from './data-stack';
+import { lambdaDefaults } from './lambda-defaults';
+import { alertsTopicArn, docsBucketName, ingestQueueArn, name, paramPath } from './naming';
+
+export interface ApiDeps {
+  vpc: ec2.IVpc;
+  data: DataStack;
+  userPool: cognito.IUserPool;
+  userPoolClient: cognito.IUserPoolClient;
+  clientSecret: secretsmanager.ISecret;
+}
+
+export class ApiStack extends Stack {
+  readonly httpApi: apigw.HttpApi;
+  readonly originVerifySecret: secretsmanager.Secret;
+
+  constructor(scope: Construct, id: string, cfg: StageConfig, deps: ApiDeps, props: StackProps) {
+    super(scope, id, props);
+    const alerts = sns.Topic.fromTopicArn(this, 'Alerts', alertsTopicArn(cfg));
+    // Referencias por nombre determinista (sin exports entre stacks, 16.3).
+    const docsBucket = s3.Bucket.fromBucketName(this, 'Docs', docsBucketName(cfg));
+    const ingestQueue = sqs.Queue.fromQueueArn(this, 'IngestQueue', ingestQueueArn(cfg));
+    const ingestDlq = sqs.Queue.fromQueueArn(this, 'IngestDlq', `${ingestQueueArn(cfg)}-dlq`);
+    const alarm = (a: cloudwatch.Alarm) => {
+      a.addAlarmAction(new cwActions.SnsAction(alerts));
+      return a;
+    };
+
+    // Cabecera secreta que CloudFront añade a cada petición hacia la API (8.1, 9.10).
+    this.originVerifySecret = new secretsmanager.Secret(this, 'OriginVerify', {
+      secretName: paramPath(cfg, 'origin-verify'),
+      generateSecretString: { passwordLength: 48, excludePunctuation: true },
+    });
+
+    const commonEnv = {
+      NODE_ENV: 'production',
+      STAGE: cfg.stage,
+      APP_ORIGIN: `https://${cfg.domainName}`,
+      DOCS_BUCKET: docsBucket.bucketName,
+      COGNITO_USER_POOL_ID: deps.userPool.userPoolId,
+      COGNITO_CLIENT_ID: deps.userPoolClient.userPoolClientId,
+      COGNITO_CLIENT_SECRET_ARN: deps.clientSecret.secretArn,
+      ORIGIN_VERIFY_SECRET_ARN: this.originVerifySecret.secretArn,
+      DB_HOST: deps.data.proxy.endpoint,
+      DB_PORT: '5432',
+      DB_USERNAME: APP_DB_USER,
+      DB_NAME,
+      DB_IAM_AUTH: 'true',
+      DB_SSL: 'true',
+      SENTRY_DSN: cfg.sentryDsn ?? '',
+      // El CI lo fija con el SHA del commit: aparece en /api/health, logs y Sentry.
+      RELEASE: process.env.RELEASE ?? 'unknown',
+    };
+
+    // ── API HTTP ─────────────────────────────────────────────────────────────
+    const fn = new lambda.Function(this, 'Api', {
+      ...lambdaDefaults(this, cfg, 'api'),
+      memorySize: cfg.api.memoryMb,
+      vpc: deps.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [deps.data.proxyClientSg],
+      environment: commonEnv,
+    });
+    deps.clientSecret.grantRead(fn);
+    this.originVerifySecret.grantRead(fn);
+    deps.data.proxy.grantConnect(fn, APP_DB_USER);
+    docsBucket.grantReadWrite(fn);
+    fn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['cognito-idp:AdminDeleteUser'], // solo para el rollback del registro
+        resources: [deps.userPool.userPoolArn],
+      }),
+    );
+
+    // Cada despliegue publica una versión inmutable; el tráfico va al alias `live`.
+    const alias = new lambda.Alias(this, 'Live', {
+      aliasName: 'live',
+      version: fn.currentVersion,
+      provisionedConcurrentExecutions: cfg.api.provisionedConcurrency || undefined,
+    });
+
+    const errors = alarm(
+      new cloudwatch.Alarm(this, 'ApiErrors', {
+        alarmName: name(cfg, 'api-errors'),
+        metric: alias.metricErrors({ period: Duration.minutes(1) }),
+        threshold: cfg.stage === 'prod' ? 5 : 20,
+        evaluationPeriods: 2,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }),
+    );
+
+    if (cfg.api.canary) {
+      // 10 % del tráfico a la versión nueva durante 5 minutos; si la alarma salta, vuelve sola.
+      new codedeploy.LambdaDeploymentGroup(this, 'Canary', {
+        alias,
+        deploymentConfig: codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
+        alarms: [errors],
+      });
+    }
+
+    this.httpApi = new apigw.HttpApi(this, 'Http', {
+      apiName: name(cfg, 'http'),
+      defaultIntegration: new HttpLambdaIntegration('ApiIntegration', alias, {
+        payloadFormatVersion: apigw.PayloadFormatVersion.VERSION_2_0,
+      }),
+      createDefaultStage: false,
+    });
+    new apigw.HttpStage(this, 'DefaultStage', {
+      httpApi: this.httpApi,
+      stageName: '$default',
+      autoDeploy: true,
+      throttle: { rateLimit: cfg.api.throttleRatePerSecond, burstLimit: cfg.api.throttleBurst },
+      accessLogSettings: {
+        destination: new apigw.LogGroupLogDestination(
+          new logs.LogGroup(this, 'HttpAccessLogs', {
+            retention: cfg.logRetentionDays,
+          }),
+        ),
+      },
+    });
+
+    // ── Worker de ingesta (SQS) ──────────────────────────────────────────────
+    const worker = new lambda.Function(this, 'IngestWorker', {
+      ...lambdaDefaults(this, cfg, 'ingest-worker'),
+      memorySize: 1024,
+      timeout: Duration.minutes(15),
+      vpc: deps.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [deps.data.proxyClientSg],
+      environment: commonEnv,
+      reservedConcurrentExecutions: 5,
+    });
+    this.originVerifySecret.grantRead(worker);
+    deps.clientSecret.grantRead(worker);
+    deps.data.proxy.grantConnect(worker, APP_DB_USER);
+    docsBucket.grantReadWrite(worker);
+    docsBucket.grantDelete(worker);
+    worker.addEventSource(
+      new SqsEventSource(ingestQueue, { batchSize: 1, reportBatchItemFailures: true }),
+    );
+
+    // ── Alarmas y tablero ────────────────────────────────────────────────────
+    const api5xx = new cloudwatch.Metric({
+      namespace: 'AWS/ApiGateway',
+      metricName: '5xx',
+      dimensionsMap: { ApiId: this.httpApi.apiId },
+      statistic: 'Sum',
+      period: Duration.minutes(1),
+    });
+    const latencyP95 = new cloudwatch.Metric({
+      namespace: 'AWS/ApiGateway',
+      metricName: 'Latency',
+      dimensionsMap: { ApiId: this.httpApi.apiId },
+      statistic: 'p95',
+      period: Duration.minutes(5),
+    });
+    alarm(
+      new cloudwatch.Alarm(this, 'Api5xx', {
+        alarmName: name(cfg, 'api-5xx'),
+        metric: api5xx,
+        threshold: 10,
+        evaluationPeriods: 3,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }),
+    );
+    alarm(
+      new cloudwatch.Alarm(this, 'ApiLatency', {
+        alarmName: name(cfg, 'api-latency-p95'),
+        metric: latencyP95,
+        threshold: 1000,
+        evaluationPeriods: 3,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }),
+    );
+    alarm(
+      new cloudwatch.Alarm(this, 'ApiThrottles', {
+        alarmName: name(cfg, 'api-throttles'),
+        metric: alias.metricThrottles({ period: Duration.minutes(5) }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }),
+    );
+    alarm(
+      new cloudwatch.Alarm(this, 'DbCpu', {
+        alarmName: name(cfg, 'db-cpu'),
+        metric: deps.data.instance.metricCPUUtilization({ period: Duration.minutes(5) }),
+        threshold: 80,
+        evaluationPeriods: 3,
+      }),
+    );
+    alarm(
+      new cloudwatch.Alarm(this, 'DbStorage', {
+        alarmName: name(cfg, 'db-free-storage'),
+        metric: deps.data.instance.metricFreeStorageSpace({ period: Duration.minutes(15) }),
+        threshold: 5 * 1024 ** 3,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+      }),
+    );
+
+    new cloudwatch.Dashboard(this, 'Dashboard', {
+      dashboardName: name(cfg, 'overview'),
+      widgets: [
+        [
+          new cloudwatch.GraphWidget({
+            title: 'API: peticiones y 5xx',
+            left: [api5xx],
+            right: [alias.metricInvocations()],
+          }),
+          new cloudwatch.GraphWidget({ title: 'API: latencia p95 (ms)', left: [latencyP95] }),
+          new cloudwatch.GraphWidget({
+            title: 'Lambda: errores y throttles',
+            left: [alias.metricErrors(), alias.metricThrottles()],
+          }),
+        ],
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Lambda: duración p95',
+            left: [alias.metricDuration({ statistic: 'p95' })],
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'RDS: CPU',
+            left: [deps.data.instance.metricCPUUtilization()],
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'RDS: conexiones',
+            left: [deps.data.instance.metricDatabaseConnections()],
+          }),
+        ],
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Ingesta: cola y DLQ',
+            left: [ingestQueue.metricApproximateNumberOfMessagesVisible()],
+            right: [ingestDlq.metricApproximateNumberOfMessagesVisible()],
+          }),
+        ],
+      ],
+    });
+
+    new ssm.StringParameter(this, 'ApiFunctionName', {
+      parameterName: paramPath(cfg, 'api-function'),
+      stringValue: fn.functionName,
+    });
+  }
+}
+```
+
+HTTP API (no REST API): menos latencia y menos coste, y suficiente porque la autorización no la hace API Gateway, la hace la aplicación. El throttling del stage es el de `config` (`throttleRatePerSecond`, `throttleBurst`). Access logs en JSON al grupo de CloudWatch, con `requestId` y `sourceIp`.
+
+La Lambda de la API tiene alias `live`. API Gateway integra con el alias, no con `$LATEST`. En prod hay un despliegue CodeDeploy canary (10 % durante 5 minutos) que se revierte solo si salta la alarma de 5xx. En dev y qa el alias se mueve directo: el ciclo de feedback importa más que el canary. Concurrencia provisionada según config (0 fuera de prod, 2 en prod) para quitar el cold start del alias.
+
+`NODE_EXTRA_CA_CERTS` apunta al bundle de CA que el stack empaqueta. Sin eso, `ssl.rejectUnauthorized: true` contra RDS Proxy falla con `self-signed certificate in certificate chain` porque el certificado del proxy está firmado por la CA de Amazon RDS, que no está en el trust store por defecto de Node.
+
+Variables de entorno de la función: todo lo no secreto (`STAGE`, `APP_ORIGIN`, ids de Cognito, nombre del bucket, host del **proxy**) y los ARNs de los dos secretos. Nunca el secreto.
+
+Alarmas de esta función: 5xx del API, p95 de latencia, throttles. Dashboard con las cuatro gráficas que se miran en una incidencia: peticiones, errores, latencia, conexiones del proxy.
+
+### 16.8 Borde: WAF, CloudFront, DNS
+
+```ts
+// infra/lib/edge-stack.ts
+import { Stack, type StackProps } from 'aws-cdk-lib';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { name } from './naming';
+
+/**
+ * Recursos que CloudFront exige en us-east-1, sea cual sea <REGION>:
+ * el certificado TLS y el Web ACL de WAF.
+ */
+export class EdgeStack extends Stack {
+  readonly certificate: acm.Certificate;
+  readonly webAclArn: string;
+
+  constructor(scope: Construct, id: string, cfg: StageConfig, props: StackProps) {
+    super(scope, id, props);
+
+    const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'Zone', {
+      hostedZoneId: cfg.hostedZoneId,
+      zoneName: cfg.hostedZoneName,
+    });
+    this.certificate = new acm.Certificate(this, 'Cert', {
+      domainName: cfg.domainName,
+      validation: acm.CertificateValidation.fromDns(zone),
+    });
+
+    const managed = (priority: number, ruleName: string, countOnly: string[] = []) => ({
+      name: ruleName,
+      priority,
+      overrideAction: { none: {} },
+      statement: {
+        managedRuleGroupStatement: {
+          vendorName: 'AWS',
+          name: ruleName,
+          ruleActionOverrides: countOnly.map((r) => ({ name: r, actionToUse: { count: {} } })),
+        },
+      },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: true,
+        metricName: ruleName,
+      },
+    });
+    const rateLimit = (priority: number, ruleName: string, limit: number, pathPrefix?: string) => ({
+      name: ruleName,
+      priority,
+      action: { block: {} },
+      statement: {
+        rateBasedStatement: {
+          limit,
+          evaluationWindowSec: 300,
+          aggregateKeyType: 'IP',
+          ...(pathPrefix
+            ? {
+                scopeDownStatement: {
+                  byteMatchStatement: {
+                    fieldToMatch: { uriPath: {} },
+                    positionalConstraint: 'STARTS_WITH',
+                    searchString: pathPrefix,
+                    textTransformations: [{ priority: 0, type: 'NONE' }],
+                  },
+                },
+              }
+            : {}),
+        },
+      },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: true,
+        metricName: ruleName,
+      },
+    });
+
+    const acl = new wafv2.CfnWebACL(this, 'WebAcl', {
+      name: name(cfg, 'web-acl'),
+      scope: 'CLOUDFRONT',
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        sampledRequestsEnabled: true,
+        metricName: name(cfg, 'web-acl'),
+      },
+      rules: [
+        // Fuerza bruta contra login, registro y recuperación: 100 peticiones / 5 min / IP.
+        rateLimit(0, 'AuthRateLimit', 100, '/api/auth/'),
+        // Límite general generoso: frena scraping y abusos sin molestar a un usuario real.
+        rateLimit(1, 'GlobalRateLimit', 3000),
+        managed(10, 'AWSManagedRulesAmazonIpReputationList'),
+        // SizeRestrictions_BODY bloquea cuerpos > 8 KB: demasiado estricto para una API JSON.
+        // Los archivos no pasan por aquí (van a S3 con URL presignada, 13.1).
+        managed(20, 'AWSManagedRulesCommonRuleSet', ['SizeRestrictions_BODY']),
+        managed(30, 'AWSManagedRulesKnownBadInputsRuleSet'),
+        managed(40, 'AWSManagedRulesSQLiRuleSet'),
+      ],
+    });
+    this.webAclArn = acl.attrArn;
+  }
+}
+```
+
+```ts
+// infra/lib/web-stack.ts
+import { Duration, RemovalPolicy, Stack, type StackProps, Validations } from 'aws-cdk-lib';
+import type * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import type * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import type { Construct } from 'constructs';
+import type { StageConfig } from './config';
+import { logsBucketName, name, paramPath } from './naming';
+
+export interface WebDeps {
+  certificate: acm.ICertificate;
+  webAclArn: string;
+  apiId: string;
+  originVerifySecret: secretsmanager.ISecret;
+}
+
+/** Rutas sin extensión (/clientes/42) → /index.html. Las de archivos (/_nuxt/a.js) pasan tal cual. */
+const SPA_ROUTER = `function handler(event) {
+  var request = event.request;
+  if (request.uri.indexOf('.') === -1) { request.uri = '/index.html'; }
+  return request;
+}`;
+
+/**
+ * Un solo dominio para el frontend y la API (2.1, ADR-03):
+ *   /*      → S3 (sitio estático)
+ *   /api/*  → API Gateway, sin caché, con cookies y la cabecera secreta de origen
+ */
+export class WebStack extends Stack {
+  constructor(scope: Construct, id: string, cfg: StageConfig, deps: WebDeps, props: StackProps) {
+    super(scope, id, props);
+    const isProd = cfg.stage === 'prod';
+
+    const logsBucket = s3.Bucket.fromBucketName(this, 'Logs', logsBucketName(cfg));
+    // El permiso de escritura de logs lo declara StorageStack sobre su propio bucket.
+    Validations.of(this).acknowledge({
+      id: 'Construct-Annotations::@aws-cdk/aws-s3:accessLogsPolicyNotAdded',
+      reason:
+        'La política del bucket de logs (StorageStack) ya autoriza a logging.s3.amazonaws.com para el bucket web.',
+    });
+
+    const site = new s3.Bucket(this, 'Site', {
+      bucketName: `${name(cfg, 'web')}-${this.account}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      versioned: true,
+      serverAccessLogsBucket: logsBucket,
+      serverAccessLogsPrefix: 'web/',
+      lifecycleRules: [{ noncurrentVersionExpiration: Duration.days(30) }],
+      removalPolicy: isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      autoDeleteObjects: !isProd,
+    });
+
+    const securityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeaders', {
+      responseHeadersPolicyName: name(cfg, 'security-headers'),
+      securityHeadersBehavior: {
+        strictTransportSecurity: {
+          accessControlMaxAge: Duration.days(730),
+          includeSubdomains: true,
+          preload: true,
+          override: true,
+        },
+        contentTypeOptions: { override: true },
+        frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+        referrerPolicy: {
+          referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+          override: true,
+        },
+        // Directivas que solo funcionan por cabecera. El resto de la CSP (script-src con los
+        // hashes de los scripts en línea) la escribe `scripts/csp.mjs` del frontend como <meta>
+        // en cada HTML del build: los hashes cambian en cada release y este stack no se
+        // redespliega con el frontend. El navegador aplica las dos políticas a la vez.
+        contentSecurityPolicy: {
+          contentSecurityPolicy:
+            "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests",
+          override: true,
+        },
+      },
+      customHeadersBehavior: {
+        customHeaders: [
+          {
+            header: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+            override: true,
+          },
+        ],
+      },
+    });
+
+    const apiOriginRequest = new cloudfront.OriginRequestPolicy(this, 'ApiOriginRequest', {
+      originRequestPolicyName: name(cfg, 'api-origin-request'),
+      cookieBehavior: cloudfront.OriginRequestCookieBehavior.all(),
+      queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
+      // Máximo 10 cabeceras por política, y aquí están las 10. Una cabecera nueva obliga a
+      // quitar otra. Nunca reenviar Host (API Gateway necesita el suyo).
+      headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList(
+        'Accept',
+        'Content-Type',
+        'Origin',
+        'User-Agent',
+        'X-Request-Id',
+        'Idempotency-Key',
+        'Sec-Fetch-Site',
+        'Sec-Fetch-Mode',
+        'CloudFront-Viewer-Address',
+        'CloudFront-Viewer-Country',
+      ),
+    });
+
+    const distribution = new cloudfront.Distribution(this, 'Cdn', {
+      comment: name(cfg, 'cdn'),
+      domainNames: [cfg.domainName],
+      certificate: deps.certificate,
+      webAclId: deps.webAclArn,
+      httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_ALL,
+      defaultRootObject: 'index.html',
+      ...(cfg.geoAllowList.length
+        ? { geoRestriction: cloudfront.GeoRestriction.allowlist(...cfg.geoAllowList) }
+        : {}),
+      enableLogging: true,
+      logBucket: logsBucket,
+      logFilePrefix: 'cloudfront/',
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessControl(site),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        responseHeadersPolicy: securityHeaders,
+        compress: true,
+        functionAssociations: [
+          {
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+            function: new cloudfront.Function(this, 'SpaRouter', {
+              code: cloudfront.FunctionCode.fromInline(SPA_ROUTER),
+              runtime: cloudfront.FunctionRuntime.JS_2_0,
+            }),
+          },
+        ],
+      },
+      additionalBehaviors: {
+        '/api/*': {
+          origin: new origins.HttpOrigin(
+            `${deps.apiId}.execute-api.${this.region}.${this.urlSuffix}`,
+            {
+              protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+              readTimeout: Duration.seconds(30),
+              customHeaders: {
+                'x-origin-verify': deps.originVerifySecret.secretValue.unsafeUnwrap(),
+              },
+            },
+          ),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: apiOriginRequest,
+          compress: true,
+        },
+      },
+      // Sin errorResponses 403/404 → index.html: se aplicarían también a /api/* y
+      // convertirían los 404 de la API en un 200 con HTML. El enrutado SPA lo hace SPA_ROUTER.
+    });
+
+    const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'Zone', {
+      hostedZoneId: cfg.hostedZoneId,
+      zoneName: cfg.hostedZoneName,
+    });
+    const target = route53.RecordTarget.fromAlias(
+      new route53Targets.CloudFrontTarget(distribution),
+    );
+    new route53.ARecord(this, 'AliasA', { zone, recordName: cfg.domainName, target });
+    new route53.AaaaRecord(this, 'AliasAAAA', { zone, recordName: cfg.domainName, target });
+
+    // Salidas que consume el pipeline del frontend (16.9).
+    new ssm.StringParameter(this, 'WebBucket', {
+      parameterName: paramPath(cfg, 'web/bucket-name'),
+      stringValue: site.bucketName,
+    });
+    new ssm.StringParameter(this, 'WebDistribution', {
+      parameterName: paramPath(cfg, 'web/distribution-id'),
+      stringValue: distribution.distributionId,
+    });
+    new ssm.StringParameter(this, 'WebUrl', {
+      parameterName: paramPath(cfg, 'web/url'),
+      stringValue: `https://${cfg.domainName}`,
+    });
+  }
+}
+```
+
+El certificado ACM y el WAF están en `us-east-1` aunque el resto del stack viva en `<REGION>`. CloudFront lo exige. Son stacks aparte, con `env.region` fijo, y `crossRegionReferences` no hace falta porque los identificadores que cruzan (ARN del WAF, ARN del certificado, dominio del API) se pasan como valores construidos, no como exports.
+
+WAF, scope `CLOUDFRONT`:
+
+- AWS Managed Rules: Common, Known Bad Inputs, IP Reputation y SQLi. Anonymous IP no está: bloquearía a usuarios legítimos detrás de VPN corporativas.
+- `SizeRestrictions_BODY` de Common se pasa a `count`. El cuerpo de la API es JSON pequeño, pero la regla también inspecciona lo que no debe bloquear un upload legítimo que se cuela por el mismo origen, y un falso positivo aquí tira el login sin un mensaje útil. El tamaño de verdad lo limita API Gateway y el DTO (20 MiB en documentos, y ese PUT va a S3, no a la API).
+- Rate limit: 100 peticiones / 5 min por IP sobre el path `/api/auth/`, y 3000 / 5 min global.
+- Si `geoAllowList` tiene países, una regla permite solo esos y bloquea el resto.
+
+CloudFront:
+
+- Origen del bucket del sitio (OAC, el bucket no es público) para el behavior por defecto.
+- Origen del HTTP API para `/api/*`, con la cabecera `x-origin-verify` inyectada por CloudFront y **no** reenviada desde el visor. Solo pasan las cookies, el query string y las 10 cabeceras de `ApiOriginRequest`. Lo que el navegador mande fuera de esa lista no llega a la Lambda: por eso `Idempotency-Key` está ahí (9.6).
+- HTTP/2 y HTTP/3.
+- CloudFront Function en viewer-request: si la URI no tiene extensión, la reescribe a `/index.html`. Es la forma de que el SPA enrute. **No** se usan custom error responses 403/404 → `/index.html`: esa regla también reescribiría un 404 de la API y el frontend no podría distinguir "no existe" de "aquí tienes el HTML".
+- Response headers policy: HSTS, `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`, `Permissions-Policy` vacía de sensores, y no se cachea `/api/*`.
+- CSP en dos mitades. La cabecera lleva lo que una `<meta>` no puede expresar (`frame-ancestors`, y `object-src`, `base-uri`, `form-action` para que valgan aunque falte la meta). La `<meta>` que escribe el build del frontend lleva `default-src`, `script-src` con los hashes de sus scripts en línea, `connect-src` y el resto. Sin esa meta no hay `script-src` y un XSS ejecuta lo que quiera: el smoke lo comprueba (17.2).
+- Registros A y AAAA en la zona `<HOSTED_ZONE_ID>` hacia la distribución. El nombre es el `domainName` del stage.
+
+Salidas SSM, todas bajo `/<org>/<app-short>/<stage>/`:
+
+| Clave | Para quién |
 |---|---|
-| `package.json` → `engines.node` | `">=26.0.0"` |
-| `.github/workflows/ci.yml` → `node-version` | `'26'` |
-| `serverless.yml` → `provider.runtime` | `nodejs20.x` |
-| `Dockerfile` → `FROM` | `node:26-alpine` |
+| `web/bucket-name` | El pipeline del frontend, al sincronizar el build |
+| `web/distribution-id` | La invalidación de CloudFront |
+| `web/url` | El smoke test y el Environment de GitHub |
 
-**Por qué está mal.** El código se **compila y se testea** con Node 26 pero se **ejecuta** en Node 20. Esa brecha es una fuente de bugs que no aparecen hasta producción: una API disponible en 26 y ausente en 20 (`Array.prototype.toSorted`, cambios en `fetch`, `structuredClone`, flags de `util`) compila sin quejarse, pasa el CI y revienta en Lambda con `TypeError: x.toSorted is not a function`. Además, cualquiera con Node 20 o 22 instalado —como la VM de este entorno, que tiene v22.14.0— recibe `EBADENGINE` al hacer `npm install`, un warning ruidoso que la gente aprende a ignorar, y que enmascara warnings reales.
+### 16.9 CI en la cuenta
 
-> No encontré en el repo ni en el historial de commits una justificación de por qué `engines` dice 26. La hipótesis más plausible es que se fijó a la versión que tenía instalada quien inicializó el proyecto y nunca se revisó, pero es una conjetura mía, no un hecho verificado.
+```ts
+// infra/lib/ci-stack.ts
+import { Duration, Stack, type StackProps } from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import type { Construct } from 'constructs';
+import { GITHUB, type Stage } from './config';
+import { APP, ORG } from './naming';
 
-**El cambio.** Un solo número, derivado del runtime de Lambda:
+/**
+ * Uno por cuenta AWS. Lo despliega una persona con credenciales de
+ * administrador, una sola vez (3.2). Crea el proveedor OIDC de GitHub y los
+ * roles que asumen los pipelines. La confianza se restringe por repositorio
+ * Y por GitHub Environment: solo un job del environment `prod` (que exige
+ * aprobación manual) puede asumir el rol de prod.
+ */
+export class CiStack extends Stack {
+  constructor(scope: Construct, id: string, stages: Stage[], props: StackProps) {
+    super(scope, id, props);
 
-```jsonc
-// package.json
-"engines": {
-  "node": ">=20.0.0 <21"
+    const provider = new iam.OpenIdConnectProvider(this, 'GitHubOidc', {
+      url: 'https://token.actions.githubusercontent.com',
+      clientIds: ['sts.amazonaws.com'],
+    });
+
+    const trust = (repo: string) =>
+      new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
+        StringEquals: { 'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com' },
+        'ForAnyValue:StringEquals': {
+          'token.actions.githubusercontent.com:sub': stages.map(
+            (stage) => `repo:${GITHUB.org}/${repo}:environment:${stage}`,
+          ),
+        },
+      });
+    const params = `arn:aws:ssm:*:${this.account}:parameter/${ORG}/${APP}/*`;
+
+    // ── Backend: despliega con CDK e invoca el migrator ──────────────────────
+    const backend = new iam.Role(this, 'BackendDeploy', {
+      roleName: `${APP}-github-backend-deploy`,
+      assumedBy: trust(GITHUB.backendRepo),
+      maxSessionDuration: Duration.hours(1),
+    });
+    backend.addToPolicy(
+      new iam.PolicyStatement({
+        // CDK no despliega con este rol: asume los roles que creó `cdk bootstrap`
+        // (deploy, file-publishing, lookup). Así este rol no necesita permisos de infraestructura.
+        actions: ['sts:AssumeRole', 'sts:TagSession'],
+        resources: [`arn:aws:iam::${this.account}:role/cdk-hnb659fds-*`],
+      }),
+    );
+    backend.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['lambda:InvokeFunction'],
+        resources: [`arn:aws:lambda:*:${this.account}:function:${APP}-*-migrator`],
+      }),
+    );
+    backend.addToPolicy(
+      new iam.PolicyStatement({ actions: ['ssm:GetParameter'], resources: [params] }),
+    );
+
+    // ── Frontend: sube el sitio estático e invalida index.html ──────────────
+    const frontend = new iam.Role(this, 'FrontendDeploy', {
+      roleName: `${APP}-github-frontend-deploy`,
+      assumedBy: trust(GITHUB.frontendRepo),
+      maxSessionDuration: Duration.hours(1),
+    });
+    frontend.addToPolicy(
+      new iam.PolicyStatement({ actions: ['ssm:GetParameter'], resources: [params] }),
+    );
+    frontend.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [`arn:aws:s3:::${APP}-*-web-${this.account}`],
+      }),
+    );
+    frontend.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:PutObject', 's3:DeleteObject', 's3:GetObject'],
+        resources: [`arn:aws:s3:::${APP}-*-web-${this.account}/*`],
+      }),
+    );
+    frontend.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['cloudfront:CreateInvalidation', 'cloudfront:GetInvalidation'],
+        resources: [`arn:aws:cloudfront::${this.account}:distribution/*`],
+        conditions: { StringEquals: { 'aws:ResourceTag/app': APP } },
+      }),
+    );
+  }
 }
 ```
+
+Un proveedor OIDC de GitHub por cuenta y dos roles:
+
+- `<app-short>-github-backend-deploy`, que solo se puede asumir desde `repo:<GITHUB_ORG>/<app>:environment:<stage>` de los stages que viven en esa cuenta.
+- `<app-short>-github-frontend-deploy`, igual para el repositorio del frontend, con permiso únicamente de `s3:PutObject`/`DeleteObject` sobre el bucket web y `cloudfront:CreateInvalidation` sobre la distribución.
+
+El subject de OIDC es el **environment**, no la rama. Por eso qa y prod pueden exigir revisores en GitHub y, a la vez, el role no se puede asumir desde un pull request.
+
+### 16.10 Hallazgos de cdk-nag que se aceptan
+
+```ts
+// infra/lib/nag.ts
+import { Aspects, type IAspect, Stack, Validations } from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import type { IConstruct } from 'constructs';
+// Misma normalización que usa la regla IAM5 para construir el id de cada hallazgo.
+import { flattenCfnReference } from 'cdk-nag/lib/utils/flatten-cfn-reference';
+import type { StageConfig } from './config';
+
+/**
+ * Hallazgos de cdk-nag (AwsSolutions) aceptados a propósito, con su razón.
+ * Todo lo que no está aquí es un error de síntesis: el CI falla (17.3).
+ * Revisar esta lista en cada auditoría; no añadir entradas sin explicación.
+ */
+export function acknowledgeNagFindings(stacks: Stack[], cfg: StageConfig): void {
+  const ack = (id: string, reason: string) =>
+    stacks.forEach((s) => Validations.of(s).acknowledge({ id, reason }));
+
+  for (const managed of [
+    'AWSLambdaBasicExecutionRole',
+    'AWSLambdaVPCAccessExecutionRole',
+    'AWSCodeDeployRoleForLambdaLimited',
+  ]) {
+    ack(
+      `AwsSolutions-IAM4[Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/${managed}]`,
+      'Política gestionada de AWS mínima (logs y ENIs de VPC de Lambda; CodeDeploy limitado a Lambda para el canary). Es la recomendada por AWS.',
+    );
+  }
+  ack(
+    'AwsSolutions-SMG4',
+    'Secreto del App Client de Cognito y secreto de origen de CloudFront: sin rotación automática nativa. Procedimiento de rotación manual en 23.6.',
+  );
+  ack(
+    'AwsSolutions-RDS11',
+    'Puerto por defecto de PostgreSQL: la base no tiene ruta a internet y solo admite tráfico de los security groups del proxy y del migrator.',
+  );
+  ack(
+    'AwsSolutions-APIG4',
+    'La autorización se hace en la aplicación (JwtAuthGuard + RolesGuard). API Gateway solo acepta tráfico de CloudFront (cabecera secreta) detrás de WAF.',
+  );
+  if (cfg.stage !== 'prod') {
+    ack('AwsSolutions-RDS3', 'Multi-AZ solo en prod (decisión de costo para dev/qa).');
+    ack(
+      'AwsSolutions-RDS10',
+      'Protección contra borrado solo en prod: dev/qa se recrean desde cero.',
+    );
+  }
+  if (cfg.auth.featurePlan !== 'PLUS') {
+    ack(
+      'AwsSolutions-COG8',
+      'Plan ESSENTIALS elegido por costo; la protección contra fuerza bruta la da WAF (límite en /api/auth/*). Pasar a PLUS si el riesgo lo justifica (Anexo A).',
+    );
+  }
+  if (!cfg.geoAllowList.length) {
+    ack(
+      'AwsSolutions-CFR1',
+      'Sin restricción geográfica: pendiente de decisión de negocio (Anexo A). Configurable con geoAllowList.',
+    );
+  }
+}
+
+const IAM5_REASON =
+  'Comodines generados por los grant*() de CDK y acotados al recurso: objetos de un bucket concreto (bucket/*), ' +
+  'X-Ray (no admite ARN de recurso), KMS condicionado a kms:ViaService y reglas de GuardDuty por prefijo. ' +
+  'Revisado en la auditoría de 23.7; un comodín sobre "*" con acciones de escritura debe justificarse aparte.';
+
+/**
+ * cdk-nag 3 exige reconocer cada comodín de IAM5 por separado ("AwsSolutions-IAM5[Action::s3:List*]").
+ * Este Aspect calcula esos ids con la misma lógica que la regla y los reconoce con IAM5_REASON.
+ * Las demás reglas siguen bloqueando la síntesis.
+ */
+class AcknowledgeIamWildcards implements IAspect {
+  visit(node: IConstruct): void {
+    if (!(node instanceof iam.CfnPolicy || node instanceof iam.CfnManagedPolicy)) return;
+    const doc = Stack.of(node).resolve(node.policyDocument) as {
+      Statement?: Array<Record<string, unknown>>;
+    };
+    const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : v === undefined ? [] : [v]);
+    for (const st of doc.Statement ?? []) {
+      if (st.Effect !== 'Allow') continue;
+      const findings = [
+        ...list(st.Action)
+          .filter((a): a is string => typeof a === 'string' && a.includes('*'))
+          .map((a) => `Action::${a}`),
+        ...list(st.Resource)
+          .map((r) => flattenCfnReference(r))
+          .filter((r) => r.includes('*'))
+          .map((r) => `Resource::${r}`),
+      ];
+      for (const f of findings)
+        Validations.of(node).acknowledge({ id: `AwsSolutions-IAM5[${f}]`, reason: IAM5_REASON });
+    }
+  }
+}
+
+export function acknowledgeIamWildcards(stacks: Stack[]): void {
+  stacks.forEach((s) => Aspects.of(s).add(new AcknowledgeIamWildcards()));
+}
+```
+
+Cada aceptación lleva el id del hallazgo y la razón. Las que hay, y por qué no se "arreglan" quitando la línea:
+
+| Id | Qué es | Por qué se acepta |
+|---|---|---|
+| `IAM4` | Políticas gestionadas de AWS (`AWSLambdaBasicExecutionRole`, `AWSLambdaVPCAccessExecutionRole`, la de CodeDeploy en prod) | Reescribirlas a mano duplica un documento que AWS mantiene. El id del hallazgo contiene el placeholder literal `<AWS::Partition>`: hay que copiarlo así, no sustituirlo por `aws` |
+| `IAM5` | Algún `Resource: "*"` que CDK genera en logs y en X-Ray | Un Aspect recorre el template y emite la aceptación por cada recurso, usando la misma función con la que cdk-nag aplana las referencias. Aceptar "el stack entero" no casa con el id, que incluye la ruta del recurso |
+| `SMG4` | El secreto de Cognito y el de `x-origin-verify` no rotan solos | Rotarlos exige un paso en la aplicación (el client secret de Cognito no lo rota Secrets Manager contra el user pool). Rotación manual documentada, no una Lambda de rotación a medias |
+| `RDS11` | Puerto 5432 por defecto | Cambiarlo no aporta con el security group cerrado a dos orígenes, y rompe todos los ejemplos y el health check |
+| `APIG4` | La ruta no tiene autorizador de API Gateway | La autorización es el JWT de la cookie, validado en la app, porque el autorizador de API Gateway no lee esa cookie con la misma semántica |
+| `COG8` | Plan Essentials en lugar de Plus | Decisión de coste (Anexo A). El switch está en `config.ts` |
+| `CFR1` | CloudFront sin restricción geográfica | Solo dev y qa. Prod lleva `geoAllowList: ['PE']` y no acepta `CFR1` |
+| `RDS3`, `RDS10` | Sin Multi-AZ y sin deletion protection | Solo se aceptan en dev y qa. En prod el synth no los acepta: la config los enciende |
+
+`AwsSolutionsChecks` se registra con `Validations.of(app).addPlugins(...)`. En cdk-nag 3 **ya no es un Aspect** (`visit` no existe); añadirlo con `Aspects.of` falla al sintetizar.
+
+### 16.11 Synth sin cuenta
+
+```bash
+# scripts/synth-check.sh
+#!/usr/bin/env bash
+# Sintetiza infra/ con valores ficticios en lugar de los marcadores (verificación sin AWS).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+rm -rf infra-synth && mkdir infra-synth
+cp -r infra/bin infra/lib infra/cdk.json infra/tsconfig.json infra/package.json infra-synth/
+ln -s ../infra/node_modules infra-synth/node_modules
+REGION="${REGION:-sa-east-1}"
+grep -rl '<' infra-synth/bin infra-synth/lib | xargs sed -i "s/<REGION>/${REGION}/g; s/<HOSTED_ZONE_ID>/Z0123456789ABCDEFGHIJ/g; s/<DOMINIO_BASE>/example.com/g; s/<ALERT_EMAIL>/alerts@example.com/g; s#<SENTRY_DSN_BACKEND>#https://public@o0.ingest.sentry.io/0#g; s/<GITHUB_ORG>/ANKASAFI/g; s/<app-frontend>/propia-frontend/g; s/<app-short>/propia/g; s/<app_snake>/propia/g; s/<app>/propia-backend/g; s/<org>/anka/g; s/<ACCOUNT_NONPROD>/111111111111/g; s/<ACCOUNT_PROD>/222222222222/g; s/<ROL_A>/Inversionista/g; s/<ROL_B>/Admin/g; s/<ROL_C>/Tesoreria/g; s/<ROL_D>/Operaciones/g"
+cd infra-synth
+npx tsc -p tsconfig.json
+export CDK_DISABLE_VERSION_CHECK=1
+for stage in dev qa prod; do npx cdk synth --quiet -c stage=$stage -o cdk.out.$stage; done
+npx cdk synth --quiet -c ci=nonprod -o cdk.out.ci-nonprod
+npx cdk synth --quiet -c ci=prod -o cdk.out.ci-prod
+```
+
+Este script es la excepción a la regla de "sustituir marcadores en todo el archivo". La parte **izquierda** de cada `s///` tiene que seguir siendo el texto del marcador (`<org>`, `<app-short>`, …) porque opera sobre una copia de `infra/` que todavía los contiene. La parte derecha son los valores ficticios con los que se verificó este documento. No le pases un reemplazo global de marcadores: convertirías `s/<org>/…` en `s/anka/…` y el script dejaría de encontrar nada.
+
+En el repositorio ya sustituido no hace falta: `pnpm --dir infra cdk synth -c stage=dev` sintetiza directo. En CI se usa esa forma (17.1), porque el código que corre en CI ya tiene las cuentas y el dominio reales.
+
+---
+## 17. CI/CD
+
+🆕 **V2.** Un artefacto se construye una vez en el job `verify` y se promueve `dev → qa → prod`. No se recompila por stage. Lo que cambia entre stages es la configuración que CDK lee de `config.ts` y los secretos de cada cuenta.
+
+### 17.1 Verificación
+
+🆕 **V2.1** en los pasos de contrato, SBOM, procedencia y auditoría de workflows, y en el formato de los `uses:`. Toda acción va fijada por el SHA del commit, con la versión en un comentario. Un tag (`@v5`) lo puede mover quien controle el repositorio de la acción, y el job lo ejecutaría con permisos de OIDC sobre la cuenta. Dependabot (`github-actions`) actualiza el SHA y el comentario juntos. Los SHA son los de la última versión de cada major el 2026-10-08. Las majors siguientes (checkout 7, setup-node 7, upload-artifact 7…) las propone Dependabot en su propio PR.
 
 ```yaml
 # .github/workflows/ci.yml
-      - uses: actions/setup-node@v4
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+    # labeled/unlabeled: la etiqueta contract-breaking cambia el resultado del job.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # En main no se cancela un despliegue a medias; en PRs sí se cancela la ejecución vieja.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verificar y construir
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Firma de la procedencia del artefacto. El paso solo corre en push a main.
+      id-token: write
+      attestations: write
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME_TEST: app_test
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          node-version: '20'
-          cache: npm
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:e2e:cov
+      - run: pnpm build && pnpm bundle
+      - name: Contrato OpenAPI al día
+        env:
+          NODE_ENV: test
+          STAGE: test
+          APP_ORIGIN: http://127.0.0.1:4200
+          DOCS_BUCKET: ci
+          COGNITO_USER_POOL_ID: ci
+          COGNITO_CLIENT_ID: ci
+          COGNITO_CLIENT_SECRET: ci
+          DB_NAME: app_test
+          OPENAPI_OUT: openapi/openapi.json
+        run: |
+          node dist/main.js
+          # status y no diff: también falla si el archivo nunca se commiteó.
+          if [ -n "$(git status --porcelain -- openapi/openapi.json)" ]; then
+            git diff -- openapi/openapi.json | head -50
+            echo "::error file=openapi/openapi.json::El contrato commiteado no es el que sale del código. Corre pnpm openapi y commitea el archivo."
+            exit 1
+          fi
+      - name: Contrato de la rama base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+          if ! git show "origin/${BASE_REF}:openapi/openapi.json" > openapi-base.json 2>/dev/null; then
+            echo '{"openapi":"3.0.0","info":{"title":"sin contrato previo","version":"0"},"paths":{}}' > openapi-base.json
+          fi
+      - name: Sin cambios incompatibles en el contrato
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'contract-breaking')
+        uses: oasdiff/oasdiff-action/breaking@b9325c9e0a27ab65b0da3b766522cedec6be81dc # v0.1.18
+        with:
+          # Rutas dentro del workspace: es una acción Docker y no ve el /tmp del runner.
+          base: openapi-base.json
+          revision: openapi/openapi.json
+          fail-on: ERR
+          # El contrato no sale de CI y el job no necesita permiso para comentar el PR.
+          review: 'false'
+          github-token: ''
+      - name: cdk synth + cdk-nag (los 3 stages)
+        working-directory: infra
+        run: for s in dev qa prod; do pnpm cdk synth --quiet -c stage=$s -o cdk.out.$s; done
+      - name: Manifiesto del release
+        run: find .lambda openapi -type f -print0 | sort -z | xargs -0 sha256sum > release.sha256
+      - name: SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - name: Procedencia firmada del manifiesto
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            .lambda/
+            openapi/openapi.json
+            release.sha256
+            sbom.spdx.json
+          # Desde la v4.4, todo lo que cuelga de una carpeta con punto (.lambda/) se excluye
+          # salvo que se pida. Sin esto el artefacto sale sin las Lambdas.
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+  workflows:
+    name: Auditar workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: '1.30.1'
+          # Sin subir SARIF: un hallazgo falla el job en lugar de quedarse en la pestaña Security.
+          advanced-security: false
+
+  deploy-dev:
+    if: github.event_name == 'push'
+    needs: [verify, workflows]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      stage: dev
+      account: '<ACCOUNT_NONPROD>'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+
+  deploy-qa:
+    needs: deploy-dev
+    uses: ./.github/workflows/deploy.yml
+    with:
+      stage: qa
+      account: '<ACCOUNT_NONPROD>'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+
+  deploy-prod:
+    needs: deploy-qa
+    uses: ./.github/workflows/deploy.yml
+    with:
+      stage: prod
+      account: '<ACCOUNT_PROD>'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
 ```
+
+El job `verify` corre en cada pull request y en cada push a `main`:
+
+1. `pnpm install --frozen-lockfile`
+2. `pnpm audit --prod --audit-level high`
+3. lint, typecheck, unitarios
+4. e2e con cobertura, contra el servicio `postgres:17`
+5. `pnpm build && pnpm bundle`
+6. `node dist/main.js` con `OPENAPI_OUT=openapi/openapi.json`, y falla si el archivo commiteado no coincide (17.4)
+7. En un PR, `oasdiff breaking` contra el contrato de la rama base. Falla con un cambio incompatible salvo que el PR lleve la etiqueta `contract-breaking`
+8. `cdk synth` de dev, qa y prod dentro de `infra/` (el código de CI ya no tiene marcadores)
+9. `release.sha256`: el sha256 de cada archivo de `.lambda/` y `openapi/`. Es lo que se firma
+10. SBOM SPDX del repositorio (`sbom.spdx.json`), con Syft
+11. En push a `main`, la attestation de procedencia de `release.sha256` (Sigstore, firmada con el OIDC del job). Gratis en repositorios públicos; en uno privado exige GitHub Enterprise Cloud
+12. Sube `.lambda/`, `openapi/openapi.json`, el manifiesto y el SBOM como artefacto `release-<sha>`, retención 30 días. `include-hidden-files: true` es obligatorio: `.lambda/` empieza por punto y `upload-artifact` 4.4+ lo excluiría entero (la v2.0 de este documento no lo llevaba)
+
+El job `workflows` corre [zizmor](https://docs.zizmor.sh) sobre `.github/`: inyección de plantillas en `run:`, credenciales persistidas por `actions/checkout`, permisos de más, acciones sin fijar. Por eso todos los checkouts llevan `persist-credentials: false`, y las expresiones `${{ }}` que vienen del evento (`github.base_ref`) entran al shell por `env:` y no interpoladas en el script. Si zizmor marca algo que es así a propósito, se justifica en `.github/zizmor.yml` en el mismo PR. No se baja `min-severity` para que pase. Los deploys esperan a este job.
+
+`cdk synth` en este job exige que los marcadores de `infra/` estén sustituidos. Si se commitea un `<ACCOUNT_NONPROD>` literal, el synth falla aquí, que es lo que se quiere.
+
+CodeQL con el suite `security-extended` en cada PR y los lunes:
 
 ```yaml
-# serverless.yml
-provider:
-  runtime: nodejs20.x
+# .github/workflows/codeql.yml
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
 ```
 
+CodeQL va en la v4: GitHub retira la v3 en diciembre de 2026.
+
+Dependabot, semanal, agrupado para que no abra un PR por cada paquete de `@aws-sdk`:
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 10
+    groups:
+      aws-sdk: { patterns: ['@aws-sdk/*'] }
+      nestjs: { patterns: ['@nestjs/*'] }
+      cdk: { patterns: ['aws-cdk', 'aws-cdk-lib', 'constructs', 'cdk-nag'] }
+      dev-tooling:
+        dependency-type: development
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: /infra
+    schedule: { interval: weekly, day: monday }
+    groups:
+      cdk: { patterns: ['*'] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    groups:
+      actions: { patterns: ['*'] }
 ```
-.nvmrc
-20
+
+Con los `uses:` fijados por SHA, Dependabot reescribe el SHA y el comentario `# vX.Y.Z` en el mismo PR. El comentario es lo único que le dice a quien revisa qué versión hay detrás del SHA: no se omite.
+
+`pnpm-workspace.yaml` aprueba los scripts de instalación de `@swc/core` y `esbuild`, y niega el de `@scarf/scarf`. pnpm 12 aborta el install si un paquete quiere correr un script que no está en esa lista (`ERR_PNPM_IGNORED_BUILDS`). Cuando entre una dependencia nueva que necesite compilar, se añade aquí en el mismo PR, no se usa `--ignore-scripts` a ciegas.
+
+### 17.2 Promoción
+
+```yaml
+# .github/workflows/deploy.yml
+name: Desplegar stage
+
+on:
+  workflow_call:
+    inputs:
+      stage:
+        required: true
+        type: string
+      account:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: read
+
+jobs:
+  deploy:
+    name: Desplegar ${{ inputs.stage }}
+    runs-on: ubuntu-latest
+    # El GitHub Environment define quién aprueba (qa y prod exigen revisores) y
+    # es parte de la confianza OIDC: solo este environment puede asumir el rol.
+    environment:
+      name: ${{ inputs.stage }}
+      url: ${{ steps.smoke.outputs.url }}
+    timeout-minutes: 45
+    concurrency:
+      group: deploy-${{ inputs.stage }}
+      cancel-in-progress: false
+    env:
+      STAGE: ${{ inputs.stage }}
+      RELEASE: ${{ github.sha }}
+      CDK_DISABLE_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter infra
+      # El MISMO bundle que se verificó en el job `verify`: no se recompila por stage.
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-${{ github.sha }}
+      - name: El artefacto es el que firmó CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify release.sha256 --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+          sha256sum --check --quiet release.sha256
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account }}:role/<app-short>-github-backend-deploy
+          aws-region: <REGION>
+      - name: 1. Infraestructura base y Lambda migrator
+        working-directory: infra
+        run: |
+          P="<app-short>-${STAGE}"
+          pnpm cdk deploy -c stage="$STAGE" --require-approval never \
+            "$P-alerts" "$P-storage" "$P-migrator"
+      - name: 2. Migraciones (antes de publicar el código nuevo)
+        run: bash scripts/ci/invoke-migrator.sh "$STAGE" migrate
+      - name: 3. API, borde y web (canary en prod)
+        working-directory: infra
+        run: pnpm cdk deploy -c stage="$STAGE" --require-approval never --all
+      - name: 4. Smoke test
+        id: smoke
+        run: bash scripts/ci/smoke.sh "$STAGE"
 ```
 
-Añade un `.nvmrc` con `20` para que `nvm use` / `fnm use` sin argumentos haga lo correcto. Cuando migres a `nodejs22.x`, cambia los cuatro a la vez, en un único commit.
+`dev` arranca solo, al llegar un push a `main`. `qa` espera a que `dev` termine y a que un revisor apruebe el Environment `qa`. `prod` igual con el Environment `prod`. Esos Environments son también el subject OIDC: el job no puede asumir el rol de la cuenta si alguien quita el `environment:` del workflow.
 
-### 19.7 Incluir todas las funciones en el script de despliegue
+Dentro de un stage, el orden es fijo:
 
-**Qué hace el original.** `scripts/ci/deploy-functions.sh` termina con:
+0. `gh attestation verify` sobre `release.sha256` y `sha256sum --check`. El zip que va a la cuenta es el que construyó `ci.yml` en este repositorio, y ningún archivo cambió desde la firma. Si alguien sube a mano un artefacto con el mismo nombre, el deploy se detiene aquí.
+1. `cdk deploy` de `alerts`, `storage` y `migrator`. La alarma existe antes de que haya algo que pueda fallar. El bucket y la cola existen antes de que la API reciba tráfico. El migrator existe antes de que se le invoque.
+2. `scripts/ci/invoke-migrator.sh <stage> migrate`. Si la migración falla, el workflow se detiene y el alias `live` sigue apuntando al código viejo, compatible con el esquema viejo.
+3. `cdk deploy --all`, que mueve el alias. En prod lo mueve CodeDeploy en canary.
+4. `scripts/ci/smoke.sh <stage>`, a través de CloudFront, no contra el API Gateway directo. Así se prueba el secreto de origen, el certificado y el enrutado de `/api/*`.
 
 ```bash
-deploy_fn main         MainLambdaFunction
-deploy_fn ingestWorker IngestWorkerLambdaFunction
-```
+# scripts/ci/invoke-migrator.sh
+#!/usr/bin/env bash
+# Invoca la Lambda migrator del stage y falla si la función devolvió error.
+# Uso: bash scripts/ci/invoke-migrator.sh <stage> <migrate|status|seed>
+set -euo pipefail
+STAGE="${1:?stage}"
+ACTION="${2:-migrate}"
+FN=$(aws ssm get-parameter --name "/<org>/<app-short>/${STAGE}/migrator-function" --query Parameter.Value --output text)
 
-Pero `serverless.yml` declara **tres** funciones: `main`, `ingestWorker` y `tipoCambioSync`.
+echo "Invocando ${FN} con action=${ACTION}"
+META=$(aws lambda invoke \
+  --function-name "$FN" \
+  --cli-binary-format raw-in-base64-out \
+  --payload "{\"action\":\"${ACTION}\"}" \
+  --cli-read-timeout 330 \
+  --query '{status: StatusCode, error: FunctionError}' \
+  --output json \
+  /tmp/migrator-out.json)
 
-**Por qué está mal.** La tercera función **nunca se actualiza**. Su código es el que tuviera en el último `serverless deploy` completo, que puede ser de hace meses. Como corre por cron y su salida va a CloudWatch Logs y no a una pantalla, nadie se entera: el síntoma es que arreglas un bug en el job programado, haces merge, el CI pasa en verde, y el bug sigue ahí. Es el peor tipo de fallo, porque el pipeline te dice que todo salió bien.
-
-Es además **frágil por construcción**: el script enumera funciones a mano, así que cada función nueva requiere acordarse de tocar el script.
-
-**El cambio.** Derivar la lista del propio `serverless.yml` en vez de escribirla:
-
-```bash
-# scripts/ci/deploy-functions.sh (fragmento)
-
-# Pares "<nombre-función> <LogicalId>". Mantener sincronizado con serverless.yml.
-# El LogicalId que genera Serverless es: <nombreCapitalizado>LambdaFunction
-FUNCTIONS=(
-  "main:MainLambdaFunction"
-  "ingestWorker:IngestWorkerLambdaFunction"
-  "<job>Sync:<Job>SyncLambdaFunction"
-)
-
-for entry in "${FUNCTIONS[@]}"; do
-  deploy_fn "${entry%%:*}" "${entry##*:}"
-done
-```
-
-Y, mejor aún, una verificación que falle si alguien añade una función a `serverless.yml` y se olvida del script:
-
-```bash
-# Comprobar que no hay funciones en serverless.yml ausentes de FUNCTIONS[].
-declared="$(npx serverless@3 print --stage "$STAGE" --format json 2>/dev/null \
-  | jq -r '.functions | keys[]' | sort)"
-covered="$(printf '%s\n' "${FUNCTIONS[@]}" | cut -d: -f1 | sort)"
-missing="$(comm -23 <(echo "$declared") <(echo "$covered"))"
-if [ -n "$missing" ]; then
-  echo "::error::Funciones en serverless.yml no cubiertas por el script: $missing"
+echo "Respuesta: $(cat /tmp/migrator-out.json)"
+if [ "$(echo "$META" | jq -r '.error // empty')" != "" ]; then
+  echo "::error::La Lambda migrator falló. El código nuevo NO se publicó; el esquema y la API siguen como estaban."
   exit 1
 fi
 ```
 
-### 19.8 Jest
-
-**Qué hace el original.** No hay framework de tests. Hay nueve scripts que ejecutan archivos sueltos con `ts-node`:
-
-```jsonc
-"test:rating":     "ts-node -r tsconfig-paths/register src/test/test-rating.ts",
-"test:domain":     "ts-node -r tsconfig-paths/register src/test/test-domain.ts",
-"test:e2e-local":  "ts-node -r tsconfig-paths/register src/test/e2e-local.ts",
-// ...y seis más
-```
-
-con aserciones escritas a mano:
-
-```ts
-function expect(label: string, actual: unknown, expected: unknown) {
-  const ok = actual === expected;
-  console.log(`${ok ? 'OK ' : 'FAIL'} ${label}: ${actual}`);
-  if (!ok) failures++;
-}
-```
-
-Y el CI **no ejecuta ninguno**.
-
-**Por qué está mal.** Sin un runner de verdad no hay descubrimiento automático de tests (hay que acordarse de añadir cada script al `package.json`), no hay aislamiento entre casos, no hay mocking, no hay cobertura, no hay reporte estructurado, y no hay código de salida fiable salvo el que escribas tú. Pero el problema de fondo es más simple: **si el CI no los corre, no existen**. Un test que nadie ejecuta es documentación que envejece.
-
-**El cambio.** Jest, con la configuración de la sección 6 y los specs de la sección 15, más el gate en CI:
-
-```jsonc
-// package.json (fragmento)
-"scripts": {
-  "test": "jest",
-  "test:watch": "jest --watch",
-  "test:cov": "jest --coverage",
-  "test:e2e": "jest --config ./test/jest-e2e.json"
-}
-```
-
-```yaml
-# .github/workflows/ci.yml (fragmento)
-      - name: Unit tests
-        run: npm test -- --ci --runInBand
-```
-
-Los scripts de `ts-node` que son **herramientas de inspección manual** (por ejemplo, ejecutar el pipeline de ingesta contra PDFs reales y mirar la salida) tienen valor y pueden quedarse, pero muévelos a `scripts/` y renómbralos para que no parezcan tests: `npm run inspect:ingest`, no `npm run test:e2e-local`. Lo que se llama `test` debe poder fallar el build.
-
-### 19.9 Eliminar el Dockerfile o alinearlo
-
-**Qué hace el original.** Existe un `Dockerfile`:
-
-```dockerfile
-FROM node:26-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY . .
-RUN npm run build
-CMD ["node", "dist/main"]
-```
-
-Nada en el repo lo usa: el despliegue es ZIP sobre Lambda, el CI no construye imágenes, y no hay registro de contenedores.
-
-**Por qué está mal.** Es **infraestructura muerta que miente**. Un desarrollador nuevo lo ve y asume que el despliegue es por contenedor. Además tiene tres defectos que lo harían fallar si alguien lo intentara:
-
-1. `node:26-alpine` contradice el runtime `nodejs20.x` (ver 19.6).
-2. `npm ci --only=production` está **deprecado** (la forma actual es `--omit=dev`) y, sobre todo, es **incorrecto aquí**: instala solo dependencias de producción y luego ejecuta `npm run build`, que necesita `@nestjs/cli` y `typescript`, que son `devDependencies`. El build falla con `nest: not found`.
-3. No es multi-stage, así que la imagen final arrastra el código fuente, los `node_modules` completos y la caché de npm.
-
-**El cambio.** Decide y sé coherente:
-
-**Opción A (recomendada): borrarlo.**
-
 ```bash
-git rm Dockerfile .dockerignore
+# scripts/ci/smoke.sh
+#!/usr/bin/env bash
+# Comprueba, a través de CloudFront (el camino real del usuario), que el stage responde
+# con el release recién desplegado y que las protecciones básicas están activas.
+# Uso: bash scripts/ci/smoke.sh <stage>
+set -euo pipefail
+STAGE="${1:?stage}"
+URL=$(aws ssm get-parameter --name "/<org>/<app-short>/${STAGE}/web/url" --query Parameter.Value --output text)
+echo "url=${URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+
+fail() { echo "::error::$1"; exit 1; }
+
+# 1. La API arranca, llega a la base y sirve el release esperado (reintenta: el canary tarda).
+for _ in $(seq 1 30); do
+  BODY=$(curl -fsS "${URL}/api/health" || true)
+  [ "$(echo "$BODY" | jq -r '.release // empty')" = "${RELEASE}" ] && break
+  sleep 10
+done
+echo "health: ${BODY}"
+[ "$(echo "$BODY" | jq -r '.release // empty')" = "${RELEASE}" ] || fail "/api/health no sirve el release ${RELEASE}"
+
+# 2. Ruta protegida sin sesión → 401 (la ruta existe y el guard está activo).
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${URL}/api/auth/me")
+[ "$CODE" = "401" ] || fail "/api/auth/me devolvió ${CODE}, se esperaba 401"
+
+# 3. El 404 de la API es JSON, no el index.html de la SPA (16.6).
+CT=$(curl -s -o /dev/null -w '%{content_type}' "${URL}/api/no-existe")
+[[ "$CT" == application/json* ]] || fail "/api/no-existe devolvió ${CT}: CloudFront está reescribiendo errores de la API"
+
+# 4. Una ruta profunda de la SPA devuelve la app (enrutado SPA en CloudFront).
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${URL}/una/ruta/profunda")
+[ "$CODE" = "200" ] || fail "La ruta profunda de la SPA devolvió ${CODE}"
+
+# 5. Cabeceras de seguridad del HTML.
+HEADERS=$(curl -sI "${URL}/")
+echo "$HEADERS" | grep -qi '^strict-transport-security:' || fail "Falta HSTS"
+echo "$HEADERS" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" || fail "Falta la CSP de CloudFront"
+
+# 6. La otra mitad de la CSP: la meta con script-src que escribe el build del frontend (16.8).
+curl -s "${URL}/" | grep -qi "http-equiv=\"Content-Security-Policy\"[^>]*script-src" \
+  || fail "El index.html no lleva la meta CSP con script-src: el build del frontend no pasó por scripts/csp.mjs"
+
+echo "Smoke test OK en ${URL} (release ${RELEASE})"
 ```
 
-Si el despliegue es Lambda-ZIP, un Dockerfile sin dueño solo genera confusión.
+El smoke exige `GET /api/health` con `status: ok` a través de la URL publicada en SSM (`web/url`). Un 200 del HTML del SPA no cuenta.
 
-**Opción B: si de verdad quieres contenedor** (por ejemplo, para correr el backend en local sin instalar Node, o para una futura migración a ECS/Fargate), escríbelo bien:
+### 17.3 Qué hay que crear a mano, una vez
 
-```dockerfile
-# Dockerfile
-# Multi-stage: la imagen final no contiene ni fuentes ni devDependencies.
+Los GitHub Environments `dev`, `qa` y `prod` en los dos repositorios. `qa` y `prod` con revisores obligatorios. El workflow no los crea.
 
-# --- build ---
-FROM node:20-alpine AS build
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci                       # con devDependencies: `nest build` las necesita
-COPY . .
-RUN npm run build
-
-# --- runtime ---
-FROM node:20-alpine AS runtime
-WORKDIR /app
-ENV NODE_ENV=production
-COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-COPY --from=build /app/dist ./dist
-USER node
-EXPOSE 3000
-CMD ["node", "dist/main"]
-```
+El stack `ci` de cada cuenta, desplegado desde una sesión con credenciales de administrador de esa cuenta, **antes** del primer `cdk deploy` de un stage:
 
 ```
-# .dockerignore
-node_modules
-dist
-.git
-.env
-.env.*
-coverage
-.local-uploads
-*.md
+cd infra && pnpm cdk deploy -c ci=nonprod
+# en la cuenta de prod, con otro perfil:
+pnpm cdk deploy -c ci=prod
 ```
 
-En cualquier caso, **no dejes la versión actual**.
+A partir de ese momento el pipeline asume el rol y no vuelve a hacer falta una clave de larga duración.
 
-### 19.10 `ssl` condicional en la configuración de base de datos
+🆕 **V2.1.** También a mano, una vez por repositorio: la etiqueta `contract-breaking` (17.4) y la protección de `main` que exige los checks `Verificar y construir` y `Auditar workflows` antes de fusionar.
 
-**Qué hace el original.**
+### 17.4 Contrato OpenAPI
 
-```ts
-// src/config/database.config.ts
-ssl: { rejectUnauthorized: false },
-```
+🆕 **V2.1.** `openapi/openapi.json` se commitea. Es la frontera entre los dos repositorios: el frontend genera sus tipos desde ese archivo en `main` (sección 11.9 del blueprint del frontend), así que un cambio de contrato se ve en el diff del PR que lo provoca.
 
-Sin condición alguna.
+| Quién | Qué hace | Qué rompe |
+|---|---|---|
+| Quien cambia un controlador o un DTO | `pnpm openapi` y commitea `openapi/openapi.json` en el mismo PR | Si lo olvida, el paso "Contrato OpenAPI al día" falla |
+| CI del backend, en el PR | `oasdiff breaking` entre el contrato de la rama base y el del PR | Quitar una ruta o un campo de respuesta, volver obligatorio un campo de entrada, estrechar un enum de entrada |
+| CI del frontend, en cada PR | Regenera `types/api.gen.ts` desde `main` del backend y falla si cambió | El frontend se entera del cambio en su siguiente PR, y `pnpm typecheck` señala cada llamada afectada |
 
-**Por qué está mal.** Fuerza TLS **siempre**. Contra RDS es correcto. Contra un PostgreSQL local es un obstáculo: el contenedor oficial `postgres:16` y la instalación de Homebrew en macOS **no tienen SSL habilitado**, y la conexión falla con:
+Un cambio incompatible a propósito lleva la etiqueta `contract-breaking` en el PR. Es la señal de que hay que coordinar el despliegue: primero el frontend que tolera las dos formas, después el backend. Es el mismo expandir y contraer de las migraciones (11.4).
 
-```
-error: The server does not support SSL connections
-```
+El `info.version` del documento es `'1'` fijo (8.2). Si saliera del SHA, el archivo cambiaría en cada commit y el paso de "al día" no podría pasar nunca. El SHA desplegado se lee en `/api/health`.
 
-El repo original no sufre esto porque el `install.sh` instala el PostgreSQL de Debian, que **sí** trae SSL por defecto con el certificado autofirmado `snakeoil`. Es decir: **funciona por accidente del empaquetado de Debian**, no por diseño. El `AGENTS.md` del proyecto incluso lo documenta como "no hace falta cambiar código", lo que es cierto solo para ese entorno concreto.
-
-Hay además un segundo problema, menor pero real: `rejectUnauthorized: false` **desactiva la validación del certificado**. Contra RDS eso significa que la conexión está cifrada pero no autenticada, y es vulnerable a un atacante en posición de intermediario dentro de la VPC. Se usa porque validar requiere distribuir el bundle de CA de RDS (`rds-ca-rsa2048-g1`), que es trabajo extra.
-
-**El cambio.** Hacerlo configurable:
-
-```ts
-// src/config/database.config.ts (fragmento)
-/**
- * TLS contra la base de datos.
- * - RDS exige TLS  -> DB_SSL=true  (valor por defecto)
- * - PostgreSQL local (Docker / Homebrew) no lo soporta -> DB_SSL=false
- *
- * `rejectUnauthorized: false` acepta el certificado de RDS sin validar su
- * cadena. Para validarla hay que descargar el bundle de CA de RDS y pasarlo
- * en `ca`. Ver nota en la sección 22.2.
- */
-const sslEnabled = configService.get<string>('DB_SSL') !== 'false';
-
-return {
-  // ...
-  ssl: sslEnabled ? { rejectUnauthorized: false } : false,
-};
-```
-
-Y en el esquema de Zod:
-
-```ts
-// src/config/env.validation.ts (fragmento)
-DB_SSL: z.enum(['true', 'false']).default('true'),
-```
-
-El default es `true` para que un despliegue mal configurado falle hacia el lado seguro.
-
-### 19.11 Crear la extensión `uuid-ossp` en la primera migración
-
-**Qué hace el original.** La migración `00001-...-AddSettingsAndTerms.ts` genera identificadores así:
-
-```sql
-"id" uuid NOT NULL DEFAULT uuid_generate_v4()
-```
-
-pero **ninguna migración ejecuta `CREATE EXTENSION "uuid-ossp"`**.
-
-**Por qué está mal.** `uuid_generate_v4()` es una función de la extensión `uuid-ossp`, que **no está instalada por defecto** en PostgreSQL. Sobre una base recién creada, la migración falla con:
-
-```
-error: function uuid_generate_v4() does not exist
-```
-
-El repo original no lo nota porque la base de dev se creó antes de que existiera esa migración y alguien habilitó la extensión a mano en algún momento; y en RDS, `uuid-ossp` está en la lista de extensiones disponibles pero igualmente requiere el `CREATE EXTENSION` explícito. El resultado es que **el esquema no es reproducible desde cero**, que es precisamente lo que las migraciones deberían garantizar.
-
-**El cambio.** Dos opciones; aplica una.
-
-**Opción A (compatible con PostgreSQL < 13):** habilitar la extensión en la primerísima migración.
-
-```ts
-// src/migrations/00000-<timestamp>-EnableExtensions.ts
-import { MigrationInterface, QueryRunner } from 'typeorm';
-
-export class EnableExtensions<timestamp> implements MigrationInterface {
-  name = 'EnableExtensions<timestamp>';
-
-  public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
-  }
-
-  public async down(): Promise<void> {
-    // No se elimina la extensión: otras tablas pueden depender de ella.
-  }
-}
-```
-
-Esto exige que el usuario de base de datos que corre las migraciones tenga privilegios para crear extensiones (en RDS, pertenecer a `rds_superuser`).
-
-**Opción B (recomendada en PostgreSQL ≥ 13):** usar `gen_random_uuid()`, que es **nativa** desde PostgreSQL 13 y no necesita ninguna extensión.
-
-```sql
-"id" uuid NOT NULL DEFAULT gen_random_uuid()
-```
-
-Dado que el stack fija PostgreSQL 16, la opción B es más simple y elimina la dependencia por completo. Si eliges B, asegúrate de que **todas** las migraciones usen `gen_random_uuid()` de forma consistente, y que las entidades que generan el UUID en la aplicación (`@PrimaryGeneratedColumn('uuid')`) no entren en conflicto — TypeORM genera el UUID en Node, no en la base, cuando usas ese decorador, así que el `DEFAULT` solo importa para inserciones por SQL directo (migraciones, seeds, scripts).
+La paginación es la primera víctima conocida de no tener este control: la v2.0 de los dos blueprints describía envolturas distintas (`{ items, total, limit, offset }` aquí, `{ data, meta }` en el frontend). Con el contrato generado, ese desajuste es un error de `pnpm typecheck` en el frontend y no un `undefined` en producción.
 
 ---
+## 18. Entorno de desarrollo local y Cursor Cloud
 
+### 18.1 Local
+
+Herramientas, las mismas que en CI:
+
+| Herramienta | Versión verificada |
+|---|---|
+| Node | 24.21.0 (`.nvmrc` pide `24`; `engines` exige `>=24.11.0 <25`) |
+| pnpm | 12.10.1, vía `corepack enable && corepack prepare pnpm@12.10.1 --activate` |
+| PostgreSQL | 17 |
+
+```
+createdb <app_snake>
+createdb <app_snake>_test
+cp .env.example .env
+# rellenar COGNITO_* con el pool de dev, o dejarlos y trabajar solo con la suite
+pnpm install
+pnpm migration:run
+pnpm db:seed
+pnpm start:dev
+```
+
+La API escucha en `127.0.0.1:3000`. El navegador no llama a ese puerto: llama a `http://127.0.0.1:4200/api/...` y Nuxt hace de proxy (blueprint del frontend). Las cookies salen sin el prefijo `__Host-` porque el origen es HTTP.
+
+Swagger queda en `http://127.0.0.1:3000/docs`. El contrato se regenera con `pnpm openapi`, que reescribe `openapi/openapi.json` (17.4).
+
+### 18.2 Cursor Cloud
+
+No hay `.cursor/environment.json` en el núcleo: el entorno de nube se define cuando el repositorio ya existe, y un JSON inventado aquí no se pudo ejecutar. Los comandos que el entorno tiene que dejar hechos son los de 18.1 más el servicio de PostgreSQL 17 con el usuario que el `.env` espera (`postgres` / `postgres` en la verificación). Node tiene que ser 24, no el 22 que algunas imágenes traen por defecto: `engines` hace fallar `pnpm install` si no.
+
+El directorio `.local-uploads/` es el bucket falso de local. Está en `.gitignore`.
+
+### 18.3 Lo que local no reproduce
+
+GuardDuty, el WAF, el canary, la rotación del secreto del maestro y el token IAM. Para eso está el stage `dev`, que es barato a propósito (`t4g.micro`, una NAT, sin concurrencia provisionada) y se despliega en cada merge a `main`. No se "prueba en local" el flujo de subida a S3: se prueba el sustituto de disco y, en `dev`, el camino real.
+
+---
+## 19. Correcciones obligatorias respecto al original
+
+Estas son deudas del backend del que salió la v1. El código de las secciones anteriores **ya las tiene aplicadas**. Se documentan para que nadie las reintroduzca al "acercar" el proyecto al original.
+
+### 19.1 Guard JWT global y `@Public()`
+
+El original decoraba cada controlador con `@UseGuards(JwtAuthGuard)`. Una ruta nueva nacía pública. Aquí los dos guards son globales y la excepción es `@Public()` (8.4, 9.1).
+
+### 19.2 Las migraciones no corren al arrancar la API
+
+El original llamaba a `runMigrations()` dentro del bootstrap de la Lambda. Dos contenedores arrancando a la vez se pisaban, y un error de migración se veía como un 500 de la API. Ahora solo corre la Lambda `migrator`, invocada por el CI antes de publicar código (11.6, 17.2).
+
+### 19.3 La base no es pública y la API no tiene contraseña
+
+El original exponía RDS a internet con usuario y contraseña en una variable de entorno. Aquí la instancia está en subredes aisladas, la API entra por el proxy con IAM y el único sitio con la contraseña del maestro es el migrator (7.2, 11.3, 16.4).
+
+### 19.4 Un solo prefijo de parámetros
+
+El original usaba `/<org>/<clave>` sin stage para la configuración y otro prefijo distinto para el frontend. Desplegar qa y prod en la misma cuenta era imposible sin pisarse. Todo sale bajo `/<org>/<app-short>/<stage>/` (1.2, 16.8).
+
+### 19.5 Los tres stages existen como código
+
+El original solo tenía stack de CloudFormation de `dev`, y el script de deploy improvisaba los nombres de qa y prod. Los tres están en `config.ts` y los sintetiza el CI (16.2, 17.1).
+
+### 19.6 El runtime de Node es el mismo en todas partes
+
+`.nvmrc`, `engines`, la Lambda y el `target` de esbuild dicen Node 24. El original declaraba 20 en un sitio y 18 en la imagen Docker. Node 20 en Lambda quedó deprecado el 30/04/2026.
+
+### 19.7 No hay lista manual de funciones a publicar
+
+El script del original actualizaba `main` y el worker, y se olvidaba el cron: el código del cron no se desplegaba nunca. CDK despliega todas las funciones que el stack declara (14.3).
+
+### 19.8 Los tests corren en CI contra una base real
+
+El original no tenía suite. El blueprint v1 proponía Jest; esta versión usa Vitest porque el toolchain de Nest 12 y TypeScript 6 se mueve más rápido de lo que Jest estaba siguiendo en el momento de verificar, y SWC emite la metadata de decoradores que esbuild no emite (6.8, 15).
+
+### 19.9 Sin Dockerfile
+
+Ver 6.9.
+
+### 19.10 TLS condicional
+
+`DB_SSL=false` en local, `rejectUnauthorized: true` en AWS, con el bundle de CA de Amazon en `NODE_EXTRA_CA_CERTS` (7.2, 16.7). Forzar TLS contra el PostgreSQL del portátil, o desactivarlo contra RDS, son los dos fallos simétricos.
+
+### 19.11 `gen_random_uuid()`, no `uuid-ossp`
+
+Ver 7.2. La v1 pedía crear `uuid-ossp` en la primera migración. PostgreSQL 17 ya trae `gen_random_uuid()` y `migration:generate` lo emite cuando `uuidExtension` es `pgcrypto`.
+
+### 19.12 La sesión no vive en una cookie que JavaScript pueda leer
+
+El original devolvía los tokens al frontend y el frontend los guardaba. Cualquier XSS era un robo de sesión, y además obligaba a CORS porque el front y la API estaban en orígenes distintos. Cookies `httpOnly` y un solo origen (10, 8.1).
+
+### 19.13 El refresh rota y no depende del email
+
+El original calculaba `SECRET_HASH` del refresh con el email o con el sub, según el caso, y un usuario que cambiaba el email rompía el refresco. `GetTokensFromRefreshToken` recibe el secreto del client en claro de canal (TLS) y no necesita el username (10.4).
+
+---
 ## 20. Plan de implementación ordenado
 
-Este plan es **ejecutable de arriba abajo**. Cada fase tiene un entregable, la lista de archivos a crear y un **comando de verificación** que debe pasar antes de avanzar. No saltes fases: cada una asume que la anterior funciona.
+Cada fase termina con un comando que tiene que salir bien antes de empezar la siguiente. Los marcadores se sustituyen **antes** de escribir el primer archivo (sección 1 y Anexo A); los que sigan pendientes se dejan como texto del marcador solo si el comando de la fase no los necesita.
 
-> **Antes de empezar**, confirma que tienes resueltos los prerrequisitos de la sección 3: Node 20, npm 10, PostgreSQL 16 accesible, y —para las fases 9 en adelante— los recursos de AWS (User Pool, bucket, RDS, rol OIDC).
+### Fase 0 — Repositorio y herramientas
+
+Copiar `.nvmrc`, `package.json`, `pnpm-workspace.yaml`, `infra/package.json`, los tsconfig, ESLint, Prettier, `.gitignore`, `.gitattributes`, `.env.example`.
+
+```
+corepack enable && corepack prepare pnpm@12.10.1 --activate
+node -v    # v24.x, >= 24.11
+pnpm install
+pnpm typecheck   # falla hasta que exista src/, es esperable; el install no
+```
+
+### Fase 1 — Configuración y arranque vacío
+
+Copiar `src/config/*`, `src/main.ts`, `src/configure-app.ts`, `src/app.module.ts` con los imports de módulos comentados, y un `health` provisional que no toque la base.
+
+```
+pnpm typecheck
+pnpm lint
+```
+
+### Fase 2 — Base de datos local
+
+PostgreSQL 17, las dos bases, `src/database/*`, entidades del núcleo (sin `Project` si el dominio no lo va a usar), `src/migrations/index.ts` y la migración inicial generada, más el trigger de `audit_logs` añadido a mano.
+
+```
+pnpm migration:run
+pnpm db:seed
+psql -d <app_snake> -c "\dt"
+```
+
+Tiene que verse `users`, `settings`, `user_terms_acceptances`, `audit_logs`, `documents` y `migrations`.
+
+### Fase 3 — Auth
+
+Sección 10 entera, guards de la sección 9, y la suite `test/auth*.e2e-spec.ts` con el arnés.
+
+```
+pnpm test:e2e
+```
+
+### Fase 4 — Un módulo de dominio
+
+Partir de la sección 12. Sustituir `projects` por el primer recurso real. Migración nueva, registrada en `MIGRATIONS`. Suite e2e del recurso.
+
+```
+pnpm migration:generate src/migrations/Add<Recurso>
+# leer el SQL antes de seguir
+pnpm test:e2e:cov
+```
+
+### Fase 5 — Documentos
+
+Sección 13. El procesador de dominio deja de ser el stub en el momento en que exista una regla de negocio que aplicar al archivo; mientras, el stub que marca `processed` es válido y la suite tiene que seguir pasando.
+
+```
+pnpm test:e2e
+pnpm exec vitest run src/modules/documents/presign.spec.ts
+```
+
+### Fase 6 — Lambda
+
+`lambda.ts`, `lambda-bootstrap.ts`, `lambda-migrator.ts`, `lambda-ingest.ts`, `scripts/bundle.mjs`, `scripts/lambda-smoke.mjs`.
+
+```
+pnpm build && pnpm bundle
+node scripts/lambda-smoke.mjs
+```
+
+Tiene que verse el 200 de health, el 401 de `/api/auth/me` sin cookie y el 403 sin la cabecera de origen cuando `STAGE` es `dev`.
+
+### Fase 7 — Infra y synth
+
+`infra/` completo, con los marcadores ya sustituidos por los valores reales (o por los ficticios, si todavía no hay cuenta: entonces se usa `scripts/synth-check.sh` sin tocar las partes izquierdas de los `s///`).
+
+```
+bash scripts/synth-check.sh
+# o, ya sustituido:
+cd infra && pnpm cdk synth -c stage=dev --quiet
+```
+
+Cero hallazgos de cdk-nag fuera de `nag.ts`.
+
+### Fase 8 — Pipeline
+
+Workflows, `scripts/ci/*`, Environments de GitHub, despliegue del stack `ci` en la cuenta no-prod.
+
+```
+# desde una máquina con credenciales de la cuenta, una sola vez:
+cd infra && pnpm cdk deploy -c ci=nonprod
+```
+
+El primer push a `main` despliega `dev`. Si no hay cuenta todavía, esta fase se detiene en "los YAML están copiados y `actionlint` pasa".
+
+### Fase 9 — Frontera con el frontend
+
+`pnpm openapi`, commitear `openapi/openapi.json` y confirmar que las 21 rutas del núcleo siguen presentes antes de añadir las del dominio. El frontend genera sus tipos desde ese archivo en `main` (17.4), no desde esta prosa. Crear la etiqueta `contract-breaking` en el repositorio.
 
 ---
-
-### Fase 0 — Esqueleto del repositorio
-
-**Entregable:** un proyecto Node que compila y pasa el linter, sin ninguna lógica.
-
-**Archivos a crear:**
-
-```
-package.json              (sección 4)
-tsconfig.json             (sección 6.1)
-tsconfig.build.json       (sección 6.2)
-nest-cli.json             (sección 6.3)
-eslint.config.js          (sección 6.4)
-.prettierrc               (sección 6.5)
-.gitignore                (sección 6.6)
-.gitattributes            (sección 6.7)
-.nvmrc                    -> contenido: 20
-.env.example              (sección 18.7)
-README.md
-src/main.ts               (placeholder mínimo)
-src/app.module.ts         (módulo vacío)
-```
-
-Empieza con un `app.module.ts` desnudo, solo para que compile:
-
-```ts
-// src/app.module.ts (fase 0 — se completa en la fase 2)
-import { Module } from '@nestjs/common';
-
-@Module({})
-export class AppModule {}
-```
-
-```ts
-// src/main.ts (fase 0 — se completa en la fase 2)
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  await app.listen(process.env.PORT ?? 3000);
-}
-void bootstrap();
-```
-
-**Verificación:**
-
-```bash
-node --version          # debe empezar por v20.
-npm ci
-npm run lint
-npm run build
-ls dist/main.js         # debe existir
-```
-
----
-
-### Fase 1 — Configuración y validación de entorno
-
-**Entregable:** la aplicación falla al arrancar, con un mensaje claro, si falta una variable obligatoria.
-
-**Archivos a crear:**
-
-```
-src/config/env.validation.ts        (sección 7.1)
-src/config/database.config.ts       (sección 7.2 + corrección 19.10)
-src/config/typeorm.config.ts        (sección 7.3)
-src/config/ssm-secret-error.ts      (sección 7.5)
-src/config/hydrate-ssm-secrets.ts   (sección 7.4 + corrección 19.4)
-src/config/aws-s3.client.ts         (sección 7.6)
-```
-
-Registra la validación en `app.module.ts`:
-
-```ts
-ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
-```
-
-**Verificación:**
-
-```bash
-npm run build
-
-# 1) Sin .env: debe fallar con el listado de variables faltantes.
-mv .env .env.bak 2>/dev/null || true
-node dist/main.js ; echo "exit=$?"
-# Esperado: error de validación mencionando COGNITO_USER_POOL_ID, DB_HOST, etc.
-mv .env.bak .env 2>/dev/null || true
-
-# 2) Con .env completo: arranca.
-npm run start:dev
-# Esperado: "Nest application successfully started"
-```
-
----
-
-### Fase 2 — Bootstrap HTTP completo y transversales
-
-**Entregable:** un servidor con helmet, CORS, `ValidationPipe`, filtro de excepciones, interceptor de logging y Swagger.
-
-**Archivos a crear:**
-
-```
-src/common/filters/http-exception.filter.ts      (sección 9.1)
-src/common/interceptors/logging.interceptor.ts   (sección 9.2)
-src/common/decorators/public.decorator.ts        (sección 9.4 / 19.1)
-src/common/decorators/current-user.decorator.ts  (sección 9.6)
-src/common/decorators/roles.decorator.ts         (sección 9.5)
-src/common/utils/decimal.util.ts                 (sección 9.7)
-src/main.ts                                      (sección 8.1, versión final)
-src/app.module.ts                                (sección 8.4, sin TypeORM aún)
-```
-
-Añade un controlador temporal para poder verificar:
-
-```ts
-// src/health.controller.ts (temporal, se borra en la fase 9)
-import { Controller, Get } from '@nestjs/common';
-
-@Controller('health')
-export class HealthController {
-  @Get()
-  check() {
-    return { status: 'ok', ts: new Date().toISOString() };
-  }
-}
-```
-
-**Verificación:**
-
-```bash
-npm run start:dev &
-sleep 8
-curl -s http://localhost:3000/health | jq .
-#   {"status":"ok","ts":"..."}
-
-curl -s http://localhost:3000/no-existe | jq .
-#   {"statusCode":404,"message":"Cannot GET /no-existe","timestamp":"...","path":"/no-existe"}
-
-curl -s -I http://localhost:3000/health | grep -i 'x-content-type-options'
-#   x-content-type-options: nosniff        (helmet está activo)
-
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/api
-#   200   (Swagger)
-```
-
----
-
-### Fase 3 — Capa de datos: TypeORM, primera migración y seeds
-
-**Entregable:** esquema creado desde cero sobre una base vacía, y seeds idempotentes.
-
-**Archivos a crear:**
-
-```
-src/modules/users/entities/user.entity.ts                 (sección 11.3)
-src/modules/users/entities/setting.entity.ts              (sección 11.4)
-src/modules/users/entities/user-terms-acceptance.entity.ts(sección 11.5)
-src/modules/audit/entities/audit.entity.ts                (sección 11.7)
-src/migrations/00000-<ts>-EnableExtensions.ts             (corrección 19.11, si eliges la opción A)
-src/migrations/00001-<ts>-InitialSchema.ts                (sección 11.11)
-src/database/seed.ts                                      (sección 11.14)
-src/database/seeding/seeder.module.ts                     (sección 11.17)
-src/database/seeding/seeder.service.ts                    (sección 11.16)
-src/database/seeding/settings.seed.ts                     (sección 11.15)
-```
-
-Registra `TypeOrmModule.forRootAsync({ useFactory: databaseConfig, inject: [ConfigService] })` en `app.module.ts`.
-
-**Verificación — la prueba decisiva es sobre una base VACÍA:**
-
-```bash
-# Base nueva, sin historia.
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS <db_name>_scratch;"
-sudo -u postgres psql -c "CREATE DATABASE <db_name>_scratch;"
-
-DB_NAME=<db_name>_scratch npm run migration:run
-#   Esperado: "Migration ... has been executed successfully" para cada una,
-#   SIN errores de "function uuid_generate_v4() does not exist".
-
-DB_NAME=<db_name>_scratch npm run db:seed
-DB_NAME=<db_name>_scratch npm run db:seed    # 2ª vez: debe ser idempotente
-
-sudo -u postgres psql -d <db_name>_scratch -c '\dt'
-#   Esperado: users, settings, user_terms_acceptances, audit_logs, migrations
-
-sudo -u postgres psql -d <db_name>_scratch -c 'SELECT key FROM settings;'
-#   Esperado: las claves de DEFAULT_SETTINGS, sin duplicados.
-
-# Y que se puede revertir:
-DB_NAME=<db_name>_scratch npm run migration:revert
-```
-
-> Si `migration:run` falla sobre una base vacía, **para aquí y arréglalo**. Un esquema que solo se puede construir a partir de una base preexistente no es reproducible, y ese defecto se arrastra a todos los stages.
-
----
-
-### Fase 4 — Autenticación con Cognito
-
-**Entregable:** login, refresh, registro y rutas protegidas funcionando contra el User Pool real.
-
-**Archivos a crear:**
-
-```
-src/modules/auth/auth.module.ts          (sección 10.6)
-src/modules/auth/auth.service.ts         (sección 10.4)
-src/modules/auth/auth.controller.ts      (sección 10.7)
-src/modules/auth/jwt.strategy.ts         (sección 10.5)
-src/modules/auth/dto/*.ts                (sección 10.8, los 8 DTOs)
-src/common/guards/jwt-auth.guard.ts      (sección 9.3 + 19.1)
-src/common/guards/roles.guard.ts         (sección 9.4)
-src/modules/users/users.module.ts        (sección 11.10)
-src/modules/users/users.service.ts       (sección 11.9)
-src/modules/audit/audit.module.ts        (sección 11.8)
-src/modules/audit/audit.service.ts       (sección 11.8)
-```
-
-Registra los tres `APP_GUARD` en `app.module.ts` (corrección 19.1) y borra el `HealthController` temporal o márcalo con `@Public()`.
-
-**Verificación** (necesita un usuario real en el User Pool, confirmado y en el grupo `<ROL_A>`):
-
-```bash
-npm run start:dev &
-sleep 8
-
-# 1) Una ruta protegida sin token -> 401 con mensaje claro
-curl -s http://localhost:3000/users | jq .
-#   {"statusCode":401,"message":"Token de autenticación no provisto",...}
-
-# 2) Login
-TOKENS=$(curl -s -X POST http://localhost:3000/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"email":"<usuario>","password":"<password>"}')
-echo "$TOKENS" | jq 'keys'
-#   Esperado: ["accessToken","expiresIn","idToken","refreshToken",...]
-
-ID=$(echo "$TOKENS" | jq -r .idToken)
-
-# 3) Ruta protegida con token -> 200
-curl -s http://localhost:3000/auth/me -H "Authorization: Bearer $ID" | jq .
-
-# 4) Refresh — AQUÍ se valida la regla del `sub` (ver 22.1)
-RT=$(echo "$TOKENS" | jq -r .refreshToken)
-curl -s -X POST http://localhost:3000/auth/refresh \
-  -H 'content-type: application/json' \
-  -d "{\"refreshToken\":\"$RT\"}" | jq .
-#   Esperado: nuevos tokens.
-#   Si ves "Unable to verify secret hash for client ...", el SECRET_HASH
-#   se está calculando con el email en vez de con el `sub`.
-
-# 5) RBAC: una ruta con @Roles('<ROL_B>') accedida por un usuario de <ROL_A>
-curl -s http://localhost:3000/<ruta-solo-rol-b> -H "Authorization: Bearer $ID" | jq .
-#   Esperado: 403
-
-# 6) Token manipulado -> 401
-curl -s http://localhost:3000/auth/me -H "Authorization: Bearer ${ID}x" | jq .
-#   {"statusCode":401,"message":"Token inválido",...}
-```
-
----
-
-### Fase 5 — Tests con Jest
-
-**Entregable:** `npm test` en verde, con cobertura real de las utilidades y al menos un test e2e.
-
-**Archivos a crear:**
-
-```
-jest.config.js                                   (sección 6.9)
-test/jest-e2e.json                               (sección 6.9)
-src/common/utils/decimal.util.spec.ts            (sección 15.3)
-src/config/ssm-secret-error.spec.ts              (sección 15.3)
-test/auth.e2e-spec.ts                            (sección 15.4)
-```
-
-**Verificación:**
-
-```bash
-npm test -- --ci
-#   Esperado: todos los suites en verde, exit code 0.
-
-npm run test:cov
-#   Revisa que src/common/utils y src/config tengan cobertura > 80%.
-
-npm run test:e2e
-```
-
----
-
-### Fase 6 — Primer módulo de dominio
-
-**Entregable:** un CRUD completo, protegido, validado, documentado en Swagger y auditado.
-
-Usa la plantilla de la sección 12 para `<entidad>`. Archivos:
-
-```
-src/modules/<entidad>/entities/<entidad>.entity.ts
-src/modules/<entidad>/dto/create-<entidad>.dto.ts
-src/modules/<entidad>/dto/update-<entidad>.dto.ts
-src/modules/<entidad>/dto/query-<entidad>.dto.ts
-src/modules/<entidad>/<entidad>.service.ts
-src/modules/<entidad>/<entidad>.controller.ts
-src/modules/<entidad>/<entidad>.module.ts
-src/migrations/0000N-<ts>-Create<Entidad>.ts
-```
-
-**Verificación:**
-
-```bash
-npm run migration:run
-npm run start:dev &
-sleep 8
-TOKEN=...   # idToken de la fase 4
-
-# Crear
-curl -s -X POST http://localhost:3000/<entidad> \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"<campo>":"valor"}' | jq .
-
-# Validación: campo desconocido -> 400 (forbidNonWhitelisted)
-curl -s -X POST http://localhost:3000/<entidad> \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"<campo>":"valor","basura":1}' | jq .
-#   {"statusCode":400,"message":["property basura should not exist"],...}
-
-# Validación: campo requerido ausente -> 400
-curl -s -X POST http://localhost:3000/<entidad> \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{}' | jq .message
-
-# Duplicado -> 409
-# Inexistente -> 404
-curl -s http://localhost:3000/<entidad>/00000000-0000-0000-0000-000000000000 \
-  -H "Authorization: Bearer $TOKEN" | jq .statusCode
-#   404
-
-# Auditoría
-sudo -u postgres psql -d <db_name> -c \
-  "SELECT action, entity, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 5;"
-
-# Swagger documenta la ruta
-curl -s http://localhost:3000/api-json | jq '.paths | keys' | grep <entidad>
-```
-
----
-
-### Fase 7 — Documentos y S3
-
-**Entregable:** presign de subida, deduplicación por hash y descarga restringida por rol.
-
-```
-src/modules/documents/entities/document.entity.ts   (sección 11.6)
-src/modules/documents/document-keys.ts              (sección 13.3)
-src/modules/documents/document.service.ts           (sección 13.4)
-src/modules/documents/document.controller.ts        (sección 13.6)
-src/modules/documents/document.module.ts            (sección 13.5)
-src/modules/documents/dto/presign-document.dto.ts   (sección 13.6)
-src/migrations/0000N-<ts>-CreateDocuments.ts
-```
-
-**Verificación — primero el camino local, sin AWS:**
-
-```bash
-# Sin credenciales AWS, el servicio cae al fallback de .local-uploads/
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
-npm run start:dev &
-sleep 8
-
-SHA=$(shasum -a 256 ./muestra.pdf | cut -d' ' -f1)
-PRESIGN=$(curl -s -X POST http://localhost:3000/documents/presign \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d "{\"ownerKey\":\"<valor>\",\"documentType\":\"<DOC_TIPO_1>\",\"sha256\":\"$SHA\",\"fileName\":\"muestra.pdf\"}")
-echo "$PRESIGN" | jq .
-
-URL=$(echo "$PRESIGN" | jq -r .uploadUrl)
-curl -s -X PUT "$URL" --data-binary @./muestra.pdf -H 'content-type: application/pdf' -o /dev/null -w '%{http_code}\n'
-#   Esperado: 200/204
-
-ls -la .local-uploads/    # el PDF debe estar ahí
-
-# Deduplicación: el mismo sha256 otra vez
-curl -s -X POST http://localhost:3000/documents/presign \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d "{\"ownerKey\":\"<valor>\",\"documentType\":\"<DOC_TIPO_1>\",\"sha256\":\"$SHA\",\"fileName\":\"muestra.pdf\"}" | jq .
-#   Esperado: devuelve el documento existente / 409, NO crea uno nuevo.
-```
-
-**Después, con AWS real** (credenciales de solo lectura/escritura sobre el bucket de dev): repite la secuencia y comprueba `aws s3 ls s3://<BUCKET_DOCS>/raw/ --recursive`.
-
-> ⚠️ El PUT presignado desde un navegador exige **CORS configurado en el bucket** (sección 13.8). Desde `curl` funciona sin CORS, así que este verificador **no** detecta ese fallo. Pruébalo desde el frontend antes de dar la fase por cerrada.
-
----
-
-### Fase 8 — Puntos de entrada de Lambda
-
-**Entregable:** los tres handlers compilan y arrancan la aplicación.
-
-```
-src/lambda.ts             (sección 8.3)
-src/lambda-bootstrap.ts   (sección 8.2)
-src/lambda-ingest.ts      (sección 13.9)
-src/<job>-sync.ts         (sección 14.1)
-src/modules/ingest/ingest.service.ts   (sección 13.10)
-```
-
-**Verificación local**, sin desplegar nada, invocando el handler a mano:
-
-```bash
-npm run build
-
-# 1) El handler HTTP responde a un evento sintético de API Gateway v2.
-node -e "
-const { handler } = require('./dist/lambda');
-handler(
-  { version:'2.0', requestContext:{ http:{ method:'GET', path:'/__boot' } },
-    rawPath:'/__boot', headers:{} },
-  { callbackWaitsForEmptyEventLoop: true },
-).then(r => { console.log(r.statusCode, r.body); process.exit(0); })
- .catch(e => { console.error(e); process.exit(1); });
-"
-#   Esperado: 200 con el JSON de diagnóstico.
-
-# 2) Preflight OPTIONS cortocircuitado
-node -e "
-const { handler } = require('./dist/lambda');
-handler({ version:'2.0', requestContext:{ http:{ method:'OPTIONS', path:'/auth/login' } },
-          rawPath:'/auth/login', headers:{} }, {})
-  .then(r => { console.log(r.statusCode); process.exit(r.statusCode === 204 ? 0 : 1); });
-"
-#   Esperado: 204
-
-# 3) serverless-offline como humo end-to-end
-npx serverless@3 offline --stage dev --httpPort 3001 &
-sleep 15
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3001/auth/terms-link
-#   Esperado: 200
-```
-
----
-
-### Fase 9 — Infraestructura (pull request separado)
-
-**Entregable:** `serverless.yml`, políticas IAM y parámetros SSM, revisados y desplegados **por una persona**.
-
-```
-serverless.yml                                        (sección 16.1)
-infra/iam/github-actions-deploy-least-privilege.json  (sección 16.5)
-infra/iam/github-actions-serverless-deploy.json       (sección 16.6)
-infra/iam/README.md                                   (sección 16.7)
-```
-
-> 🚨 **Este pull request va separado del código de aplicación** y el despliegue lo ejecuta una persona o el CI con aprobación explícita. Un agente **no** debe ejecutar `serverless deploy`, `aws iam ...` ni `aws ssm put-parameter`.
-
-**Verificación (manual, por quien tenga credenciales):**
-
-```bash
-# 1) El YAML resuelve sin desplegar nada.
-npx serverless@3 print --stage dev --region <REGION> > /tmp/resolved.yml
-grep -c 'ssm:' /tmp/resolved.yml      # esperado: 0 — todo resuelto
-
-# 2) Los parámetros SSM existen (los 11 de la sección 16.3).
-aws ssm get-parameters-by-path --path "/<org>/<app>/dev/" --recursive \
-  --query 'Parameters[].Name' --output table
-
-# 3) Despliegue completo del stack (una vez por stage).
-npx serverless@3 deploy --stage dev --region <REGION>
-
-# 4) El stack existe y está sano.
-aws cloudformation describe-stacks --stack-name <app>-dev \
-  --query 'Stacks[0].StackStatus' --output text
-#   Esperado: CREATE_COMPLETE o UPDATE_COMPLETE
-
-# 5) Las tres funciones existen.
-aws lambda list-functions \
-  --query "Functions[?starts_with(FunctionName,'<app>-dev')].FunctionName" --output table
-```
-
----
-
-### Fase 10 — CI/CD
-
-**Entregable:** un push a `dev` despliega solo, con migraciones aplicadas antes del código.
-
-```
-.github/workflows/ci.yml          (sección 17.1)
-scripts/ci/preflight-deploy.sh    (sección 17.3)
-scripts/ci/run-migrations.sh      (sección 17.4)
-scripts/ci/deploy-functions.sh    (sección 17.5 + corrección 19.7)
-scripts/ci/verify-deploy.sh       (sección 17.6)
-```
-
-No olvides:
-
-```bash
-chmod +x scripts/ci/*.sh
-git update-index --chmod=+x scripts/ci/*.sh   # el bit de ejecución debe ir en git
-# y que .gitattributes tenga `*.sh text eol=lf` (ver 22.16)
-```
-
-**Verificación:**
-
-```bash
-# 1) Los scripts son sintácticamente válidos y no tienen CRLF.
-for f in scripts/ci/*.sh; do bash -n "$f" && echo "ok $f"; done
-file scripts/ci/*.sh | grep -i crlf && echo "CRLF DETECTADO" || echo "line endings ok"
-
-# 2) El workflow es YAML válido.
-npx --yes yaml-lint .github/workflows/ci.yml 2>/dev/null \
-  || python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml')); print('yaml ok')"
-
-# 3) Push a dev y observar.
-git push origin dev
-gh run watch
-```
-
-Tras el despliegue, el propio `verify-deploy.sh` ya comprueba la respuesta y el preflight de CORS. Verifica además a mano:
-
-```bash
-API="https://<api-id>.execute-api.<REGION>.amazonaws.com"
-curl -s "$API/__boot" | jq .                     # diagnóstico de arranque
-curl -s -o /dev/null -w '%{http_code}\n' "$API/users"   # 401
-```
-
----
-
-### Fase 11 — Trabajo asíncrono y programado
-
-**Entregable:** el worker de ingesta se dispara solo al subir un objeto a `raw/`, y el cron corre a su hora.
-
-**Verificación:**
-
-```bash
-# 1) La notificación del bucket apunta al worker.
-aws s3api get-bucket-notification-configuration --bucket <BUCKET_DOCS> | jq .
-
-# 2) Subir un PDF por el flujo real (presign + PUT) y seguir los logs.
-aws logs tail /aws/lambda/<app>-dev-ingestWorker --follow --since 5m
-
-# 3) Estado del documento en la BD: debe pasar a `processed`.
-#    (vía la API, no conectándose a la RDS desde fuera)
-curl -s "$API/documents/<id>" -H "Authorization: Bearer $TOKEN" | jq .status
-
-# 4) El cron está programado.
-aws events list-rules --name-prefix <app>-dev | jq '.Rules[].ScheduleExpression'
-
-# 5) Invocarlo a mano una vez, sin esperar a la hora.
-aws lambda invoke --function-name <app>-dev-<job>Sync /tmp/out.json && cat /tmp/out.json
-```
-
----
-
-### Resumen de fases
-
-| # | Fase | Entregable | Verificación principal |
-|---|---|---|---|
-| 0 | Esqueleto | Compila y lintea | `npm run lint && npm run build` |
-| 1 | Configuración | Falla claro si falta env | Arranque sin `.env` → error legible |
-| 2 | Bootstrap + transversales | Servidor HTTP con Swagger | `curl /health`, `curl /no-existe` → 404 con formato |
-| 3 | Datos | Esquema reproducible desde cero | `migration:run` sobre base vacía |
-| 4 | Auth | Login/refresh/RBAC | El refresh funciona (regla del `sub`) |
-| 5 | Tests | `npm test` verde | `npm test -- --ci` |
-| 6 | Primer dominio | CRUD protegido y auditado | 400/404/409 + fila en `audit_logs` |
-| 7 | Documentos | Presign + dedup | PUT presignado + segundo intento deduplicado |
-| 8 | Lambda | Handlers invocables | `node -e "require('./dist/lambda')..."` |
-| 9 | Infra (PR aparte) | Stack en los 3 stages | `describe-stacks` → `*_COMPLETE` |
-| 10 | CI/CD | Push despliega | `gh run watch` verde + `/__boot` |
-| 11 | Async y cron | Worker y schedule activos | Logs de CloudWatch del worker |
-
----
-
 ## 21. Checklist de aceptación final
 
-Marca cada casilla solo si la has **verificado ejecutando algo**, no por inspección visual del código.
+### Código
 
-### Configuración y arranque
+- [ ] `pnpm lint`, `pnpm typecheck`, `pnpm test` y `pnpm test:e2e:cov` pasan. La cobertura no baja de los umbrales de `vitest.e2e.config.mts`.
+- [ ] `pnpm build && pnpm bundle` produce `.lambda/api`, `.lambda/migrator` y `.lambda/ingest-worker`.
+- [ ] `node scripts/lambda-smoke.mjs` devuelve 200, 401 y 403 en los tres casos de la sección 8.3.
+- [ ] No queda `synchronize: true`, ni `enableCors`, ni un token leído de `Authorization`, ni `runMigrations()` fuera del migrator.
+- [ ] `rg -n "process\.env" src/modules` no devuelve nada.
+- [ ] Toda entidad editable tiene `@VersionColumn()`. Todo importe es `numeric` / `string`.
+- [ ] 🆕 V2.3. Una transacción del libro mayor que no suma cero por moneda falla en el `COMMIT`. Un `UPDATE` sobre `ledger_entries` falla. Dos compromisos simultáneos por la última unidad: uno 201, otro 409. El job de conciliación pasa en limpio después de la suite.
+- [ ] 🆕 V2.3. El webhook rechaza con 401 un cuerpo con la firma HMAC alterada y no escribe nada. El mismo evento dos veces deja una sola transición.
+- [ ] 🆕 V2.2. Toda entidad de negocio tiene `deletedAt` y sus lecturas lo filtran. `users` no tiene columna de audiencia: el rol sale de los grupos (9.1). Un campo sensible no aparece en logs ni en `before`/`after` (sale `"[redactado]"`).
+- [ ] `MIGRATIONS` lista todas las clases de `src/migrations/`, en orden, y el trigger `audit_logs_immutable` sigue en la migración inicial.
 
-- [ ] `node --version` empieza por `v20.`, y coincide con `engines.node`, `.nvmrc`, `node-version` del CI y `provider.runtime`.
-- [ ] `npm ci` termina sin ningún `EBADENGINE` y sin `--legacy-peer-deps`.
-- [ ] `npm run lint` pasa sin errores ni warnings.
-- [ ] `npm run build` pasa y genera `dist/main.js`, `dist/lambda.js`, `dist/lambda-ingest.js`.
-- [ ] El hook `pre-push` de husky existe, es ejecutable y corre `lint` + `build`.
-- [ ] Arrancar sin `.env` produce un error de validación que **nombra** las variables faltantes.
-- [ ] `.env` está en `.gitignore` y `git log --all -- .env` no devuelve nada.
-- [ ] `git grep -nE '(AKIA|aws_secret|client_secret\s*=\s*["'"'"'][A-Za-z0-9]{20,})'` no encuentra nada.
+### Contrato
 
-### Base de datos
+- [ ] `openapi/openapi.json` se genera sin levantar la base y contiene `/api/health`, las rutas de `/api/auth/*`, `/api/users/{id}/status` y `/api/documents/*`.
+- [ ] Ninguna operación declara seguridad `bearer`. La seguridad del documento es la cookie.
+- [ ] 🆕 V2.1. `pnpm openapi` dos veces seguidas no deja diff: el archivo es determinista.
+- [ ] 🆕 V2.1. Un PR que quita un campo de `ProjectDto` falla en "Sin cambios incompatibles en el contrato", y pasa al ponerle la etiqueta `contract-breaking`.
+- [ ] 🆕 V2.1. `POST /api/projects` y `POST /api/documents/uploads` declaran la cabecera `Idempotency-Key` obligatoria en el OpenAPI.
 
-- [ ] `npm run migration:run` funciona sobre una base **recién creada y vacía**.
-- [ ] `npm run migration:revert` deshace la última migración sin error.
-- [ ] `npm run db:seed` es idempotente (ejecutarlo dos veces no duplica filas).
-- [ ] No hay ninguna migración que use `uuid_generate_v4()` sin que la extensión se cree antes (o se usa `gen_random_uuid()`).
-- [ ] `synchronize` es `false` en toda configuración de TypeORM.
-- [ ] Ninguna columna de dinero es `float`/`double`; todas son `numeric(p,s)` mapeadas a `string`.
-- [ ] Ninguna columna usa el tipo `ENUM` de PostgreSQL; se usa `varchar` + unión de tipos.
-- [ ] Toda clave foránea declara `onDelete` explícitamente, y es coherente con la nulabilidad de la columna.
-- [ ] `DB_SSL=false` funciona contra PostgreSQL local y `DB_SSL=true` contra RDS.
+### Idempotencia (🆕 V2.1)
 
-### Autenticación y autorización
+- [ ] `test/idempotency.e2e-spec.ts` pasa, y `pnpm migration:generate src/migrations/Check` no encuentra cambios después de aplicar `AddIdempotencyKeys`.
+- [ ] En `dev`, dos `POST /api/projects` con la misma `Idempotency-Key` a través de CloudFront devuelven el mismo `id`, y el segundo trae `idempotent-replayed: true`. Si responde 400 "obligatoria", CloudFront no está reenviando la cabecera (16.8).
 
-- [ ] `JwtAuthGuard` y `RolesGuard` están registrados como `APP_GUARD` globales, en ese orden, después de `ThrottlerGuard`.
-- [ ] **No queda ni un solo `@UseGuards(JwtAuthGuard)` en los controladores.**
-- [ ] Todas las rutas públicas están marcadas con `@Public()`, y son exactamente las que deben serlo.
-- [ ] `git grep -n "@Roles(" src/` → todas las rutas listadas son alcanzables solo por sus roles (probado con un token de otro rol → 403).
-- [ ] El login devuelve `idToken`, `accessToken` y `refreshToken`.
-- [ ] **El refresh funciona**: el `SECRET_HASH` se calcula con el `sub`, no con el email.
-- [ ] Un token expirado produce `401 "El token ha expirado"`; uno manipulado, `401 "Token inválido"`; la ausencia de token, `401 "Token de autenticación no provisto"`.
-- [ ] Un usuario con `userStatus` en `blocked`/`rejected`/`observed` recibe 401 aunque su token sea válido.
-- [ ] Un usuario que existe en Cognito pero no en la tabla local **sí** puede autenticarse (el `catch` de `jwt.strategy.ts` es deliberado).
+### Infra y pipeline
 
-### Contratos de API
+- [ ] `cdk synth` de dev, qa y prod termina con cdk-nag en silencio (solo las aceptaciones de `nag.ts`).
+- [ ] `actionlint` sobre `.github/workflows/` y `shellcheck` sobre `scripts/**/*.sh` pasan.
+- [ ] 🆕 V2.1. El job `Auditar workflows` (zizmor 1.30.1) pasa, y `rg -n 'uses: [^ ]+@v[0-9]' .github/` no devuelve nada: toda acción va por SHA.
+- [ ] 🆕 V2.1. El primer push a `main` crea una attestation (pestaña Actions → Attestations) y el deploy de `dev` pasa el paso "El artefacto es el que firmó CI".
+- [ ] 🆕 V2.1. El smoke pasa el punto 6 (meta CSP con `script-src`) después del primer deploy del frontend.
+- [ ] Los Environments `qa` y `prod` tienen revisores.
+- [ ] El stack `ci` está desplegado en cada cuenta antes del primer stage.
+- [ ] Un push a `main` despliega `dev`, migra **antes** de mover el alias, y el smoke contra CloudFront pasa.
+- [ ] La URL de `dev` sirve el health en `https://<DOMINIO_APP>/api/health` y un `POST /api/auth/login` sin la cabecera de CloudFront (llamado directo al API) responde 403.
 
-- [ ] Todo endpoint que recibe cuerpo tiene un DTO con `class-validator`.
-- [ ] Enviar una propiedad no declarada devuelve 400 (`forbidNonWhitelisted`).
-- [ ] Los parámetros numéricos de query llevan `@Type(() => Number)`.
-- [ ] Los errores siempre tienen la forma `{ statusCode, message, timestamp, path }`.
-- [ ] Swagger en `/api` lista todas las rutas, con `@ApiTags`, `@ApiOperation` y `@ApiBearerAuth` donde corresponde.
-- [ ] Ninguna respuesta filtra `password`, `refreshToken`, hashes ni PII que el rol no deba ver.
+### Seguridad que se comprueba a mano una vez en dev
 
-### Documentos y S3
-
-- [ ] La clave de S3 se valida contra un patrón antes de firmar; una clave fuera de `raw/` es rechazada.
-- [ ] Subir dos veces el mismo contenido (mismo SHA-256) no crea dos filas.
-- [ ] Existe un índice único que hace imposible el duplicado incluso con dos peticiones concurrentes.
-- [ ] Sin credenciales AWS, la subida cae al almacenamiento local y la aplicación no se cae.
-- [ ] El bucket tiene CORS configurado y un `PUT` presignado funciona **desde el navegador**, no solo desde `curl`.
-- [ ] La descarga del binario original está restringida por rol.
-- [ ] El bucket tiene versionado y cifrado en reposo activados.
-
-### Lambda e infraestructura
-
-- [ ] **Ningún** punto de entrada llama a `dataSource.runMigrations()`.
-- [ ] El pool de conexiones está limitado a 1 cuando `AWS_LAMBDA_FUNCTION_NAME` está presente.
-- [ ] Todos los parámetros SSM siguen el patrón `/<org>/<app>/<stage>/<clave>`.
-- [ ] Los secretos están en SSM como `SecureString`; la configuración, como `String`.
-- [ ] Ningún secreto aparece como texto plano en `serverless.yml` ni en `provider.environment`.
-- [ ] `npx serverless@3 print --stage <stage>` resuelve sin dejar ningún `${ssm:...}` sin expandir.
-- [ ] Los tres stages tienen stack de CloudFormation.
-- [ ] Las políticas IAM no usan `"Resource": "*"` salvo donde sea inevitable, y en ese caso hay un comentario que lo justifica.
-- [ ] El ZIP de cada función pesa menos de 250 MB descomprimido.
-- [ ] El evento S3 sobre `raw/` está **descomentado** y conectado al worker.
-- [ ] El `timeout` de la función HTTP es ≤ 30 s (el límite del API Gateway) y el del worker, suficiente para el trabajo real.
-
-### CI/CD
-
-- [ ] El workflow usa OIDC; no hay `AWS_ACCESS_KEY_ID` en los secrets del repositorio.
-- [ ] La política de confianza del rol OIDC **enumera ramas concretas**, no `repo:<org>/<app>:*`.
-- [ ] El CI corre `lint`, `build` **y** `test`, y falla el pipeline si alguno falla.
-- [ ] Las migraciones se aplican **antes** de publicar el código nuevo.
-- [ ] `deploy-functions.sh` publica **todas** las funciones declaradas en `serverless.yml`.
-- [ ] Los secretos leídos de SSM en el CI pasan por `::add-mask::` antes de usarse.
-- [ ] `verify-deploy.sh` falla el pipeline si la API no responde o si el CORS está roto.
-- [ ] Los `.sh` tienen finales de línea LF y el bit de ejecución en git.
-
-### Tests
-
-- [ ] `npm test` corre con Jest y devuelve exit code 0.
-- [ ] Hay tests unitarios de las utilidades puras (decimal, traducción de errores, construcción de claves S3).
-- [ ] Hay al menos un test e2e que arranca la aplicación y comprueba 401 en una ruta protegida.
-- [ ] Ningún test depende de datos preexistentes en una base compartida.
-- [ ] Ningún script llamado `test:*` es en realidad una herramienta de inspección manual.
-
-### Documentación
-
-- [ ] `README.md` explica cómo levantar el proyecto desde cero y es correcto (alguien lo siguió).
-- [ ] `.env.example` lista **todas** las variables, con los secretos como `<RELLENAR_...>`.
-- [ ] `docs/DEPLOY.md` describe el mapeo rama→stage y el procedimiento manual de infraestructura.
-- [ ] `infra/iam/README.md` explica cada política y cómo aplicarla.
-- [ ] No hay comentarios obsoletos que contradigan al código (ver Anexo A, punto 1).
+- [ ] Login con MFA: el primer acceso obliga a configurar TOTP y el segundo pide el código.
+- [ ] La cookie de access tiene `HttpOnly`, `Secure`, `SameSite=Strict` y no tiene `Domain`.
+- [ ] `POST /api/auth/refresh` sin la cookie de refresh responde 401 y no crea sesión.
+- [ ] Un usuario desactivado recibe 403 con un access token todavía vigente.
+- [ ] Con la base apagada, `/api/auth/me` responde 503, no 401.
+- [ ] Un objeto que GuardDuty marca con amenaza queda `quarantined` y no se descarga.
 
 ---
-
 ## 22. Errores conocidos y cómo evitarlos
 
-Cada entrada es una trampa **observada en el repositorio original** o directamente derivada de su configuración. Están ordenadas por probabilidad de que te muerdan.
+Los de la v1 que siguen siendo verdad, más los que aparecieron al verificar esta versión. Cada uno se encontró de verdad: o en el original, o en el proyecto de verificación del 07/10/2026.
 
-### 22.1 `SECRET_HASH` en el refresh: `sub` y no email
+### 22.1 `SECRET_HASH` en todo lo que no es el refresh
 
-**Síntoma:** el login funciona perfectamente, pero el refresh falla con:
+Sigue haciendo falta en `USER_PASSWORD_AUTH`, en los retos, en el signup y en el forgot-password, firmado con el username **interno** cuando la llamada es un reto (10.4). El refresh ya no entra en este grupo. Reintroducir `SECRET_HASH` en `GetTokensFromRefreshToken` hace que Cognito responda `InvalidParameterException`.
 
-```
-NotAuthorizedException: Unable to verify secret hash for client <CLIENT_ID>
-```
+### 22.2 TLS
 
-**Causa.** Cuando el App Client de Cognito tiene *client secret*, toda llamada a `InitiateAuth` debe incluir:
+Local sin TLS, AWS con `rejectUnauthorized: true` y el bundle de Amazon (19.10). El error `self-signed certificate in certificate chain` en Lambda es, casi siempre, un `NODE_EXTRA_CA_CERTS` que no llegó al zip.
 
-```
-SECRET_HASH = Base64( HMAC-SHA256( client_secret, username + client_id ) )
-```
+### 22.3 `express.raw()` solo en la ruta de contenido
 
-El problema es **qué es `username`**. En `USER_PASSWORD_AUTH` tú pasas el email en `AuthParameters.USERNAME`, y Cognito lo usa para verificar el hash. Pero `REFRESH_TOKEN_AUTH` **no tiene campo `USERNAME`**: solo lleva el refresh token. Cognito resuelve el usuario a partir del token y verifica el hash contra el **username canónico del pool**, que —cuando el pool está configurado con alias de email— es el **`sub`** (un UUID), no el email.
+Montarlo global convierte todos los body JSON en `Buffer` y class-validator responde 400 a toda la API (13.5).
 
-**Solución.** Guardar el `sub` al hacer login y usarlo al refrescar:
+### 22.4 El techo de 30 segundos
 
-```ts
-// En login: extraer el `sub` del IdToken y devolverlo al cliente.
-const payload = JSON.parse(
-  Buffer.from(idToken.split('.')[1], 'base64').toString('utf8'),
-);
-const sub = payload.sub;
+API Gateway HTTP API corta a los 30 s. Una operación más larga es un worker (SQS), no una ruta. El `statement_timeout` de 10 s existe para que la base falle antes que el gateway y el cliente reciba un 503 con `requestId`, no un 503 sin cuerpo de API Gateway.
 
-// En refresh: firmar con el `sub`.
-SECRET_HASH: this.getSecretHash(sub),   // ❌ NUNCA this.getSecretHash(email)
-```
+### 22.5 El peso del bundle
 
-El comentario original del repo lo dice sin rodeos: *"para REFRESH_TOKEN_AUTH el SECRET_HASH se calcula con el username real (sub), no con el email"*. **Es el bug más caro de este stack**, porque se manifiesta en producción una hora después del login, cuando el access token caduca, y no durante el desarrollo.
+El bundle de la API midió 6644 KB minificado (07/10/2026), muy por debajo del límite de 250 MB descomprimidos y del límite práctico de cold start. Si alguien añade un paquete que arrastra `aws-sdk` v2 entero, este número se dispara. El smoke imprime el tamaño: mirarlo en el PR.
 
-**Cómo evitarlo:** un test e2e que haga login, refresh y compruebe que el segundo devuelve tokens. Es el verificador 4 de la fase 4.
+### 22.6 `import.meta.url` dentro del bundle
 
-### 22.2 TLS contra RDS y contra PostgreSQL local
+Síntoma: `ERR_INVALID_ARG_VALUE` o un `require` que busca un paquete en el directorio desde el que se invocó la Lambda, no en el bundle. Causa: quitar el banner de `scripts/bundle.mjs` (6.11). NestJS 12 llama a `createRequire(import.meta.url)`.
 
-**Síntoma A** (contra RDS, sin `ssl`):
+### 22.7 `keepNames`
 
-```
-Error: no pg_hba.conf entry for host "...", SSL off
-```
+Síntoma: `Nest can't resolve dependencies of UsersService (?)` solo dentro de Lambda; en local funciona. Causa: minificar sin `keepNames`. El token de inyección dejó de coincidir con el nombre de la clase.
 
-**Síntoma B** (contra PostgreSQL local, con `ssl` forzado):
+### 22.8 `pino-pretty` en Lambda
 
-```
-error: The server does not support SSL connections
-```
+Síntoma: la primera petición revienta con `MODULE_NOT_FOUND` de `pino-pretty/lib/worker.js`. Causa: `pretty: true` cuando `AWS_LAMBDA_FUNCTION_NAME` está definido. El worker thread no existe dentro del bundle. `app.module.ts` ya lo evita; no lo "actives en prod para leer mejor los logs". En prod se leen JSON.
 
-**Causa.** RDS **exige** TLS; el contenedor oficial `postgres:16` y Homebrew **no lo ofrecen**. Una constante no puede ser correcta en ambos casos. El original fuerza `ssl: { rejectUnauthorized: false }` siempre y solo funciona en local porque el PostgreSQL de Debian activa SSL por defecto con un certificado autofirmado.
+### 22.9 pnpm 12 y los scripts de instalación
 
-**Solución.** La corrección 19.10: `DB_SSL` con default `true`.
+Síntoma: `ERR_PNPM_IGNORED_BUILDS` al instalar, citando `esbuild` o `@swc/core`. Causa: falta la entrada en `allowBuilds` de `pnpm-workspace.yaml`. No se resuelve con `pnpm config set ignore-scripts false` en la máquina de un desarrollador: CI volvería a fallar.
 
-**Nota de seguridad.** `rejectUnauthorized: false` cifra pero **no autentica**: no valida que el certificado del servidor venga de la CA de Amazon. Para cerrar esa brecha en producción:
+### 22.10 Checksum CRC32 en la URL prefirmada
 
-```bash
-curl -o rds-ca.pem \
-  https://truststore.pki.rds.amazonaws.com/<REGION>/<REGION>-bundle.pem
-```
+Síntoma: el navegador recibe 403 de S3 y la URL contiene `x-amz-checksum-crc32`. Causa: el cliente S3 sin `requestChecksumCalculation: 'WHEN_REQUIRED'`, o la firma sin `signableHeaders` / `unhoistableHeaders` (7.5, 13.3).
 
-```ts
-ssl: {
-  ca: fs.readFileSync(path.join(__dirname, '../../certs/rds-ca.pem')).toString(),
-  rejectUnauthorized: true,
-},
-```
+### 22.11 `save()` cuando el id lo pone el llamador
 
-El bundle hay que incluirlo en el paquete de la Lambda (`package.patterns`) y rotarlo cuando AWS actualice las CA.
+Síntoma: un signup que debía fallar por email duplicado devuelve 201 y ha pisado la fila del otro usuario. Causa: `repository.save()` con la clave primaria presente hace `UPDATE`. Para `users` se usa `insert()` (10.6).
 
-### 22.3 `rawBody` y los cuerpos binarios
+### 22.12 `dropDatabase()` en los tests
 
-**Síntoma:** un `PUT` o `POST` con un PDF llega al controlador con el cuerpo vacío, truncado o corrupto.
+Deja funciones y triggers. El segundo `runMigrations` falla con "trigger already exists". El arnés hace `DROP SCHEMA public CASCADE` (15.2).
 
-**Causa.** Nest usa el parser JSON de Express por defecto, que destruye los cuerpos binarios. Hay **dos** mecanismos que hay que alinear:
+### 22.13 `numeric` llega como string
 
-1. `NestFactory.create(AppModule, { rawBody: true })` — conserva el buffer original en `request.rawBody`.
-2. Un middleware `raw({ type: '*/*', limit: '50mb' })` aplicado al módulo concreto que recibe binarios.
+`amount: "10.50"`, no `10.5`. Un DTO con `@IsNumber()` rechaza el valor que la propia API acaba de devolver. Los DTOs de importes usan `@IsString()` y `decimal.js` valida el formato.
 
-**El fallo real del repo original:** `main.ts` pasa `{ rawBody: true }`, pero **`lambda-bootstrap.ts` no**. Es decir, la ruta de subida funciona en local y falla en Lambda. Es el peor tipo de divergencia: dos bootstraps que deberían ser equivalentes y no lo son.
+### 22.14 El `ENUM` de PostgreSQL
 
-**Solución.** Que los dos bootstraps construyan la aplicación con las mismas opciones. Lo más robusto es extraer una función compartida:
+Añadir un valor con `ALTER TYPE ... ADD VALUE` no se puede correr dentro de la transacción que TypeORM abre para la migración, y el despliegue se queda a medias. `varchar` + `@Check` (11.1).
 
-```ts
-// src/bootstrap-options.ts
-import { NestApplicationOptions } from '@nestjs/common';
+### 22.15 CRLF
 
-export const APP_OPTIONS: NestApplicationOptions & { rawBody: true } = {
-  rawBody: true,
-};
-```
+`set -euo pipefail` con un `\r` al final es un error de bash ilegible (`$'
+': command not found`). `.gitattributes` con `eol=lf` (6.4).
 
-y usarla en ambos. Si añades una opción nueva, entra por los dos caminos a la vez.
+### 22.16 Claves de S3 con caracteres codificados
 
-Y no olvides el `limit`: el default de `body-parser` es **100 kb**. Un PDF de 2 MB produce `413 Payload Too Large` si no lo subes.
+EventBridge entrega `incoming/a%20b.pdf`. Sin `decodeURIComponent` el worker no encuentra la fila (13.4).
 
-### 22.4 El timeout de 30 segundos del API Gateway
+### 22.17 Carrera en la deduplicación por hash
 
-**Síntoma:** el cliente recibe un `504 Gateway Timeout` exactamente a los 29–30 segundos, mientras los logs de CloudWatch muestran que la Lambda **siguió ejecutándose** y terminó bien después.
+Comprobar con `SELECT` y luego `INSERT` permite dos filas. El índice único parcial es el que gana (13.1). El servicio captura `23505` y responde 409.
 
-**Causa.** El API Gateway HTTP API tiene un timeout de integración de **30 s que no es configurable al alza**. Poner `timeout: 900` en la función HTTP no sirve de nada: lo único que consigues es que la Lambda siga consumiendo tiempo facturado después de que el cliente se haya ido.
+### 22.18 `dist/` viejo
 
-**Solución.** Cualquier trabajo que pueda pasar de ~20 s **no puede vivir en el request HTTP**. El patrón es el de la sección 13: el endpoint HTTP solo registra la intención y devuelve `202 Accepted` con un identificador; el trabajo real va a una Lambda asíncrona (evento S3, SQS, EventBridge) con timeout holgado; el cliente consulta el estado por *polling*.
+`migration:run` y el bundle leen `dist/`. Si se cambia una entidad y se corre el CLI sin `pnpm build`, se aplica el esquema anterior. Los scripts de `package.json` ya llevan el `pnpm build` delante. No invocar `typeorm` a mano contra un `dist/` de ayer.
 
-Reserva margen: pon `timeout: 30` en la función HTTP, pero diseña para que la p99 esté por debajo de 10 s. Y recuerda que el **arranque en frío cuenta dentro de esos 30 s**.
+### 22.19 TypeScript 6 y `moduleResolution: node16`
 
-### 22.5 El peso del paquete Lambda
+`TS5110`: si se fija `moduleResolution` en `node16`, `module` tiene que ser `Node16` o superior, y el emit deja de ser el CommonJS que el bundle espera. No declarar `moduleResolution` (6.1).
 
-**Síntoma:**
+### 22.20 cdk-nag 3 no es un Aspect
 
-```
-Unzipped size must be smaller than 262144000 bytes
-```
+`Aspects.of(app).add(new AwsSolutionsChecks())` falla con `visit is not a function`. El registro correcto es `Validations.of(app).addPlugins(new AwsSolutionsChecks(app))` (16.10).
 
-**Causa.** El límite de Lambda es 250 MB **descomprimidos** (50 MB comprimidos si subes el ZIP directamente, 250 MB vía S3). Un `node_modules` con devDependencies lo supera con facilidad: `@nestjs/cli`, `typescript`, `jest`, `ts-node` y sus tipos pesan cientos de megabytes.
+### 22.21 `@UseGuards` repetido
 
-**Solución.** Tres medidas, acumulativas:
+Con los guards globales, volver a colgar `JwtAuthGuard` en un método no aporta y, si se cuelga solo ese y no el de roles, da la impresión de que la autorización está resuelta en el método. No se repite. `@Roles` y `@Public` son la superficie.
 
-```yaml
-# serverless.yml
-package:
-  individually: true     # cada función lleva solo lo suyo
-  patterns:
-    - '!.git/**'
-    - '!.github/**'
-    - '!src/**'          # solo se despliega dist/
-    - '!test/**'
-    - '!docs/**'
-    - '!coverage/**'
-    - '!node_modules/.cache/**'
-    - '!node_modules/**/*.d.ts'
-    - '!node_modules/**/*.map'
-    - '!**/*.test.js'
-    - '!.local-uploads/**'
-```
+### 22.22 CORS
 
-```bash
-# Antes de empaquetar, eliminar devDependencies:
-npm prune --production
-```
+No hay. Añadir `enableCors({ origin: true })` para depurar un frontend que llama al puerto 3000 directo es el síntoma de que el proxy de Nuxt no está configurado. Se arregla el proxy, no se abre CORS (8.1).
 
-Y una verificación explícita en el script de despliegue, para fallar con un mensaje legible en vez de con el error de AWS:
+### 22.23 Cold start envenenado
 
-```bash
-validate_zip() {
-  local zip="$1"
-  local max=262144000
-  local size
-  size=$(unzip -l "$zip" | tail -1 | awk '{print $1}')
-  if [ "$size" -gt "$max" ]; then
-    echo "::error::$zip descomprimido pesa ${size}B (máximo ${max}B)"
-    exit 1
-  fi
-}
-```
+Cachear una promesa de bootstrap que ya rechazó deja la Lambda en 503 hasta que AWS la mate. `lambda.ts` y el migrator descartan la promesa si falla (8.3). El mismo patrón va en cualquier handler nuevo (14.1).
 
-### 22.6 `npm prune --production` después de migrar, no antes
+### 22.24 Rotación del secreto del maestro
 
-**Síntoma:** el paso de migraciones del CI falla con `Cannot find module 'ts-node'` o `Cannot find module 'typeorm'`.
-
-**Causa.** Un orden sutilmente equivocado en el pipeline. `npm run migration:run` necesita `ts-node` y `tsconfig-paths`, que son **devDependencies**. Si el script de despliegue hace `npm prune --production` **antes** del paso de migraciones, esas dependencias ya no están.
-
-Hay un segundo efecto en cadena, más confuso: `deploy-functions.sh` hace `npm prune --production` y después necesita el propio Serverless Framework para empaquetar — que también es una devDependency. Por eso el script original lo **reinstala** justo después del prune:
-
-```bash
-npm prune --production
-npm install --no-save serverless@3 serverless-offline
-```
-
-**Solución.** Orden fijo e inviolable en el pipeline:
-
-```
-1. npm ci                    (todo, dev incluido)
-2. lint + build + test
-3. run-migrations.sh         ← necesita devDependencies
-4. deploy-functions.sh       ← aquí dentro: prune, reinstalar serverless, empaquetar
-5. verify-deploy.sh
-```
-
-Si alguna vez mueves el prune, revisa qué pasos posteriores dependen de `devDependencies`.
-
-### 22.7 `EBADENGINE`
-
-**Síntoma:**
-
-```
-npm warn EBADENGINE Unsupported engine {
-  package: '<app>@0.0.1',
-  required: { node: '>=26.0.0' },
-  current: { node: 'v22.14.0', npm: '10.9.2' }
-}
-```
-
-**Causa.** `engines.node` declara una versión que nadie tiene instalada y que además no es la de Lambda. Ver corrección 19.6.
-
-**Por qué importa más de lo que parece.** Es un *warning*, no un error, así que `npm ci` termina en verde y la gente aprende a ignorarlo. El coste real es doble: enmascara warnings legítimos de npm, y —lo grave— certifica que el entorno de build no es el de ejecución.
-
-**Solución.** La corrección 19.6: un solo número en `package.json`, `.nvmrc`, el workflow y `provider.runtime`.
-
-### 22.8 CORS duplicado
-
-**Síntoma:**
-
-```
-The 'Access-Control-Allow-Origin' header contains multiple values
-'https://<dominio>, *', but only one is allowed.
-```
-
-El navegador bloquea la respuesta aunque el `curl` equivalente funcione perfectamente.
-
-**Causa.** Hay **tres** lugares que pueden añadir cabeceras CORS, y en el original los tres están activos a la vez:
-
-1. `app.enableCors(...)` dentro de la aplicación Nest.
-2. El bloque `CORS_HEADERS` que `lambda.ts` inyecta a mano en cada respuesta (y el cortocircuito de `OPTIONS` que devuelve 204).
-3. La configuración `httpApi.cors` del API Gateway, si está activada en `serverless.yml`.
-
-Cuando dos de ellos responden, las cabeceras se concatenan y el navegador rechaza el resultado.
-
-**Solución.** Elige **uno solo** y desactiva los otros dos explícitamente:
-
-| Estrategia | Cuándo | Qué desactivar |
-|---|---|---|
-| **CORS en Nest** (recomendado) | Necesitas lógica de orígenes: lista blanca, subdominios, alias de localhost | No pongas `httpApi.cors` en `serverless.yml`; elimina `CORS_HEADERS` de `lambda.ts` |
-| **CORS en API Gateway** | Lista de orígenes fija y simple | No llames a `enableCors()` en ningún bootstrap |
-
-El original usa una lógica de orígenes no trivial en `main.ts` (alias `localhost` ↔ `127.0.0.1`, lista desde `ALLOWED_ORIGINS`), pero luego `lambda-bootstrap.ts` hace `enableCors({ origin: '*' })` y tira esa lógica a la basura. **Haz que el bootstrap de Lambda use exactamente la misma función de CORS que el local** (sección 8.2).
-
-### 22.9 `npm ci --legacy-peer-deps`
-
-**Síntoma:** no hay síntoma inmediato. Ese es el problema.
-
-**Causa.** El CI del original ejecuta `npm ci --legacy-peer-deps`. Ese flag le dice a npm que **ignore los conflictos de peer dependencies** y restaure el comportamiento de npm 6. Se añade casi siempre para silenciar un error concreto durante una actualización, y luego se queda para siempre.
-
-**Por qué es peligroso.** El resultado es un árbol de dependencias que npm considera inconsistente: un paquete declara que necesita `@nestjs/common@^10` y se le instala `^11`. A veces funciona; a veces produce dos copias de la misma librería en memoria, con el clásico resultado de que `instanceof` falla o los decoradores no se registran. Y como el flag está en el CI, **el fallo solo aparece en el entorno desplegado**.
-
-**Solución.** Quítalo y arregla el conflicto de verdad:
-
-```bash
-npm ci                 # sin el flag
-# Si falla, el mensaje dice exactamente qué paquete está en conflicto.
-npm ls <paquete-en-conflicto>
-```
-
-Opciones legítimas, por orden de preferencia: actualizar el paquete desactualizado; usar `overrides` en `package.json` para forzar una versión concreta y **dejar un comentario** que explique por qué; o, en último extremo, mantener el flag **con un comentario en el workflow** que diga qué conflicto está tapando y cuándo revisarlo.
-
-### 22.10 `uuid_generate_v4()` sin la extensión
-
-**Síntoma:**
-
-```
-QueryFailedError: function uuid_generate_v4() does not exist
-```
-
-sobre una base de datos recién creada, mientras que en la base de desarrollo "de siempre" todo funciona.
-
-**Causa y solución:** corrección 19.11. Usa `gen_random_uuid()` (nativa desde PostgreSQL 13) o crea la extensión en una migración `00000`.
-
-**La lección general:** si tu esquema solo se construye correctamente sobre una base que ya existía, no tienes migraciones, tienes una base de datos con historia oral. El verificador de la fase 3 —correr las migraciones sobre una base vacía— es el único que detecta esto, y por eso es obligatorio.
-
-### 22.11 CORS del bucket S3 y los PUT presignados
-
-**Síntoma:** la URL presignada funciona con `curl` pero el navegador la bloquea:
-
-```
-Access to XMLHttpRequest at 'https://<BUCKET_DOCS>.s3.amazonaws.com/raw/...'
-from origin 'https://<dominio>' has been blocked by CORS policy
-```
-
-**Causa.** El `PUT` presignado va **directamente del navegador a S3**, sin pasar por tu API. Por tanto, el CORS que importa es el **del bucket**, no el de la aplicación. `curl` no implementa CORS, así que ninguna prueba desde terminal detecta este fallo.
-
-**Solución.** Configurar CORS en el bucket (operación manual de infraestructura):
-
-```json
-[
-  {
-    "AllowedOrigins": ["https://<dominio>", "http://localhost:4200"],
-    "AllowedMethods": ["PUT", "GET", "HEAD"],
-    "AllowedHeaders": ["*"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 3000
-  }
-]
-```
-
-Un detalle adicional: si firmas la URL incluyendo `ContentType`, el navegador **debe** enviar exactamente ese `Content-Type` en el PUT. Cualquier diferencia —incluido un `charset` añadido— invalida la firma y produce `SignatureDoesNotMatch`.
-
-### 22.12 Secretos en los logs del CI
-
-**Síntoma:** una contraseña de base de datos visible en la salida de GitHub Actions, que queda archivada y accesible a cualquiera con permiso de lectura sobre el repositorio.
-
-**Causa.** Un valor leído de SSM con `aws ssm get-parameter --with-decryption` **no es** un secreto de GitHub, así que Actions no lo enmascara. Cualquier `set -x`, cualquier `echo` de depuración o cualquier traza de error que incluya la cadena de conexión lo expone.
-
-**Solución.** Enmascararlo explícitamente **antes** de usarlo:
-
-```bash
-DB_PASSWORD="$(aws ssm get-parameter --name "/<org>/<app>/${STAGE}/db_password" \
-  --with-decryption --query 'Parameter.Value' --output text)"
-echo "::add-mask::${DB_PASSWORD}"      # ← ANTES de cualquier uso
-export DB_PASSWORD
-```
-
-El orden es crítico: `::add-mask::` solo afecta a lo que se imprima **después**. Y nunca uses `set -x` en un script que maneja secretos.
-
-### 22.13 `ResourceConflictException` al actualizar una Lambda
-
-**Síntoma:**
-
-```
-An error occurred (ResourceConflictException) when calling the
-UpdateFunctionConfiguration operation: The operation cannot be performed at
-this time. An update is in progress for resource: arn:aws:lambda:...
-```
-
-**Causa.** `update-function-code` y `update-function-configuration` son asíncronas: devuelven el control antes de que la función termine de actualizarse. Encadenar las dos sin esperar produce el conflicto. Pasa casi siempre con paquetes grandes, es decir, justo cuando el despliegue ya es lento.
-
-**Solución.** Esperar entre las dos con el *waiter* del CLI:
-
-```bash
-aws lambda update-function-code \
-  --function-name "$FN" --s3-bucket "$BUCKET" --s3-key "$KEY" >/dev/null
-
-aws lambda wait function-updated --function-name "$FN"   # ← imprescindible
-
-aws lambda update-function-configuration \
-  --function-name "$FN" --environment "$ENV_JSON" >/dev/null
-
-aws lambda wait function-updated --function-name "$FN"
-```
-
-### 22.14 Carrera en la deduplicación por hash
-
-**Síntoma:** dos filas con el mismo `sha256`, pese a que el servicio comprueba si existe antes de insertar.
-
-**Causa.** El patrón `findOne()` seguido de `save()` **no es atómico**. Dos peticiones concurrentes con el mismo contenido pueden ejecutar ambos `findOne()` antes de que ninguno haya guardado, y las dos concluyen que el documento es nuevo. Es exactamente lo que hace `createPresignedUpload` en el original.
-
-**Solución.** Que la base de datos imponga la regla. Una comprobación en el código de aplicación es una optimización, no una garantía:
-
-```sql
--- En la migración
-CREATE UNIQUE INDEX "UQ_documents_sha256_active"
-  ON "documents" ("sha256")
-  WHERE "status" <> 'quarantined';
-```
-
-Es un índice **parcial**: permite que un documento rechazado y puesto en cuarentena no bloquee una resubida legítima del mismo contenido.
-
-Y en el servicio, capturar la violación en vez de dejar que escale a 500:
-
-```ts
-try {
-  return await this.repo.save(doc);
-} catch (error: any) {
-  if (error?.code === '23505') {           // unique_violation de PostgreSQL
-    const existing = await this.repo.findOne({ where: { sha256: dto.sha256 } });
-    if (existing) return existing;         // idempotencia: devolver el que ganó
-  }
-  throw error;
-}
-```
-
-### 22.15 `dist/` obsoleto
-
-**Síntoma:** cambias un archivo, reconstruyes, y el comportamiento antiguo persiste. O peor: un archivo que **borraste** del código fuente sigue ejecutándose.
-
-**Causa.** `nest-cli.json` lleva `"deleteOutDir": false`. Las builds son incrementales (más rápidas), pero `dist/` acumula artefactos de archivos que ya no existen. Si uno de esos huérfanos es una migración, **TypeORM la cargará** desde el glob `dist/migrations/*.js` y la ejecutará.
-
-**Solución.** Limpiar antes de cualquier build que importe:
-
-```bash
-rm -rf dist && npm run build
-```
-
-En CI, hazlo siempre — el checkout es limpio, pero las cachés no necesariamente:
-
-```yaml
-      - name: Build
-        run: rm -rf dist && npm run build
-```
-
-Para desarrollo local, un script explícito:
-
-```jsonc
-"build:clean": "rm -rf dist && nest build"
-```
-
-### 22.16 CRLF en los scripts `.sh`
-
-**Síntoma:**
-
-```
-./scripts/ci/deploy-functions.sh: line 2: $'\r': command not found
-```
-
-o, más desconcertante:
-
-```
-/usr/bin/env: 'bash\r': No such file or directory
-```
-
-**Causa.** Un script editado o commiteado desde Windows (o con `core.autocrlf=true`) lleva finales de línea `\r\n`. El shebang pasa a ser `#!/usr/bin/env bash\r`, y Linux busca un intérprete llamado literalmente `bash\r`.
-
-**Solución.** Fijarlo en `.gitattributes`, que es la única forma que no depende de la configuración de cada máquina:
-
-```
-*.sh text eol=lf
-```
-
-El repo original ya lo tiene. **Cópialo.** Y añade a la lista `Dockerfile`, `.env*` y cualquier otro archivo que un intérprete lea línea a línea.
-
-Verificación: `file scripts/ci/*.sh` no debe mencionar `CRLF`.
-
-Recuerda también el bit de ejecución, que git guarda aparte:
-
-```bash
-git update-index --chmod=+x scripts/ci/*.sh
-```
-
-### 22.17 Claves de S3 codificadas en los eventos
-
-**Síntoma:** el worker de ingesta no encuentra en la base de datos un documento que sí existe, porque la clave que recibe no coincide con la almacenada.
-
-**Causa.** En una notificación de evento de S3, `record.s3.object.key` viene **URL-encoded**, y además los espacios se codifican como `+` (no como `%20`). Una clave `raw/<id>/<tipo>/mi archivo.pdf` llega como `raw/<id>/<tipo>/mi+archivo.pdf`.
-
-**Solución.** Decodificar en ese orden exacto:
-
-```ts
-const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
-```
-
-El original lo hace bien. La forma más robusta, sin embargo, es **no tener el problema**: usa claves *content-addressed* (`{sha256}.pdf`), que solo contienen caracteres hexadecimales y nunca necesitan codificación. Ese es el otro motivo, además de la deduplicación, para nombrar los objetos por su hash.
-
-### 22.18 `${ssm:...}` se resuelve al empaquetar, no al ejecutar
-
-**Síntoma:**
-
-```
-Cannot resolve serverless.yml: Variables resolution errored with:
-  - Cannot resolve variable at "provider.environment.DB_HOST":
-    SSM parameter /<org>/<app>/qa/db_host not found
-```
-
-y el despliegue muere antes de empezar.
-
-**Causa.** La sintaxis `${ssm:/ruta}` de Serverless Framework se evalúa en la **máquina que empaqueta**, no en la Lambda. Implicaciones prácticas:
-
-1. **Todos** los parámetros del stage deben existir antes de desplegar.
-2. La máquina que empaqueta —el runner del CI— necesita permiso `ssm:GetParameter` sobre todas esas rutas.
-3. El valor queda **grabado en la configuración de la función**. Cambiar el parámetro en SSM **no** cambia lo que la Lambda ve: hay que redesplegar.
-4. Si usaras `${ssm:/ruta~true}` para un `SecureString`, el valor descifrado quedaría **en texto plano** en la plantilla de CloudFormation, visible para cualquiera con permiso de lectura sobre el stack.
-
-**Solución.** Por eso el diseño es híbrido, y es correcto:
-
-- **Configuración no sensible** → `${ssm:}` en `serverless.yml`, inyectada como variable de entorno.
-- **Secretos** → **nunca** en `serverless.yml`. Se leen en tiempo de ejecución con `hydrateSsmSecrets()` y `WithDecryption: true`, dentro de la Lambda, usando su rol de ejecución.
-
-Si cambias un parámetro de configuración, **redespliega**. Si cambias un secreto, basta con esperar a que los contenedores calientes se reciclen (o forzar un redespliegue para que el cambio sea inmediato).
-
-### 22.19 `numeric` llega como `string`
-
-**Síntoma:** una suma de importes produce `"100.50200.25"` en vez de `300.75`. O un `JSON.stringify` devuelve `"1000.00"` con comillas y el frontend lo pinta mal.
-
-**Causa.** El driver `pg` devuelve las columnas `numeric`/`decimal` como **string**, deliberadamente: un `numeric(18,2)` puede exceder la precisión de un `number` de JavaScript (IEEE-754 double), y convertirlo automáticamente perdería dígitos en silencio. Es el comportamiento correcto, pero sorprende.
-
-**Solución.** Aceptarlo y ser explícito en toda la cadena:
-
-```ts
-@Column({ type: 'numeric', precision: 18, scale: 2 })
-amount: string;          // ← string, no number. Deliberado.
-```
-
-Para operar, usa `decimal.js`; nunca aritmética nativa:
-
-```ts
-import { toDecimal, safeDivide } from '../common/utils/decimal.util';
-
-const total = toDecimal(a.amount).plus(toDecimal(b.amount));
-const ratio = safeDivide(numerator, denominator);   // null si el denominador es 0
-return { total: total.toFixed(2), ratio: ratio?.toFixed(4) ?? null };
-```
-
-**No** uses un `ColumnNumericTransformer` que convierta a `number` al leer: resuelve la incomodidad y reintroduce exactamente el error de precisión que el tipo `numeric` existía para evitar.
-
-### 22.20 El tipo `ENUM` de PostgreSQL
-
-**Síntoma:** una migración que añade un valor a un enum falla, o bloquea la tabla, o no se puede revertir.
-
-**Causa.** TypeORM, con `type: 'enum'`, crea un tipo `ENUM` nativo de PostgreSQL. Añadir un valor requiere `ALTER TYPE ... ADD VALUE`, que **no puede ejecutarse dentro de una transacción** en PostgreSQL < 12 — y TypeORM envuelve cada migración en una transacción. Eliminar un valor es directamente imposible: hay que crear un tipo nuevo, migrar la columna y borrar el viejo.
-
-**Solución.** `varchar` con una unión de tipos en TypeScript:
-
-```ts
-export const DOCUMENT_STATUS = [
-  'pending',
-  'processing',
-  'processed',
-  'failed',
-  'quarantined',
-] as const;
-
-export type DocumentStatus = (typeof DOCUMENT_STATUS)[number];
-
-@Column({ type: 'varchar', length: 32, default: 'pending' })
-status: DocumentStatus;
-```
-
-TypeScript da la seguridad de tipos en compilación; la base de datos se mantiene flexible. Si necesitas la garantía también en la base, usa un `CHECK` constraint, que sí se puede modificar con un `ALTER TABLE` normal:
-
-```sql
-ALTER TABLE "documents" ADD CONSTRAINT "CHK_documents_status"
-  CHECK ("status" IN ('pending','processing','processed','failed','quarantined'));
-```
-
-### 22.21 `@UseGuards` duplicado tras adoptar guards globales
-
-**Síntoma:** cada petición autenticada ejecuta **dos** consultas a la tabla `users` (la del bloqueo en caliente de `jwt.strategy.ts`), duplicando la latencia y la carga.
-
-**Causa.** Si registras `JwtAuthGuard` como `APP_GUARD` global (corrección 19.1) y además dejas `@UseGuards(JwtAuthGuard)` en los controladores, Nest instancia **dos** guards distintos para la misma petición y la estrategia Passport corre dos veces.
-
-Hay un segundo efecto, más grave: si el guard de ruta no consulta el metadato `IS_PUBLIC_KEY` (porque lo instanciaste sin `Reflector`), una ruta marcada con `@Public()` **seguirá exigiendo token**, y el `@Public()` parecerá no funcionar.
-
-**Solución.** Tras la corrección 19.1, barrido completo:
-
-```bash
-git grep -n "UseGuards(JwtAuthGuard" src/
-# Debe devolver exactamente cero resultados.
-```
-
-El `RolesGuard` es el mismo caso: con `APP_GUARD` global, basta con `@Roles(...)`.
-
-### 22.22 `serverless-plugin-warmup` referenciado pero no instalado
-
-**Síntoma:** ninguno visible — y eso es lo que lo hace confuso.
-
-**Causa.** `lambda.ts` contiene:
-
-```ts
-if (event?.source === 'serverless-plugin-warmup') {
-  return { statusCode: 200, body: 'warmed' };
-}
-```
-
-pero el plugin **no está en `package.json`** ni en la sección `plugins` de `serverless.yml`. Es código que espera un evento que nadie emite nunca.
-
-**Solución.** Decide:
-
-- Si quieres mitigar los arranques en frío: instala el plugin, o configura **provisioned concurrency**, o programa un *ping* por EventBridge. En este último caso, cambia la condición por el `source` que realmente emitas.
-- Si no: **borra el bloque**. Código muerto que parece funcionalidad activa es peor que no tener nada, porque alguien asumirá que el calentamiento está resuelto.
-
-El CI original hace algo parecido con un `curl` de calentamiento al final del despliegue, que sí funciona pero calienta **un solo** contenedor.
+Leer el secreto una vez y guardarlo en una variable de módulo hace que, el día 30, el migrator empiece a fallar con `password authentication failed` y no se recupere solo. Se lee en cada invocación (11.6).
 
 ---
+## 23. Seguridad empresarial
 
-## Anexo A — Qué no pude determinar con certeza desde el repositorio
+🆕 **V2.** Esta sección es el mapa. El código está en las secciones que cita. Sirve para revisar un PR que "solo añade un endpoint" y comprobar que no abre un agujero que el núcleo ya había cerrado.
 
-Esta sección cumple la regla que atraviesa todo el documento: donde no tengo evidencia, lo digo en vez de inventar una justificación. Son los puntos donde el agente implementador debería **preguntar** antes de asumir.
+### 23.1 Identidad
 
-### A.1 Comentarios obsoletos sobre `migrations` en `database.config.ts`
+- Cognito es el único sitio que ve contraseñas. Mínimo 12 caracteres, cuatro clases, historial de 5, y el DTO repite la misma regla para fallar antes de llamar al pool (10.5).
+- MFA TOTP obligatorio en el primer login (`mfa: 'REQUIRED'`).
+- El access token dura 15 minutos y el refresh rota en cada uso, con 10 segundos de gracia para pestañas duplicadas (10.4, 16.5).
+- Cerrar sesión revoca el refresh en Cognito (`RevokeToken`). Cerrar todas las sesiones usa `GlobalSignOut`. Borrar la cookie sin revocar deja un refresh válido hasta los 30 días.
+- Un usuario `disabled` queda fuera en el siguiente request, aunque el access token no haya caducado (9.1).
 
-Tanto `scripts/ci/run-migrations.sh` como `docs/DEPLOY.md` afirman que `src/config/database.config.ts` "no declara `migrations`", y por eso el script exporta variables y delega en `typeorm.config.ts`.
+### 23.2 Sesión y navegador
 
-**Esa afirmación ya no es cierta.** Verifiqué con `git log -p -2 -- src/config/database.config.ts` que la línea
+- Cookies `httpOnly` + `Secure` + `SameSite=Strict` + prefijo `__Host-` en el access token (10.1). JavaScript no las lee, un subdominio no las planta, un sitio de terceros no las envía.
+- CSRF: además de SameSite, el middleware exige `Sec-Fetch-Site: same-origin` u `Origin` igual a `APP_ORIGIN` en los métodos que cambian estado (9.2).
+- Un solo origen. No hay CORS. El día que alguien proponga servir el front en otro dominio, la conversación correcta es por qué, no cómo relajar la CSP.
+- Helmet en la API con `default-src 'none'` y `frame-ancestors 'none'`. HSTS y el resto de cabeceras de documento los pone CloudFront sobre el HTML (16.8).
+- 🆕 V2.1. CSP del documento con `script-src 'self'` más los hashes de los scripts en línea del build. Un `<script>` inyectado por un XSS no tiene hash y no corre. La mitad de la cabecera la pone CloudFront y la mitad de la meta el build del frontend; el smoke exige las dos (16.8, 17.2).
+- 🆕 V2.1. `Idempotency-Key` obligatoria en los `POST` que crean (9.6). No es un control de seguridad, pero cierra la puerta a duplicados por reintentos, que es el incidente más común de una API con usuarios reales.
+
+### 23.3 Borde
+
+- WAF con reglas gestionadas y dos límites de tasa: 100 / 5 min en `/api/auth/` y 3000 / 5 min global (16.8). El límite de login es por IP. No hay un `@nestjs/throttler`: en Lambda cada contenedor tiene su propia memoria y el contador no se comparte, así que un throttler en proceso deja pasar N veces el límite.
+- La API rechaza cualquier petición sin `x-origin-verify` en los stages desplegados. Llamar al execute-api de API Gateway desde internet devuelve 403.
+- Throttling de cuenta en el stage del HTTP API, por debajo del límite de WAF, para que un pico se corte con 429 de API Gateway antes de abrir Lambdas.
+- Security groups: RDS solo acepta al proxy y al migrator. Las Lambdas salen por NAT. S3 se va por el endpoint gateway, sin salir a internet.
+
+### 23.4 Datos y secretos
+
+- `app_user` no tiene contraseña (11.3). El maestro rota cada 30 días y solo lo lee el migrator.
+- Los secretos no son variables de entorno. Son ARNs, y el valor se lee al arrancar (7.4). No se imprimen: pino los redacta y el error de Secrets Manager cita el ARN, no el valor (9.3).
+- `audit_logs` no se puede actualizar ni borrar, ni siquiera con el rol maestro, por el trigger (11.4).
+- Documentos cifrados con KMS del stage, prefijo `incoming/` escaneado por GuardDuty antes de que el procesador de dominio los vea (13.4).
+- El zip de la Lambda no contiene `.env`. `ignoreEnvFile` está forzado cuando existe `AWS_LAMBDA_FUNCTION_NAME`.
+
+### 23.5 Suministro y dependencias
+
+- OIDC. No hay `AWS_ACCESS_KEY_ID` en GitHub (16.9, 17.3).
+- `pnpm audit --prod --audit-level high` es un paso que falla el PR.
+- Dependabot semanal y CodeQL `security-extended` (17.1).
+- Los scripts de postinstall están en lista blanca (17.1). Un paquete nuevo que necesite compilar se ve en el diff de `pnpm-workspace.yaml`.
+- cdk-nag es gate de synth, no un informe que alguien lee si se acuerda (16.10).
+- 🆕 V2.1. Toda GitHub Action va fijada por SHA, y zizmor audita los workflows en cada PR (17.1).
+- 🆕 V2.1. Cada release lleva SBOM SPDX y una attestation de procedencia firmada con Sigstore. El deploy verifica la firma y los hashes antes de asumir el rol de la cuenta (17.2). Es SLSA Build L2 sin coste: el repositorio es público y la firma la emite GitHub.
+
+### 23.6 Lo que esta versión deja apagado a propósito
+
+| Control | Estado | Cómo se enciende |
+|---|---|---|
+| Cognito Plus (credenciales filtradas, riesgo adaptativo) | Apagado (`ESSENTIALS`) | `featurePlan: 'PLUS'` en el stage que corresponda |
+| Restricción geográfica | Apagada | `geoAllowList: ['PE', …]` |
+| Correo con dominio propio (SES) | Apagado: email por defecto de Cognito | Anexo A, cuando haya dominio de correo verificado |
+| WAF Bot Control / ATP | No incluido | Es un add-on de pago por millón de peticiones; se añade como regla gestionada el día que el tráfico lo justifique |
+
+Ninguno de esos apagados impide pasar una revisión de arquitectura. Están escritos como un cambio de config, no como un proyecto nuevo.
+
+---
+## 24. Observabilidad
+
+🆕 **V2.**
+
+### 24.1 Logs
+
+Una línea JSON por petición, emitida por pino, con `requestId`, método, ruta, status y latencia. Sin cookies, sin secretos, sin body (9.3). El `requestId` de la línea es el mismo que el cliente recibe en `x-request-id` y en el cuerpo de error, y el mismo que se guarda en `audit_logs`.
+
+Para seguir una petición: el id que muestra la UI (el frontend lo enseña cuando hay un error) se pega en Logs Insights.
+
+```
+fields @timestamp, msg, req.url, res.statusCode
+| filter requestId = "…"
+```
+
+`/api/health` no se loguea en el access log de la aplicación. Sí aparece en los access logs de API Gateway, que es donde se mira si el balanceador está pegando.
+
+### 24.2 Trazas
+
+X-Ray activo en la Lambda y en el HTTP API. No se enciende el tracing de Sentry a la vez (9.3): dos exportadores de OpenTelemetry en el mismo proceso se pisan y el cold start crece. Sentry recibe errores 5xx, con `release` igual al SHA del despliegue, y hace `flush` antes de volver.
+
+### 24.3 Alarmas
+
+Todas publican en el topic `<app-short>-<stage>-alerts`, y de ahí al correo `<ALERT_EMAIL>`.
+
+| Alarma | Qué indica |
+|---|---|
+| 5xx de la API | El canary de prod se revierte solo si esta dispara durante el despliegue |
+| p95 de latencia de la API | Por encima del umbral del stack, no es un apagón pero es una degradación |
+| Throttles de la Lambda | El límite de concurrencia o el de la cuenta se quedó corto |
+| Mensajes en la DLQ de ingesta | Un documento lleva tres intentos fallando. No se reintenta solo otra vez |
+| CPU y almacenamiento libre de RDS | Capacidad, con días de margen en el almacenamiento gracias al autoscaling |
+| Presupuesto al 80 % y al 100 % | Coste, no salud. Evita descubrir la factura a fin de mes |
+
+El dashboard del stack de API junta peticiones, errores, latencia y conexiones del proxy. Es la primera pantalla de una incidencia, no un sustituto de las alarmas.
+
+### 24.4 Lo que se correlaciona
+
+`release` (SHA) va en el health y en Sentry. Cuando una alarma salta, se sabe qué commit está detrás del alias `live` sin entrar a la consola de Lambda. El pipeline no promueve un SHA distinto del que pasó `verify`: el artefacto `release-<sha>` es el mismo zip.
+
+🆕 **V2.1. Del navegador a la línea de log.** El frontend genera el `x-request-id` de cada llamada (un UUID, que `genRequestId` acepta) y lo deja como breadcrumb de Sentry cuando la llamada falla. Un error del navegador en Sentry lleva, en sus breadcrumbs, los `requestId` de las últimas llamadas a la API. Ese id se pega en Logs Insights (24.1) y lleva a la línea de pino, a la fila de `audit_logs` y, si fue un 5xx, al evento de Sentry del backend. No se usa tracing distribuido de Sentry: cuesta cuota del plan gratuito y aquí X-Ray ya traza el lado del servidor (24.2).
+
+---
+## 25. Rendimiento
+
+🆕 **V2.** Los números de esta sección son del proyecto de verificación (07/10/2026, Node 24, bundle real, PostgreSQL 17 local), no estimaciones.
+
+### 25.1 Arranque
+
+| Medida | Valor |
+|---|---|
+| Carga del módulo del bundle | 164 ms |
+| Primera invocación (bootstrap de Nest + primera query) | 411 ms |
+| Segunda invocación en el mismo proceso | 2.1 ms |
+| Tamaño del bundle de la API, minificado | 6644 KB |
+| Migrator / ingest-worker | 2351 KB / 2416 KB |
+
+El cold start que ve un usuario en prod no es el de la tabla: la concurrencia provisionada del alias `live` (2 en prod) mantiene entornos calientes. Dev y qa no la pagan; el primer request después de un rato de silencio paga ~400 ms más el tiempo de VPC. Es aceptable en esos stages y está escrito en `config.ts` para subirlo sin tocar código.
+
+1769 MB en prod no es un capricho de "más memoria = más rápido" suelto: Lambda asigna CPU en proporción a la memoria, y el bootstrap de Nest es CPU. 1769 MB es el escalón en el que la función recibe una vCPU entera. Por debajo, el cold start crece más de lo que se ahorra.
+
+### 25.2 Camino de una petición
+
+El navegador habla con CloudFront (HTTP/2 y HTTP/3) en el mismo origen. `/api/*` no pasa por el bucket. No hay preflight de CORS: una petición same-origin simple es un solo round trip.
+
+La Lambda no abre conexiones nuevas a Postgres en cada request. El pool es de 3, delante de RDS Proxy, que multiplexa hacia la instancia. El token IAM se regenera cuando el driver pide una contraseña, no una vez por arranque (7.2).
+
+`statement_timeout` de 10 s y el throttling del API acotan el daño de una query mala o de un cliente que reintenta en bucle.
+
+### 25.3 Lo que no se mete en el camino crítico
+
+- El antivirus y el parseo de documentos ocurren en la cola, no en el `POST` que devuelve la URL. El usuario recibe la URL en una query y un `INSERT`.
+- Swagger no se registra en Lambda (`main.ts` solo lo monta en el proceso local).
+- `pino-pretty` no existe en el bundle.
+- Las migraciones no ocurren en el request.
+
+### 25.4 Presupuesto
+
+Dev está dimensionado para ser el sitio donde se prueba, no un clon de prod: `t4g.micro`, una NAT, sin provisioned concurrency, logs a 30 días. El presupuesto de la config (150 USD dev, 200 qa, 1500 prod) alerta antes de que un experimento se deje encendido. Los números son techos de aviso, no una previsión de factura: se ajustan cuando exista un mes real de uso.
+
+---
+## 26. Datos, backups, recuperación y cumplimiento
+
+🆕 **V2.**
+
+### 26.1 Copias
+
+| Qué | Retención | Dónde se configura |
+|---|---|---|
+| Backups automáticos de RDS, dev y qa | 7 días | `db.backupRetentionDays` |
+| Backups automáticos de RDS, prod | 35 días | igual |
+| Point-in-time recovery | Dentro de esa ventana | lo enciende el mismo backup |
+| Multi-AZ | Apagado en los tres stages. Una caída de zona se recupera con el PITR; el tiempo aceptado es de horas | `db.multiAz` |
+| Versionado del bucket de documentos | Activo | `storage-stack` |
+| Logs de aplicación | 30 días (dev/qa), 13 meses (prod) | `logRetentionDays` |
+
+Un punto de restauración es un clon, no un `DROP` de la instancia que está sirviendo. El procedimiento, cuando haga falta, es: restaurar a una instancia nueva desde el PITR, apuntar un stage de qa al clon (cambiando el secreto del maestro de qa, no el de prod) y comprobar el health antes de decidir si se promueve. No hay un botón de "recuperar prod" en el pipeline, a propósito: es una decisión de incidente, no un job.
+
+`deletionProtection` está activo en prod. Borrar el stack de prod en un `cdk destroy` distraído falla, y eso es lo que se quiere.
+
+### 26.2 Despliegue y marcha atrás
+
+El esquema se migra antes que el código, y la migración es compatible con el código que todavía sirve (11.4). Si el código nuevo está mal, el canary de prod lo detecta por la alarma de 5xx y CodeDeploy devuelve el alias al version anterior sin tocar el esquema. Por eso una migración no puede quitar una columna que el código viejo todavía lee.
+
+Si hay que deshacer una migración, es la acción `revert` del migrator con `confirm: "REVERT_ONE"`, una sola, invocada a mano, no por el pipeline. Revierte la última. No hay un "revert all".
+
+### 26.3 Residencia y borrado
+
+La región es `<REGION>` para datos, cómputo y backups. El único recurso fuera de esa región es el par certificado + WAF en `us-east-1`, que no almacena datos de negocio: CloudFront no es un almacén, y el WAF ve metadatos de la petición.
+
+No hay borrado físico de usuarios ni de auditoría. Desactivar es el mecanismo. Los documentos en cuarentena se quedan: son la evidencia de por qué no se procesaron. El lifecycle del bucket solo expira subidas a `incoming/` que nadie confirmó.
+
+### 26.4 Datos personales
+
+🆕 **V2.3.** El producto guarda datos financieros y de identidad (ADR-13, fila 6): documento, fecha de nacimiento, estado civil y cónyuge, origen de fondos, cuentas bancarias, saldos y movimientos. La biometría no se guarda aquí (28.6). El email, el nombre y el sub viven en `users` y, como `sub`, en `audit_logs` y en `uploaded_by_sub`.
+
+Reglas que valen desde la primera entidad de dominio:
+
+- Los logs de aplicación no llevan email ni valores de columnas sensibles. El filtro de pino (9.3) quita el email; cada entidad declara sus campos sensibles y el servicio no los pasa a `logger`.
+- `before`/`after` de `audit_logs` registran que el campo cambió, con el valor `"[redactado]"`. La bitácora dice quién y cuándo, no el dato.
+- Antes de prod existen dos lecturas: `GET /api/me/export` (la persona pide lo suyo) y `GET /api/users/{id}/export` (solo `<ROL_B>`). La cancelación no borra la fila de auditoría: anonimiza los campos personales de `users` y de las tablas de dominio, y deja el `sub` en la bitácora.
+- No hay cifrado de columna hasta que se sepa el campo concreto (26.5). El disco de RDS y el bucket ya van cifrados.
+
+### 26.5 Lo que no cubre este núcleo
+
+- Una segunda región activa. El RTO aceptado es de horas (ADR-13), así que una caída de zona se cubre restaurando el PITR, no con Multi-AZ ni con activo-activo.
+- Cifrado a nivel de columna. El disco de RDS y el bucket ya están cifrados. Cifrar columnas sueltas se añade el día que un dato concreto lo exija, no por adelantado: TypeORM y las búsquedas se complican y es fácil dejar de poder consultar.
+- Copias fuera de la cuenta (backup cross-account). Es el siguiente paso razonable de prod y requiere la cuenta de prod, que todavía es un marcador. Se hace con una copia del snapshot a `<ACCOUNT_PROD>` de seguridad, no reescribiendo el stack.
+
+---
+## 27. Registro de decisiones (ADR)
+
+🆕 **V2.** Cada decisión de abajo se tomó al escribir esta versión, con el dato que la sostiene. Cambiarla es un PR que actualiza esta sección, no un parche silencioso en un archivo.
+
+### ADR-1. Node 24 en Lambda, local y CI
+
+Node 20 en Lambda se deprecó el 30/04/2026. `nodejs22.x` se depreca el 30/04/2027. `nodejs24.x` está soportado hasta el 30/04/2028. Un proyecto que arranca ahora y eligiera 22 tendría que migrar de runtime dentro de su primer año. Node 24 no admite handlers de callback: el export de `lambda.ts` es async y el adaptador es `@codegenie/serverless-express` 5, que devuelve promesas.
+
+### ADR-2. TypeScript 6.0, no 7
+
+Nest CLI 12 fija TypeScript `~6.0`. `typescript-eslint` 8 no acepta TypeScript 7. Aunque el compilador 7 ya emite metadata de decoradores, el resto de la cadena no arranca. Se queda en `~6.0.3`, que es lo que se compiló y se testeó.
+
+### ADR-3. pnpm 12 y Vitest 5
+
+Un solo gestor en los dos repositorios, con `packageManager` fijado, para que el lockfile sea reproducible y los scripts de instalación queden en lista blanca. Vitest, y no Jest, porque la suite corre sobre SWC (que sí emite metadata de decoradores) y el arranque es el que se midió en CI. La cobertura se exige en el job e2e, no en el unitario.
+
+### ADR-4. AWS CDK, no Serverless Framework
+
+Serverless Framework v3 está sin mantenimiento desde 2025 y v4 exige licencia. La alternativa mantenida (`osls`) seguiría siendo un framework cuyo trabajo real (la VPC, el proxy, el WAF, las alarmas, OIDC) ya no cabe en un `serverless.yml` corto. CDK describe todo el sistema, y cdk-nag lo revisa en el synth. El coste es aprender los constructs; el código de `infra/lib/` es ese aprendizaje ya escrito.
+
+### ADR-5. Un origen, cookies `httpOnly`
+
+El frontend y la API se sirven bajo `<DOMINIO_APP>`. CloudFront parte `/api/*` hacia API Gateway e inyecta `x-origin-verify`. El backend emite la sesión en cookies que JavaScript no lee. Se descartó guardar tokens en memoria del SPA: un refresco de página obliga a un baile de tokens en el body, y cualquier librería de logs del navegador se los queda. Se descartó el header `Authorization`: obliga a que el JS lea el token, que es justo lo que no queremos.
+
+### ADR-6. IAM de extremo a extremo contra RDS Proxy
+
+La Lambda de la API no tiene una contraseña que rotar, filtrar o copiar a un `.env`. El token dura 15 minutos y el driver lo pide como función. El usuario maestro existe porque las migraciones necesitan DDL y el proxy con IAM no lo da; está encerrado en el migrator y rota solo.
+
+### ADR-7. Migrar antes de publicar
+
+El pipeline aplica el esquema y después mueve el alias. Combinado con migraciones compatibles hacia atrás, un fallo del código nuevo se revierte con CodeDeploy sin una migración de emergencia a las 3 de la mañana. El canary es del 10 % durante 5 minutos y solo en prod, donde hay tráfico para que la alarma signifique algo.
+
+### ADR-8. Prod en otra cuenta
+
+`dev` y `qa` comparten `<ACCOUNT_NONPROD>`. `prod` está en `<ACCOUNT_PROD>`. Un rol de deploy de dev no puede tocar prod porque es otra cuenta, no porque una policy esté bien escrita. El stack `ci` se despliega una vez en cada una. No se automatiza AWS Organizations: con dos cuentas, un stack por cuenta es más simple y se entiende en un PR.
+
+### ADR-9. TypeORM 1.1 fijado sin rango
+
+`migration:generate` cambia el SQL que emite entre versiones menores. El paquete va fijado en `1.1.1`. Subirlo es un PR que regenera una migración de prueba y enseña el diff. Las roturas de la 1.0 que el código ya respeta: `select` y `relations` solo en forma de objeto, `null` dentro de `where` lanza, no existe `findOneById` ni `Connection`.
+
+### ADR-10. Falla cerrado, pero un corte de base no es un logout
+
+Si no se puede leer la fila del usuario, no se le autoriza. El status de ese caso es 503, no 401. Un 401 haría que el frontend tirara la sesión y mandara a todo el mundo al login durante un blip de RDS. El 503 se reintenta.
+
+### ADR-11. Español fijo en los mensajes de la API
+
+Los mensajes de error y de validación están en español, que es el idioma de quienes operan la aplicación. No hay capa de i18n en el núcleo. Añadirla el día que exista un segundo idioma es un mapa de mensajes, no una reescritura: los mensajes ya viven en los DTOs y en las excepciones, no repartidos por las plantillas.
+
+### ADR-12. Sin multi-tenant en el esquema
+
+No hay `tenant_id` en las tablas. El producto, hoy, es una organización por despliegue (una cuenta, un stage, un pool). Meter la columna "por si acaso" obliga a no olvidarla en cada query y a testear el aislamiento desde el primer día, para un requisito que nadie ha pedido. Si aparece, es una migración de expandir (columna nullable, luego obligatoria) y un filtro en el guard, no un rediseño de la infraestructura.
+
+### ADR-13. Decisiones de producto del 2026-10-08
+
+🆕 **V2.2, revisado en V2.3** con el prototipo `propia_desktop`. Cerradas antes de escribir el dominio. Cambiar una fila es un PR que actualiza esta tabla y el sitio que nombra.
+
+| # | Decisión | Qué queda escrito |
+|---|---|---|
+| 1 | Una organización por instalación | ADR-12. No hay `tenant_id` |
+| 2 | Inversionistas y equipo interno, con pantallas distintas | Grupos de Cognito: `Inversionista` (lo recibe quien se registra), `Admin`, `Tesoreria` y `Operaciones` (los asigna un Admin). Permisos en 28.2 |
+| 3 | El alta es abierta y entra ese día | `selfSignup: true`, `userStatus` nace en `active`. Para mover dinero hace falta el onboarding de 4 pasos y el poder firmado (10.7) |
+| 4 | Email, contraseña y MFA. Sin SSO | `mfa: 'REQUIRED'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes |
+| 5 | Los usuarios están en Perú | `<REGION>` = `sa-east-1` (São Paulo: no hay región de AWS en Perú). `geoAllowList: ['PE']` solo en prod. El webhook de DocuSign no pasa por CloudFront (28.6). El certificado y el WAF de CloudFront siguen en `us-east-1` y no guardan datos. La transferencia de datos personales a Brasil (Ley 29733) está en el Anexo A |
+| 6 | Datos sensibles: financieros y de identidad | Documento, fecha de nacimiento, estado civil y cónyuge, origen de fondos, cuentas bancarias, saldos y movimientos. La selfie y la biometría se quedan en DocuSign; aquí solo el resultado. No se loguean y se redactan en la auditoría (26.4) |
+| 7 | Español, preparado para traducir | Los mensajes de la API siguen en español y en un solo sitio (ADR-11). El cliente no hardcodea textos (blueprint del frontend) |
+| 8 | Auditoría de todo cambio | `audit_logs` append-only, dentro de la transacción, con antes/después (9.5, 12.2) |
+| 9 | Papelera, no borrado físico | `deletedAt` en las entidades de negocio editables (11.1). El libro mayor y los movimientos de dinero no tienen papelera: no se borran nunca (28.3) |
+| 10 | Escritorio, usable en el móvil. Con internet | El cliente es responsive a partir del prototipo de escritorio. No hay modo offline ni app nativa |
+| 11 | Documentos | Los tipos de 28.8. Las constancias aceptan PDF, JPEG o PNG; el resto, PDF |
+| 12 | Aviso por email y dentro de la app. Sin tiempo real | Tabla `notifications`. Al crearla se manda el mismo texto por SES. El cliente la consulta al entrar y cada 60 s con la pestaña visible. Eventos en 28.9 |
+| 13 | Reportes: Excel, CSV, PDF y tableros | CSV y `.xlsx` (exceljs) los genera la API. El PDF lo genera la API con pdfkit, sin Chromium. Los gráficos son del cliente (ECharts) |
+| 14 | Una sola integración: DocuSign | Firma del poder y verificación de identidad, detrás de `SignatureProvider` para pasar a Keynua (ADR-14). Sin API bancaria, de notaría ni de SUNARP |
+| 15 | Dominio propio, ya registrado | Falta el nombre y el id de la zona (Anexo A). El correo sale por SES en ese dominio |
+| 16 | Dos cuentas AWS | ADR-8. Faltan los números de cuenta |
+| 17 | 24/7, con una caída tolerable de horas | Prod: `t4g.small`, sin Multi-AZ, un NAT, una instancia de Lambda provisionada, backup de 35 días, presupuesto 400 USD/mes |
+| 18 | Invierte quien está habilitado | `investorStatus = 'enabled'` (10.7). Sin eso, 403 `INVESTOR_NOT_ENABLED` |
+| 19 | El dinero entra por una wallet | Depósito a una cuenta bancaria de PROPIA, constancia, validación de Tesorería, saldo disponible. La renta entra a la wallet. El retiro lo paga Tesorería a mano (28.3) |
+| 20 | Soles y dólares, sin conversión | Cada propiedad tiene una moneda. La wallet tiene un saldo por moneda. Se deposita, invierte, cobra y retira en la misma |
+| 21 | Personas naturales con DNI, CE o pasaporte | No invierten empresas |
+| 22 | Cuotas y máximo por inversionista, por propiedad | Los define Operaciones al crear la propiedad (28.4) |
+| 23 | El compromiso no se deshace | El dinero comprometido queda bloqueado hasta el cierre (28.4) |
+| 24 | Propiedad no financiada en plazo | PROPIA compra las unidades que faltan con su cuenta institucional y la operación sigue. Esas unidades se pueden vender después en el secundario (28.4) |
+| 25 | Renta, gastos, retenciones y valorización los registra Operaciones | El sistema reparte la renta neta por unidades. Las retenciones se suben en PDF. La valorización se carga a mano con cada tasación (28.5) |
+| 26 | Notaría y SUNARP a mano | Operaciones avanza cada paso y sube la escritura y la partida (28.4, 28.7) |
+| 27 | Secundario | Ventana interna para copropietarios configurable (7 días), precio libre, 3 % del precio al vendedor (configurable, lo cobra PROPIA) y retracto de 30 días (28.7) |
+| 28 | Acceso | La landing es pública. Con cuenta se ven las propiedades y el secundario. Sin cuenta no se ve nada más |
+| 29 | Backoffice dentro de la misma app | `/admin`, con el estilo del prototipo. Las pantallas de cada rol, en el blueprint del frontend |
+
+### ADR-14. La firma va detrás de una interfaz
+
+Se empieza con DocuSign porque ya hay cuentas de dev y prod, y se piensa pasar a Keynua. El dominio solo conoce `SignatureProvider` (28.6) y la tabla `signature_envelopes` lleva la columna `provider`. Cambiar de proveedor es escribir otra implementación y cambiar `SIGNATURE_PROVIDER`; los poderes ya firmados siguen valiendo porque su PDF está guardado como documento `poder_firmado`. No se usa la UI embebida en iframe de ningún proveedor: el navegador sale al proveedor y vuelve, así la CSP no cambia de proveedor a proveedor.
+
+### ADR-15. Libro mayor de partida doble
+
+Todo movimiento de dinero es una transacción con asientos que suman cero por moneda. El saldo de una cuenta es la suma de sus asientos, y la columna `balance` es una caché que se actualiza en la misma transacción. Se descartó guardar solo un saldo por usuario: no explica de dónde salió un sol, no se puede conciliar con el banco y un bug lo corrompe sin dejar rastro. Los asientos no se editan ni se borran (trigger, igual que `audit_logs`); un error se corrige con una transacción inversa.
+
+---
+## 28. Dominio PROPIA
+
+🆕 **V2.3.** El modelo de negocio sale del prototipo `propia_desktop` y de las decisiones del ADR-13. Esta sección es el diseño: entidades, estados, reglas y contrato. El código se escribe con la forma de la sección 12 (entidad, DTO, servicio, controlador, auditoría en la transacción, `@Idempotent()` en todo `POST` que crea).
+
+PROPIA es un marketplace de copropiedad inmobiliaria. Una propiedad se divide en **unidades** del mismo precio (el "ticket"). Varias personas compran unidades; al cerrar, cada una queda inscrita en SUNARP como dueña de una **cuota ideal** (su porcentaje). PROPIA actúa como **apoderado** de todos gracias al **poder especial marco** que cada inversionista firma al registrarse: compra, administra el alquiler y reparte la renta neta cada mes. Quien quiere salir publica una oferta en el **mercado secundario**; los demás copropietarios tienen preferencia y un **retracto** de 30 días.
+
+### 28.1 Mapa de módulos
+
+| Módulo | Tablas | Sección |
+|---|---|---|
+| `investors` | `investor_profiles`, `signature_envelopes` | 10.7, 28.6 |
+| `ledger` | `ledger_accounts`, `ledger_transactions`, `ledger_entries` | 28.3 |
+| `treasury` | `treasury_bank_accounts`, `payout_bank_accounts`, `deposits`, `withdrawals` | 28.3 |
+| `properties` | `properties`, `property_valuations` | 28.4, 28.5 |
+| `investments` | `commitments`, `holdings` | 28.4 |
+| `rents` | `rent_periods`, `rent_expenses`, `rent_distributions` | 28.5 |
+| `secondary` | `secondary_offers` | 28.7 |
+| `notifications` | `notifications` | 28.9 |
+| `documents` | `documents` (sección 13) | 28.8 |
+
+Toda tabla de dinero usa `numeric(14,2)` y una columna `currency` con `CHECK (currency IN ('PEN','USD'))`. Ninguna operación mezcla monedas: un `INSERT` que lo intente falla por un `CHECK` o por el trigger de 28.3, no por una validación del servicio.
+
+### 28.2 Roles y permisos
+
+| Acción | Inversionista | Tesoreria | Operaciones | Admin |
+|---|---|---|---|---|
+| Ver propiedades y secundario | ✅ | ✅ | ✅ | ✅ |
+| Onboarding, wallet, cartera, ofertas propias | ✅ suyas | — | — | — |
+| Validar o rechazar depósitos | — | ✅ | — | ver |
+| Pagar o rechazar retiros | — | ✅ | — | ver |
+| Crear y editar propiedades, avanzar cierres | — | — | ✅ | ver |
+| Registrar renta, gastos, valorizaciones, retenciones | — | — | ✅ | ver |
+| Avanzar ofertas del secundario (retracto, notaría, SUNARP) | — | — | ✅ | ver |
+| Reabrir un onboarding rechazado | — | — | ✅ | ✅ |
+| Usuarios internos, grupos y configuración (`settings`) | — | — | — | ✅ |
+
+Un interno no tiene wallet ni invierte con su usuario interno. La cuenta institucional de PROPIA (28.4) no es un usuario de Cognito: es una fila de `users` con `id` fijo `00000000-0000-0000-0000-000000000001` y sin login, que el migrator crea en el seed.
+
+### 28.3 Wallet, libro mayor, depósitos y retiros
+
+**Cuentas.** `ledger_accounts` tiene una fila por `(owner, kind, currency)`:
+
+| `kind` | Dueño | Qué es |
+|---|---|---|
+| `available` | inversionista o PROPIA | Saldo disponible. `CHECK (balance >= 0)` |
+| `committed` | inversionista o PROPIA | Bloqueado en compromisos o compras del secundario. `CHECK (balance >= 0)` |
+| `withdrawing` | inversionista | Retiro pedido, pendiente de que Tesorería transfiera. `CHECK (balance >= 0)` |
+| `bank` | sistema | Contrapartida del dinero en las cuentas bancarias de PROPIA. Puede ser negativa |
+| `property_settlement` | sistema | Lo pagado por las propiedades al cerrar |
+| `commissions` | sistema | Comisiones del secundario cobradas por PROPIA |
+
+**Asientos.** `ledger_transactions` (id, `type`, `reference_type`, `reference_id`, `actor_sub`, `request_id`, `created_at`) y `ledger_entries` (id, `transaction_id`, `account_id`, `currency`, `amount` con signo). Un trigger `DEFERRABLE INITIALLY DEFERRED` comprueba al hacer `COMMIT` que cada transacción suma cero por moneda. Otro rechaza `UPDATE` y `DELETE`. El servicio `LedgerService.post(type, reference, lines, manager)` es la única puerta: bloquea las cuentas con `SELECT … FOR UPDATE` en orden de id (para no cruzarse en un deadlock), inserta los asientos y actualiza `balance`. Si un `CHECK (balance >= 0)` salta, la transacción entera se revierte y el servicio responde 409 `INSUFFICIENT_FUNDS`.
+
+**Lo que ve el inversionista** (pantalla Wallet), por moneda:
+
+| Línea | De dónde sale |
+|---|---|
+| Disponible | `available` |
+| Comprometido | `committed` |
+| En retiro | `withdrawing` |
+| Pendiente de validación | Suma de sus `deposits` en `submitted`. No es saldo: no suma al total |
+| Saldo total | Disponible + comprometido + en retiro |
+| Movimientos | Sus asientos, con el texto del `type` y la referencia |
+
+**Depósito.** El inversionista elige moneda, ve las cuentas de PROPIA de esa moneda (`treasury_bank_accounts`, que edita el Admin: banco, titular, RUC, tipo, número, CCI, moneda) y transfiere desde su banco. Luego crea el depósito: banco destino, monto y constancia (documento `constancia_deposito`). Estado `submitted`. Tesorería compara con el extracto y:
+
+- **aprueba:** asiento `bank` −monto / `available` +monto. Estado `approved`.
+- **rechaza** con motivo obligatorio. Estado `rejected`. No toca el libro.
+
+Tesorería no edita el monto. Si no coincide con el banco, rechaza con el motivo y el inversionista crea otro.
+
+**Retiro.** El inversionista registra sus cuentas de destino en Perfil (`payout_bank_accounts`: banco, tipo, número, CCI, moneda, una predeterminada por moneda). Pide un retiro a una de ellas por un monto ≤ disponible: asiento `available` −monto / `withdrawing` +monto, estado `requested`. Tesorería transfiere fuera de la app, sube la `constancia_retiro` y lo marca pagado: asiento `withdrawing` −monto / `bank` +monto, estado `paid`. Si lo rechaza (motivo obligatorio): `withdrawing` → `available`, estado `rejected`. El inversionista puede cancelar mientras está en `requested`.
+
+**Conciliación.** Un job diario (sección 14) compara la suma de asientos de cada cuenta con `balance` y la suma total por moneda con cero. Cualquier diferencia es una alarma, no una corrección automática.
+
+### 28.4 Propiedades, compromisos y cierre
+
+**Propiedad** (`properties`): código, nombre, distrito y ciudad, descripción, gastos y riesgos (texto), moneda, precio, `units_total`, `unit_price`, `max_units_per_investor`, `funding_deadline`, renta anual estimada (%), día de pago de la renta, imagen de portada (documento privado servido por URL prefirmada) y `status`. `CHECK (price = unit_price * units_total)`: el precio se divide exacto, sin centavos sueltos.
+
+| `status` | Quién la mueve | Qué pasa |
+|---|---|---|
+| `draft` | Operaciones | Editable, invisible para inversionistas. Única que acepta papelera |
+| `funding` | Operaciones la publica | Visible. Acepta compromisos |
+| `funded` | Sistema, al llenarse; o al vencer el plazo, cuando PROPIA completa | Ya no acepta compromisos. Aviso a Operaciones |
+| `notary` | Operaciones | Firma de escritura en curso. Sube `escritura` |
+| `registered` | Operaciones, con la `partida_registral` subida | Liquida compromisos y crea `holdings` |
+| `operating` | Sistema, tras `registered` | Reparte renta. Admite ofertas del secundario |
+
+**Compromiso** (`commitments`): inversionista, propiedad, unidades, monto (`units * unit_price`), estado `active` → `settled`. Crearlo exige `investorStatus = 'enabled'`, propiedad en `funding`, `units ≤ unidades libres` y `units + las que ya tiene comprometidas ≤ max_units_per_investor`. Se bloquea la fila de la propiedad (`FOR UPDATE`) antes de contar las unidades libres: dos compromisos simultáneos no pueden vender la misma unidad. Asiento `available` −monto / `committed` +monto. No se cancela (ADR-13, 23). Si con él se llega a `units_total`, la propiedad pasa a `funded` en la misma transacción.
+
+**Plazo vencido.** El job diario busca propiedades en `funding` con `funding_deadline` pasado. Para cada una, la cuenta institucional de PROPIA crea un compromiso por las unidades libres (asiento `bank` −monto / `committed` de PROPIA +monto: el dinero de PROPIA no pasa por una wallet) y la propiedad pasa a `funded`. Ese compromiso es como cualquier otro: al registrar, PROPIA tiene `holdings` y puede vender en el secundario.
+
+**Registro.** Al pasar a `registered`, para cada compromiso: asiento `committed` −monto / `property_settlement` +monto, estado `settled`, y una fila en `holdings` (inversionista, propiedad, unidades, `locked_units` en 0). La cuota ideal es `units / units_total`, calculada al leer.
+
+### 28.5 Renta, gastos, valorización y retenciones
+
+**Período de renta** (`rent_periods`): propiedad, mes (`YYYY-MM`), renta bruta cobrada, fecha de pago y estado `draft` → `distributed`. Los gastos van en `rent_expenses` (concepto, monto): mantenimiento, arbitrios, seguro, los que haya. Renta neta = bruta − gastos.
+
+Distribuir lo hace Operaciones y no se deshace. Para cada `holding` de la propiedad, `parte = floor(neta * units / units_total, 2 decimales)`; los centavos que sobran van al `available` de PROPIA. Un solo asiento: `bank` −neta / `available` +parte de cada uno. Una fila por inversionista en `rent_distributions` (para el historial de pagos de la cartera) y un aviso. Un error se corrige con otro período de ajuste, no editando el distribuido.
+
+**Valorización** (`property_valuations`): fecha, valor y `tasacion` en PDF. La cartera muestra la última: `valor * units / units_total` y su variación contra lo invertido.
+
+**Retenciones.** Operaciones sube una `constancia_retencion` por inversionista y año. La app no calcula impuestos.
+
+**Cartera** (pantalla Mi cartera), por propiedad: monto invertido, cuota ideal, valorización estimada, renta acumulada (suma de `rent_distributions`), última renta mensual, proyección anual (última × 12), próximo pago (día de pago de la propiedad), gastos del último período prorrateados, historial de pagos y documentos (escritura, partida, su poder firmado, sus constancias). Las propiedades en `funding`/`funded`/`notary` aparecen como "En proceso de cierre" con el paso actual.
+
+### 28.6 Firma e identidad con DocuSign
 
 ```ts
-migrations: [path.join(__dirname, '/../migrations/*.{ts,js}')],
+// src/modules/investors/signature/signature-provider.ts
+export interface PowerOfAttorneyRequest {
+  userSub: string;
+  signer: { name: string; email: string; documentType: 'DNI' | 'CE' | 'PASAPORTE'; documentNumber: string };
+  /** Solo con sociedad de gananciales: firma en el mismo sobre, sin cuenta. */
+  spouse?: { name: string; email: string };
+}
+
+export interface SignatureEvent {
+  envelopeId: string;
+  status: 'sent' | 'completed' | 'declined' | 'voided';
+  identityVerified: boolean | null;
+}
+
+export interface SignatureProvider {
+  readonly name: 'docusign' | 'keynua';
+  createPowerOfAttorney(req: PowerOfAttorneyRequest): Promise<{ envelopeId: string }>;
+  /** URL de un solo uso a la que el navegador sale para firmar y desde la que vuelve a `returnUrl`. */
+  signingUrl(envelopeId: string, userSub: string, returnUrl: string): Promise<string>;
+  verifyWebhook(rawBody: Buffer, headers: Record<string, string | undefined>): boolean;
+  parseWebhook(rawBody: Buffer): SignatureEvent;
+  downloadSignedPdf(envelopeId: string): Promise<Buffer>;
+}
 ```
 
-se añadió en el commit `10aa322` (15/09/2026), posterior a la redacción de esos comentarios. **No pude determinar si el comentario quedó obsoleto por descuido o si describe una restricción que sigue siendo relevante por otro motivo que no identifiqué.** El comportamiento no cambia —`migrationsRun` sigue siendo `false`, así que declarar `migrations` no las ejecuta— pero la explicación escrita es incorrecta. En el proyecto nuevo, escribe el comentario describiendo el estado real.
+`DocuSignProvider` usa la eSignature REST API con JWT Grant: integration key, user id, RSA privada y la clave HMAC de Connect viven en Secrets Manager (`/<org>/<app-short>/<stage>/docusign`), nunca en variables de entorno. dev apunta a la cuenta demo de DocuSign y prod a la de producción, que ya existen. El sobre sale de una plantilla con el texto del poder: el titular es firmante embebido (`clientUserId`) con el flujo de ID Verification; el cónyuge, si hay, es firmante remoto por email en el orden 2.
 
-### A.2 Por qué `engines.node` dice `>=26.0.0`
+El navegador no confía en el parámetro con el que vuelve de DocuSign. La verdad es el webhook de DocuSign Connect, y no entra por CloudFront por dos razones: la restricción geográfica de prod (`PE`) es de toda la distribución y bloquearía a los servidores de DocuSign, y la política de origen de `/api/*` ya reenvía 10 de 10 cabeceras, así que no cabe `X-DocuSign-Signature-1`.
 
-No hay en el repositorio, ni en los mensajes de commit, ni en `docs/`, ninguna explicación de por qué se fijó Node 26 cuando el runtime de Lambda es `nodejs20.x`. Mi hipótesis —que se fijó a la versión instalada en la máquina de quien inicializó el proyecto y nunca se revisó— es **una conjetura, no un hecho verificado**. La corrección 19.6 asume que es un descuido. Si existiera una razón real (por ejemplo, una dependencia que exija 26), habría que revisarla antes de bajar el número.
+Entra por una Lambda propia, `<app-short>-<stage>-webhooks`, con Function URL (`authType: NONE`), dentro de la VPC y con el mismo empaquetado que el worker (6.11). Verifica `X-DocuSign-Signature-1` (HMAC-SHA256 del cuerpo crudo, en base64) antes de parsear nada; sin firma válida, 401 y no toca la base. La concurrencia reservada es 2, para que un flood no agote las conexiones del proxy. Si cdk-nag marca la URL sin autenticación, la aceptación va en `nag.ts` con este motivo: la autenticación es el HMAC. Un evento repetido no hace nada dos veces: se guarda en `signature_envelopes.events` y se compara el estado. Con `completed` e identidad verificada, el PDF firmado se guarda como `poder_firmado` y el inversionista pasa a `enabled`. Mientras tanto, el cliente vuelve a pedir `me()` cada pocos segundos.
 
-### A.3 El contrato de `/auth/logout`
+Los datos biométricos y la imagen del documento no salen de DocuSign. Aquí se guardan el resultado (`identityVerified`), las fechas y el PDF del poder.
 
-`auth.service.ts` llama a `GlobalSignOutCommand`, que requiere un **AccessToken**. Pero el controlador obtiene el usuario con `@CurrentUser()`, que lee el payload decodificado por `jwt.strategy.ts` a partir del token del header `Authorization` — y el resto de la aplicación envía ahí el **IdToken**.
+### 28.7 Mercado secundario
 
-**No pude determinar cuál de los dos tokens espera realmente el endpoint en producción.** Las posibilidades son: (a) el frontend envía el AccessToken solo en esa llamada, (b) el endpoint está roto y nadie lo ha notado, o (c) el pool está configurado de forma que ambos funcionan. No encontré el código del frontend en este workspace para comprobarlo. **En el proyecto nuevo, decide explícitamente un token para el header `Authorization` y documéntalo**, y si `logout` necesita el otro, pásalo en el cuerpo de la petición con un nombre claro.
+**Oferta** (`secondary_offers`): vendedor, propiedad (en `operating`), unidades, precio total (libre, en la moneda de la propiedad), `commission_pct` copiado de `settings` al publicar, comprador y fechas de cada paso. Publicarla bloquea esas unidades en `holdings.locked_units`; el vendedor no puede ofrecer más de las que tiene libres.
 
-### A.4 `ocr_confidence` frente a "confianza de extracción"
+| `status` | Quién | Qué pasa |
+|---|---|---|
+| `internal_window` | Vendedor publica | Solo la ven los copropietarios de esa propiedad durante `secondary.internal_window_days` (7) |
+| `open` | Sistema, al vencer la ventana | La ve cualquier inversionista con cuenta |
+| `buyer_found` | Comprador habilitado acepta | Asiento del comprador `available` −precio / `committed` +precio. La oferta sale del listado |
+| `retracto` | Operaciones, tras verificar | Corren `secondary.retracto_days` (30). Un copropietario puede ejercer su preferencia al mismo precio: sus fondos se bloquean y los del comprador original vuelven a `available` |
+| `notary` | Operaciones | Firma en notaría |
+| `completed` | Operaciones, con la partida | Unidades del vendedor al comprador en `holdings`. Asiento: `committed` del comprador −precio / `available` del vendedor +(precio − comisión) / `commissions` +comisión |
+| `cancelled` | Vendedor, solo antes de `buyer_found` | Libera `locked_units` |
 
-`AGENTS.md` instruye mantener el concepto de "confianza de extracción" y **no** llamarlo `ocr_confidence`. No encontré en el código actual ninguna columna ni campo con ninguno de los dos nombres, así que **no pude verificar si la instrucción corrige algo existente o previene algo futuro**. Si tu dominio incluye extracción de documentos, define el nombre del campo desde el principio.
+La compra es de la oferta entera, como en el prototipo. La comisión es `round(precio * commission_pct / 100, 2)` y se le descuenta al vendedor; el comprador paga el precio publicado.
 
-### A.5 Los valores de `DEFAULT_SETTINGS`
+### 28.8 Documentos
 
-El seeder inserta tres claves de configuración. Pude leer sus nombres y valores por defecto, pero **no encontré documentación de qué consume cada una ni de qué rango de valores es válido**. Dos de ellas parecen URLs de términos y condiciones; la tercera no tiene un consumidor evidente en el código que revisé. En el proyecto nuevo, documenta cada clave de `settings` con su propósito, su tipo y su rango válido, en el mismo archivo donde la declaras.
+| Tipo | Quién lo sube | Dueño (`entityType`) | Quién lo ve |
+|---|---|---|---|
+| `constancia_deposito` | Inversionista | `deposit` | El inversionista y Tesorería |
+| `constancia_retiro` | Tesorería | `withdrawal` | El inversionista y Tesorería |
+| `poder_firmado` | Sistema, desde DocuSign | `user` | El inversionista, Operaciones y Admin |
+| `escritura`, `partida_registral` | Operaciones | `property` u `offer` | Los copropietarios de esa propiedad e internos |
+| `constancia_retencion` | Operaciones | `user` | El inversionista y Operaciones |
+| `tasacion` | Operaciones | `property` | Internos |
 
-### A.6 El sufijo del bucket de despliegue de respaldo
+La descarga comprueba ese permiso en el servicio antes de firmar la URL. El listado de 13.2 filtra por `entityType` y `entityId`.
 
-`deploy-functions.sh` tiene hardcodeado `app-risk-backend-dev-serverlessdeploymentbucket-kmr5xvqbleym`. El sufijo `kmr5xvqbleym` es un identificador aleatorio generado por CloudFormation. **No pude determinar si existe un procedimiento documentado para regenerarlo** si el stack se recrea. La corrección 19.5 elimina la necesidad de ese fallback, pero si decides conservarlo, documenta cómo obtener el valor:
+### 28.9 Avisos
 
-```bash
-aws cloudformation describe-stack-resource \
-  --stack-name <app>-<stage> \
-  --logical-resource-id ServerlessDeploymentBucket \
-  --query 'StackResourceDetail.PhysicalResourceId' --output text
-```
+Un aviso es una fila en `notifications` y el mismo texto por email. Se crean dentro de la transacción del cambio (el email sale después del `COMMIT`):
 
-### A.7 `kms:Decrypt` sobre `"*"`
+| Evento | A quién |
+|---|---|
+| Depósito aprobado o rechazado | Inversionista |
+| Depósito nuevo, retiro nuevo | Tesorería |
+| Retiro pagado o rechazado | Inversionista |
+| Poder firmado, identidad rechazada | Inversionista. Rechazo también a Operaciones |
+| Propiedad financiada, plazo vencido | Operaciones y los comprometidos |
+| Cada paso de cierre (`notary`, `registered`) | Los comprometidos |
+| Renta distribuida | Cada copropietario |
+| Oferta nueva en una propiedad suya (ventana interna) | Copropietarios |
+| Comprador encontrado, retracto ejercido, venta completada | Vendedor y compradores implicados |
 
-La política IAM del rol de ejecución incluye `kms:Decrypt` con `"Resource": "*"`. Es más amplio de lo necesario: debería acotarse al ARN de la clave KMS que cifra los `SecureString` de SSM. **No pude determinar qué clave KMS se usa** —si es la clave gestionada por AWS `alias/aws/ssm` o una clave propia— porque el ARN no aparece en ningún lugar del repositorio. Antes de copiar esa política, averigua la clave real y acota el recurso:
+### 28.10 Contrato (resumen)
 
-```bash
-aws ssm get-parameter --name "/<org>/<app>/<stage>/db_password" \
-  --query 'Parameter.{Name:Name,Type:Type}' --output table
-aws kms describe-key --key-id alias/aws/ssm --query 'KeyMetadata.Arn' --output text
-```
+| Ruta | Rol |
+|---|---|
+| `GET/PUT /api/investor/profile`, `POST /api/investor/poder` (crea el sobre y devuelve la URL de firma) | Inversionista |
+| `GET /api/wallet` (saldos por moneda), `GET /api/wallet/movements` | Inversionista |
+| `GET /api/treasury/bank-accounts` | Inversionista (lectura); Admin edita |
+| `POST /api/deposits`, `GET /api/deposits` | Inversionista: los suyos |
+| `POST /api/deposits/{id}/approve`, `/reject` | Tesoreria |
+| `GET/POST/DELETE /api/payout-accounts` | Inversionista |
+| `POST /api/withdrawals`, `POST /api/withdrawals/{id}/cancel` | Inversionista |
+| `POST /api/withdrawals/{id}/pay`, `/reject` | Tesoreria |
+| `GET /api/properties`, `GET /api/properties/{id}` | Cualquiera con sesión |
+| `POST/PATCH /api/properties`, `POST /api/properties/{id}/status` | Operaciones |
+| `POST /api/properties/{id}/commitments` | Inversionista habilitado |
+| `GET /api/portfolio`, `GET /api/portfolio/{propertyId}` | Inversionista |
+| `POST /api/properties/{id}/rent-periods`, `/{periodId}/distribute`, `/valuations` | Operaciones |
+| `GET /api/secondary/offers`, `POST /api/secondary/offers`, `/{id}/cancel`, `/{id}/buy`, `/{id}/retracto` | Inversionista |
+| `POST /api/secondary/offers/{id}/status` | Operaciones |
+| `GET /api/notifications`, `POST /api/notifications/{id}/read` | Cualquiera con sesión |
+| Function URL de `<app-short>-<stage>-webhooks` | DocuSign Connect, con HMAC (28.6) |
+| `GET/PUT /api/settings`, `POST /api/users/{id}/groups` | Admin |
 
-### A.8 Si existe RDS Proxy en el entorno desplegado
+Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respuesta con dinero lo manda como string con dos decimales y su `currency`.
 
-`AGENTS.md` lista el RDS Proxy como requisito (E2), y el código no lo refleja: no hay `extra.max`, no hay configuración de VPC en `serverless.yml`, y `DB_HOST` apunta a lo que parece el endpoint directo de una instancia RDS. **No pude determinar si el proxy existe en la cuenta de AWS y simplemente no está reflejado en el código, o si aún no se ha creado**, porque este entorno no tiene credenciales de lectura sobre AWS. La corrección 19.3 asume lo segundo. Verifícalo antes de planificar el trabajo de VPC:
+### 28.11 Configuración editable (`settings`)
 
-```bash
-aws rds describe-db-proxies --query 'DBProxies[].{Name:DBProxyName,Endpoint:Endpoint}' --output table
-```
+| Clave | Valor inicial |
+|---|---|
+| `secondary.internal_window_days` | `7` |
+| `secondary.commission_pct` | `3.00` |
+| `secondary.retracto_days` | `30` |
+| `terms_and_conditions_url` | `<TERMS_URL>` |
 
-### A.9 El estado real de los stages `qa` y `prod`
+---
+## Anexo A — Puntos abiertos y cómo resolverlos
 
-`docs/DEPLOY.md` documenta el mapeo rama→stage para los tres stages, pero los scripts de CI tienen una rama de código explícita para "el stack no existe". **No pude determinar si `qa` y `prod` están desplegados de alguna forma** (con recursos creados a mano) **o si simplemente nunca se han desplegado.** La diferencia importa mucho para la corrección 19.5: en el primer caso, un `serverless deploy` intentaría crear recursos que ya existen y fallaría con `AlreadyExists`, y habría que importarlos al stack primero. Compruébalo antes:
+Lo cerrado está en ADR-13 y en la sección 28. Aquí queda lo que falta para escribir algún módulo o para salir a prod.
 
-```bash
-aws cloudformation describe-stacks --stack-name <app>-qa 2>&1 | head -3
-aws lambda list-functions --query "Functions[?starts_with(FunctionName,'<app>-qa')].FunctionName"
-```
+### A.1 Cerrado, falta el dato
 
-### A.10 El propósito del `JwtModule.register()` en `auth.module.ts`
+| Dato | Falta |
+|---|---|
+| Dominio | El nombre y el `<HOSTED_ZONE_ID>`. El correo sale por SES desde `no-reply@<DOMINIO_BASE>` |
+| Cuentas AWS | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>` |
+| DocuSign dev y prod | Integration key, user id, RSA privada, clave HMAC de Connect, account id e id de la plantilla del poder. Van a Secrets Manager, no al repo |
+| Cuentas bancarias de PROPIA | Banco, titular, RUC, número y CCI de cada una, en soles y en dólares. Se cargan en `treasury_bank_accounts` desde el backoffice |
+| Textos legales | El texto del poder especial marco (plantilla de DocuSign), los términos y la política de privacidad |
 
-`auth.module.ts` importa y registra `JwtModule`, pero el módulo **no firma ningún token propio**: todos los tokens los emite Cognito, y la verificación la hace `passport-jwt` con `jwks-rsa`. El registro no incluye `secret` ni `signOptions`. **No pude determinar si es un resto de un andamiaje inicial de Nest o si algún código lo usa indirectamente** — no encontré ninguna inyección de `JwtService`. Lo documenté como probable código muerto, pero antes de borrarlo en el proyecto nuevo, confirma con `git grep -n "JwtService"`.
+### A.2 Sigue abierto
 
+| # | Qué | Diseño mientras tanto |
+|---|---|---|
+| 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, si un poder firmado en DocuSign basta para disponer de inmuebles (Código Civil, art. 156, pide escritura pública), el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. Si el poder necesita escritura, se añade un paso en el onboarding en el que Operaciones sube la escritura antes de `enabled` |
+| 2 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
+| 3 | Qué es "Liquidado" en la wallet del prototipo | En el prototipo es la tercera línea y suma al saldo total (disponible 28.500 + comprometido 45.000 + liquidado 5.000 = 78.500). Mientras se decide, ese lugar lo ocupa "En retiro" (`withdrawing`, 28.3). Si resulta ser otro saldo, se añade como cuenta del libro mayor sin tocar las demás |
 
+### A.3 El resto de marcadores pendientes
 
+| Marcador | Quién lo da | Dónde se usa |
+|---|---|---|
+| `<ALERT_EMAIL>` | Operaciones | Suscripción del topic de alarmas |
+| `<SENTRY_DSN_BACKEND>` | Quien cree el proyecto de Sentry | Variable de la Lambda. Vacío = Sentry no se inicializa, y todo lo demás funciona. El plan Developer de Sentry es gratis (1 usuario, 5.000 errores al mes compartidos con el proyecto del frontend). Solo se mandan 5xx, así que la cuota alcanza mientras la app esté sana |
+| `<TERMS_URL>` | Legal | `GET /api/auth/terms-link` lo devuelve para que el signup lo muestre |
 
+### A.4 Lo que se verificó y lo que no
 
+Verificado el 07/10/2026, sin cuenta AWS: compilación, lint con tipos, 10 unitarios, 44 e2e contra PostgreSQL 17, bundle con invocación simulada de API Gateway (200/401/403), `cdk synth` de los cinco conjuntos con cdk-nag limpio, `actionlint` y `shellcheck`.
+
+No verificado, porque hace falta la cuenta: el primer `cdk deploy`, el correo de Cognito llegando a una bandeja real, GuardDuty etiquetando un objeto, el canary ante un 5xx provocado, y la alarma llegando a `<ALERT_EMAIL>`. El plan de la fase 8 y el checklist de la sección 21 son esa verificación. No se marca como hecha desde aquí.
+
+---
