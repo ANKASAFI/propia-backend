@@ -4321,7 +4321,7 @@ Con cuenta, el inversionista ve las propiedades, la cartera vacía y el secundar
 1. **Perfil.** Nombre, tipo de documento (`DNI`, `CE` o `PASAPORTE`), número, fecha de nacimiento y teléfono.
 2. **Estado civil.** `soltero`, `casado` o `conviviente`. Si es casado, régimen: `separacion` o `gananciales`. Con gananciales, el nombre y el email del cónyuge son obligatorios.
 3. **Origen de fondos.** Una de las cinco opciones del prototipo y la declaración de licitud (casilla obligatoria, con fecha e IP).
-4. **Poder especial marco.** Se firma en DocuSign (28.6). La verificación de identidad va dentro del mismo sobre (ID Verification del plan de DocuSign). Con gananciales, el cónyuge es el segundo firmante del sobre y no crea cuenta.
+4. **Poder especial marco.** Se firma en DocuSign (28.6). La verificación de identidad va dentro del mismo sobre (ID Verification del plan de DocuSign). Con gananciales, el cónyuge es el segundo firmante del sobre y no crea cuenta. La firma doble está confirmada: hasta que firmen los dos, el titular sigue en `signing`.
 
 | `investorStatus` | Cuándo |
 |---|---|
@@ -10571,10 +10571,9 @@ Lo cerrado está en ADR-13 y en la sección 28. Aquí queda lo que falta para es
 
 | # | Qué | Diseño mientras tanto |
 |---|---|---|
-| 1 | La firma del cónyuge: falta confirmarla | Segundo firmante del mismo sobre, sin cuenta. Hasta que firme, el titular no puede invertir |
-| 2 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, si un poder firmado en DocuSign basta para disponer de inmuebles (Código Civil, art. 156, pide escritura pública), el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. Si el poder necesita escritura, se añade un paso en el onboarding en el que Operaciones sube la escritura antes de `enabled` |
-| 3 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
-| 4 | Qué es "Liquidado" en la wallet del prototipo | No está en el diseño. Se añade cuando se sepa qué saldo muestra |
+| 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, si un poder firmado en DocuSign basta para disponer de inmuebles (Código Civil, art. 156, pide escritura pública), el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. Si el poder necesita escritura, se añade un paso en el onboarding en el que Operaciones sube la escritura antes de `enabled` |
+| 2 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
+| 3 | Qué es "Liquidado" en la wallet del prototipo | En el prototipo es la tercera línea y suma al saldo total (disponible 28.500 + comprometido 45.000 + liquidado 5.000 = 78.500). Mientras se decide, ese lugar lo ocupa "En retiro" (`withdrawing`, 28.3). Si resulta ser otro saldo, se añade como cuenta del libro mayor sin tocar las demás |
 
 ### A.3 El resto de marcadores pendientes
 
