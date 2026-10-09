@@ -13,6 +13,8 @@
 > **Versión 2.3 — 2026-10-09.** Añade el dominio de PROPIA a partir del prototipo `propia_desktop` (sección 28): cuatro roles, onboarding con poder firmado en DocuSign, wallet sobre un libro mayor de partida doble, propiedades por unidades, cierre notarial, renta mensual y mercado secundario con retracto. Es diseño: entidades, estados, reglas y contrato. Marcado 🆕 **V2.3**, sin ejecutar.
 >
 > **Versión 2.4 — 2026-10-09.** Mapa de flujos end to end, del inversionista al equipo interno (sección 29), con los 27 huecos que faltan cerrar y su propuesta. Marcado 🆕 **V2.4**.
+>
+> **Versión 2.5 — 2026-10-09.** Cierra lo que cambiaba una pantalla antes de diseñar: un solo documento de DocuSign (poder y declaración jurada, dos firmas del titular), el compromiso lo aprueba un Admin antes de bloquear el saldo, y el poder no pasa por escritura pública (28.14). Marcado 🆕 **V2.5**. Si choca con un bloque anterior, manda V2.5.
 
 ---
 
@@ -47,6 +49,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | 🆕 **V2.2** | Decisión de producto del 2026-10-08, escrita en el núcleo | Copiar igual. Si choca con un bloque V2, manda V2.2 |
 | 🆕 **V2.3** | Dominio de PROPIA (sección 28) | Es diseño, no código para copiar. Se implementa con la forma de la sección 12. Si choca con un bloque anterior, manda V2.3 |
 | 🆕 **V2.4** | Flujos end to end (sección 29) | Los pasos se implementan con la sección 28. Un ⚠️ Hn no se implementa hasta que su fila de 29.14 esté decidida |
+| 🆕 **V2.5** | Cierre de diseño del 2026-10-09 (28.14) | Si choca con V2.3 o V2.4, manda V2.5 |
 | 🟦 **EJEMPLO DE DOMINIO** | Código del dominio original, incluido solo como referencia de patrón | **No copiar**. Leer, entender la forma, aplicarla al dominio nuevo |
 | 🟥 **DEUDA — NO REPLICAR** | El original lo hace así y está mal | **No copiar**. La sección 19 explica la corrección obligatoria |
 
@@ -4327,7 +4330,7 @@ Con cuenta, el inversionista ve las propiedades, la cartera vacía y el secundar
 1. **Perfil.** Nombre, tipo de documento (`DNI`, `CE` o `PASAPORTE`), número, fecha de nacimiento y teléfono.
 2. **Estado civil.** `soltero`, `casado` o `conviviente`. Si es casado, régimen: `separacion` o `gananciales`. Con gananciales, el nombre y el email del cónyuge son obligatorios.
 3. **Origen de fondos.** Una de las cinco opciones del prototipo y la declaración de licitud (casilla obligatoria, con fecha e IP).
-4. **Poder especial marco.** Se firma en DocuSign (28.6). La verificación de identidad va dentro del mismo sobre (ID Verification del plan de DocuSign). Con gananciales, el cónyuge es el segundo firmante del sobre y no crea cuenta. La firma doble está confirmada: hasta que firmen los dos, el titular sigue en `signing`.
+4. **Poder y declaración jurada.** Van en un solo documento de DocuSign (28.6, 28.14). El titular firma las dos partes en la misma ceremonia. La verificación de identidad va dentro del mismo sobre (ID Verification del plan de DocuSign). Con gananciales, el cónyuge es el segundo firmante de ese documento y no crea cuenta. Hasta que firmen los dos, el titular sigue en `signing`.
 
 | `investorStatus` | Cuándo |
 |---|---|
@@ -10334,7 +10337,7 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 | 11 | Documentos | Los tipos de 28.8. Las constancias aceptan PDF, JPEG o PNG; el resto, PDF |
 | 12 | Aviso por email y dentro de la app. Sin tiempo real | Tabla `notifications`. Al crearla se manda el mismo texto por SES. El cliente la consulta al entrar y cada 60 s con la pestaña visible. Eventos en 28.9 |
 | 13 | Reportes: Excel, CSV, PDF y tableros | CSV y `.xlsx` (exceljs) los genera la API. El PDF lo genera la API con pdfkit, sin Chromium. Los gráficos son del cliente (ECharts) |
-| 14 | Una sola integración: DocuSign | Firma del poder y verificación de identidad, detrás de `SignatureProvider` para pasar a Keynua (ADR-14). Sin API bancaria, de notaría ni de SUNARP |
+| 14 | Una sola integración: DocuSign | Un solo documento: poder especial marco y declaración jurada, con dos firmas del titular (28.14, ADR-14). Verificación de identidad en el mismo sobre. Sin API bancaria, de notaría ni de SUNARP |
 | 15 | Dominio propio, ya registrado | Falta el nombre y el id de la zona (Anexo A). El correo sale por SES en ese dominio |
 | 16 | Dos cuentas AWS | ADR-8. Faltan los números de cuenta |
 | 17 | 24/7, con una caída tolerable de horas | Prod: `t4g.small`, sin Multi-AZ, un NAT, una instancia de Lambda provisionada, backup de 35 días, presupuesto 400 USD/mes |
@@ -10343,7 +10346,7 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 | 20 | Dólares y soles, sin conversión | Cada propiedad tiene una moneda. La wallet tiene un saldo por moneda. Se deposita, invierte, cobra y retira en la misma. 🆕 V2.4: la moneda por defecto es USD (`settings.default_currency`): es la que traen preseleccionada una propiedad nueva, la wallet y los filtros. PEN funciona igual en todo |
 | 21 | Personas naturales con DNI, CE o pasaporte | No invierten empresas |
 | 22 | Cuotas y máximo por inversionista, por propiedad | Los define Operaciones al crear la propiedad (28.4) |
-| 23 | El compromiso no se deshace | El dinero comprometido queda bloqueado hasta el cierre (28.4) |
+| 23 | El compromiso aprobado no se deshace | 🆕 V2.5. La solicitud la aprueba un Admin. Hasta entonces no hay asiento. Aprobada, el dinero queda bloqueado hasta el cierre (28.4, 28.14) |
 | 24 | Propiedad no financiada en plazo | PROPIA compra las unidades que faltan con su cuenta institucional y la operación sigue. Esas unidades se pueden vender después en el secundario (28.4) |
 | 25 | Renta, gastos, retenciones y valorización los registra Operaciones | El sistema reparte la renta neta por unidades. Las retenciones se suben en PDF. La valorización se carga a mano con cada tasación (28.5) |
 | 26 | Notaría y SUNARP a mano | Operaciones avanza cada paso y sube la escritura y la partida (28.4, 28.7) |
@@ -10457,9 +10460,9 @@ Tesorería no edita el monto. Si no coincide con el banco, rechaza con el motivo
 | `sold` | Operaciones, con el cobro registrado por Tesorería | Reparte el neto y la reserva, cierra `holdings` y cancela las ofertas pausadas. No se deshace |
 | `cancelled` | 🆕 V2.4. Operaciones la propone desde `funding`, `funded` o `notary` con motivo, y un Admin la confirma | La compra se cayó. Cada compromiso vuelve: `committed` −monto / `available` +monto, estado `refunded`. El de PROPIA vuelve a `bank`. Aviso a todos los comprometidos. No se deshace |
 
-**Compromiso** (`commitments`): inversionista, propiedad, unidades, monto (`units * unit_price`), estado `active` → `settled`. Crearlo exige `investorStatus = 'enabled'`, propiedad en `funding`, `units ≤ unidades libres` y `units + las que ya tiene comprometidas ≤ max_units_per_investor`. Se bloquea la fila de la propiedad (`FOR UPDATE`) antes de contar las unidades libres: dos compromisos simultáneos no pueden vender la misma unidad. Asiento `available` −monto / `committed` +monto. No se cancela (ADR-13, 23). Si con él se llega a `units_total`, la propiedad pasa a `funded` en la misma transacción.
+**Compromiso** (`commitments`): inversionista, propiedad, unidades, monto (`units * unit_price`). 🆕 V2.5. Estados: `pending_approval` → `active` → `settled`, o `rejected` / `cancelled` desde `pending_approval`. Crearlo exige `investorStatus = 'enabled'`, propiedad en `funding`, saldo disponible ≥ monto (no se bloquea), `units ≤ unidades libres` en ese momento y units + las que ya tiene en active o pending_approval ≤ max_units_per_investor. Una sola solicitud `pending_approval` por inversionista y propiedad (409 `COMMITMENT_PENDING`). No hay asiento. El inversionista la cancela con `POST /api/properties/{id}/commitments/{commitmentId}/cancel`. Un Admin la aprueba o la rechaza con motivo (28.14). Al aprobar se bloquea la fila de la propiedad (`FOR UPDATE`), se vuelven a contar unidades libres y saldo, y solo entonces el asiento `available` −monto / `committed` +monto y el estado `active`. Si ya no hay saldo, 409 `INSUFFICIENT_FUNDS`; si ya no hay unidades, 409 `UNITS_UNAVAILABLE`. La solicitud sigue en `pending_approval`. Dos aprobaciones simultáneas no pueden vender la misma unidad. Aprobado, no se cancela (ADR-13, 23). Si con esa aprobación se llega a `units_total`, la propiedad pasa a `funded` en la misma transacción.
 
-**Plazo vencido.** 🆕 V2.4: el job diario no compra solo. Busca propiedades en `funding` con `funding_deadline` pasado y crea una tarea para el Admin en su tablero, con aviso. El Admin elige entre **ampliar el plazo** una sola vez o **confirmar la compra del resto**. Al confirmar, la cuenta institucional de PROPIA crea un compromiso por las unidades libres (asiento `bank` −monto / `committed` de PROPIA +monto: el dinero de PROPIA no pasa por una wallet) y la propiedad pasa a `funded`. Ese compromiso es como cualquier otro: al registrar, PROPIA tiene `holdings` y puede vender en el secundario.
+**Plazo vencido.** 🆕 V2.4: el job diario no compra solo. Busca propiedades en `funding` con `funding_deadline` pasado y crea una tarea para el Admin en su tablero, con aviso. El Admin elige entre **ampliar el plazo** una sola vez o **confirmar la compra del resto**. Al confirmar, la cuenta institucional de PROPIA crea un compromiso ya en `active` por las unidades libres (asiento `bank` −monto / `committed` de PROPIA +monto: el dinero de PROPIA no pasa por una wallet) y la propiedad pasa a `funded`. No pasa por `pending_approval`: la confirmación del Admin es la aprobación. Al registrar, PROPIA tiene `holdings` y puede vender en el secundario.
 
 **Registro.** Al pasar a `registered`, para cada compromiso: asiento `committed` −monto / `property_settlement` +monto, estado `settled`, y una fila en `holdings` (inversionista, propiedad, unidades, `locked_units` en 0). La cuota ideal es `units / units_total`, calculada al leer.
 
@@ -10505,7 +10508,7 @@ export interface SignatureProvider {
 }
 ```
 
-`DocuSignProvider` usa la eSignature REST API con JWT Grant: integration key, user id, RSA privada y la clave HMAC de Connect viven en Secrets Manager (`/<org>/<app-short>/<stage>/docusign`), nunca en variables de entorno. dev apunta a la cuenta demo de DocuSign y prod a la de producción, que ya existen. El sobre sale de una plantilla con el texto del poder: el titular es firmante embebido (`clientUserId`) con el flujo de ID Verification; el cónyuge, si hay, es firmante remoto por email en el orden 2.
+`DocuSignProvider` usa la eSignature REST API con JWT Grant: integration key, user id, RSA privada y la clave HMAC de Connect viven en Secrets Manager (`/<org>/<app-short>/<stage>/docusign`), nunca en variables de entorno. dev apunta a la cuenta demo de DocuSign y prod a la de producción, que ya existen. 🆕 V2.5. El sobre sale de una plantilla con un solo PDF: el poder especial marco y la declaración jurada. El titular es firmante embebido (`clientUserId`) con el flujo de ID Verification y firma las dos partes en esa ceremonia. El cónyuge, si hay, es firmante remoto por email en el orden 2, sobre el mismo documento. No hay un segundo sobre.
 
 El navegador no confía en el parámetro con el que vuelve de DocuSign. La verdad es el webhook de DocuSign Connect, y no entra por CloudFront por dos razones: la restricción geográfica de prod (`PE`) es de toda la distribución y bloquearía a los servidores de DocuSign, y la política de origen de `/api/*` ya reenvía 10 de 10 cabeceras, así que no cabe `X-DocuSign-Signature-1`.
 
@@ -10561,6 +10564,7 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | Poder firmado, identidad rechazada | Inversionista. Rechazo también a Operaciones |
 | 🆕 V2.4. Pasa a `review`, evaluación observada, aprobada o rechazada | `review`: Cumplimiento. El resto: inversionista |
 | 🆕 V2.4. Plazo vencido con unidades libres, propiedad propuesta para cancelar | Admin |
+| 🆕 V2.5. Solicitud de compromiso, aprobada o rechazada | Admin al crearse. El inversionista al aprobarse o rechazarse |
 | Propiedad financiada, plazo vencido | Operaciones y los comprometidos |
 | Cada paso de cierre (`notary`, `registered`) | Los comprometidos |
 | Renta distribuida | Cada copropietario |
@@ -10582,7 +10586,9 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | `POST /api/withdrawals/{id}/pay`, `/reject` | Tesoreria |
 | `GET /api/properties`, `GET /api/properties/{id}` | Cualquiera con sesión |
 | `POST/PATCH /api/properties`, `POST /api/properties/{id}/status` | Operaciones |
-| `POST /api/properties/{id}/commitments` | Inversionista habilitado |
+| `POST /api/properties/{id}/commitments` | Inversionista habilitado. 🆕 V2.5: crea `pending_approval`, sin asiento |
+| 🆕 V2.5. `POST /api/properties/{id}/commitments/{commitmentId}/cancel` | Inversionista, solo en `pending_approval` |
+| 🆕 V2.5. `POST /api/properties/{id}/commitments/{commitmentId}/approve`, `/reject` | Admin (28.14) |
 | `GET /api/portfolio`, `GET /api/portfolio/{propertyId}` | Inversionista |
 | `POST /api/properties/{id}/rent-periods`, `/{periodId}/distribute`, `/valuations` | Operaciones |
 | `GET /api/secondary/offers`, `POST /api/secondary/offers`, `/{id}/cancel`, `/{id}/buy`, `/{id}/retracto` | Inversionista |
@@ -10705,6 +10711,16 @@ Arrancan vacías (sin alerta) hasta que Cumplimiento ponga los montos. Cumplimie
 
 **"Liquidado" (H40).** Es un acumulado informativo por moneda: lo que el inversionista cobró por sus ventas en el secundario y por ventas totales (H28). Sale de los asientos de esos tipos y no forma parte del saldo. `GET /api/wallet` lo devuelve en cada moneda como `settledTotal`. En la wallet va debajo de los saldos, separado y con su leyenda. El total de la wallet suma solo disponible, comprometido y en retiro.
 
+### 28.14 Cierre antes del diseño
+
+🆕 **V2.5.** Tres decisiones del 2026-10-09. Cierran lo que todavía podía cambiar una pantalla.
+
+**Un documento, dos firmas (H41).** DocuSign firma solo el poder especial marco y la declaración jurada, en el mismo PDF y el mismo sobre. El titular pone las dos firmas en una sola ceremonia. No se modelan como dos sobres ni como dos estados: el webhook `completed` sigue siendo el que pasa a `review`. `consents` guarda una fila `poder` con la versión de esa plantilla, que incluye los dos textos. Si legal quita la declaración jurada, se quita ese campo de firma de la plantilla y el resto no cambia. El cónyuge, cuando hay gananciales o unión de hecho inscrita, firma ese mismo documento en orden 2. El compromiso, los términos y la venta del secundario no pasan por DocuSign. La compra y la transferencia siguen en notaría.
+
+**El Admin aprueba el compromiso (H42).** Enviar la solicitud no bloquea saldo ni aparta unidades. El Admin la ve en `/admin` y es el único que la aprueba o la rechaza (una persona, sin doble aprobación). Al aprobar se comprueban de nuevo saldo y unidades libres y, si alcanzan, se escribe el asiento y el compromiso pasa a `active`. A partir de ahí no se deshace, salvo que la propiedad se cancele (H15). Rechazar exige motivo y no escribe asiento. El inversionista puede cancelar la suya mientras sigue en `pending_approval`. Una solicitud pendiente cuenta como viva para el cierre de cuenta (H26).
+
+**Sin escritura pública (H43).** Habilitar no espera una escritura del poder. Operaciones no sube ese documento antes de `enabled`. La escritura de compraventa de la propiedad sigue siendo el paso de notaría de 28.4, que es otra cosa.
+
 ---
 ## 29. Flujos end to end
 
@@ -10738,7 +10754,7 @@ Arrancan vacías (sin alerta) hasta que Cumplimiento ponga los montos. Cumplimie
 | # | Actor | Pantalla | Qué pasa | Resultado |
 |---|---|---|---|---|
 | 1 | Inversionista | `/onboarding` | Pasos 1 a 3: perfil, estado civil y origen de fondos (`PUT /api/investor/profile`) | Sigue en `onboarding` hasta completar los tres |
-| 2 | Inversionista | `/onboarding` | Paso 4: `POST /api/investor/poder` crea el sobre. Titular en orden 1, embebido y con verificación de identidad; cónyuge en orden 2, por email | `signing`. El navegador sale a DocuSign |
+| 2 | Inversionista | `/onboarding` | Paso 4: `POST /api/investor/poder` crea el sobre. Un solo PDF con el poder y la declaración jurada. El titular firma las dos en la misma ceremonia; el cónyuge, si hay, firma ese documento en orden 2 | `signing`. El navegador sale a DocuSign |
 | 3 | Inversionista | DocuSign | Verifica su identidad y firma | Vuelve a `/onboarding/poder`, que pide `me()` cada 3 s |
 | 4 | Cónyuge | Email de DocuSign | Firma | — |
 | 5 | Sistema | Webhook | `completed` con identidad verificada | Guarda `poder_firmado`, pasa a `review`. Aviso a Cumplimiento |
@@ -10789,10 +10805,13 @@ Ramas:
 
 | # | Actor | Pantalla | Qué pasa | Resultado |
 |---|---|---|---|---|
-| 1 | Inversionista | `/explorar/[id]` | Simula y compromete N unidades (`POST /api/properties/{id}/commitments`) | Compromiso `active`. Asiento `available` −monto / `committed` +monto |
-| 1b | Inversionista | `/explorar/[id]` | No le alcanza el saldo | 409 `INSUFFICIENT_FUNDS` y botón a Cargar saldo. ✅ **H12**: no hay reserva mientras se valida el depósito |
-| 2 | Sistema | — | La última unidad se compromete | `funded` en la misma transacción. Aviso a Operaciones y a los comprometidos |
-| 2b | Sistema → Admin | Job diario → tablero del Admin | Vence el plazo con unidades libres | ✅ **H11**. Tarea para el Admin: amplía el plazo una vez o confirma que PROPIA compra el resto (`bank` −monto / `committed` de PROPIA +monto) y pasa a `funded` |
+| 1 | Inversionista | `/explorar/[id]` | Simula y envía la solicitud (`POST /api/properties/{id}/commitments`) | 🆕 V2.5. `pending_approval`. Sin asiento. Las unidades siguen libres. Aviso al Admin |
+| 1b | Inversionista | `/explorar/[id]` | No le alcanza el saldo en ese momento | 409 `INSUFFICIENT_FUNDS` y botón a Cargar saldo. ✅ **H12**: no hay reserva mientras se valida el depósito. La solicitud tampoco aparta unidades |
+| 1c | Inversionista | `/explorar/[id]` | Cancela mientras está pendiente | `cancelled`. Sin asiento |
+| 2 | Admin | `/admin` | Aprueba | `active`. Asiento `available` −monto / `committed` +monto. Si ya no hay saldo o unidades, 409 y la solicitud sigue pendiente |
+| 2c | Admin | `/admin` | Rechaza con motivo | `rejected`. Sin asiento. Aviso |
+| 3 | Sistema | — | La aprobación toma la última unidad | `funded` en la misma transacción. Aviso a Operaciones y a los comprometidos |
+| 4 | Sistema → Admin | Job diario → tablero del Admin | Vence el plazo con unidades libres | ✅ **H11**. Tarea para el Admin: amplía el plazo una vez o confirma que PROPIA compra el resto (`bank` −monto / `committed` de PROPIA +monto) y pasa a `funded` |
 
 ### 29.8 Cierre: notaría, pago al vendedor y SUNARP
 
@@ -10927,6 +10946,9 @@ Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo. 🆕 V2.4: 
 | H38 | Derechos sobre los datos personales (acceso, rectificación, cancelación y oposición, Ley 29733) | Formulario en el perfil y bandeja del Admin junto a las reclamaciones, con plazo | ✅ Decidido (28.13) |
 | H39 | Sin MFA, una contraseña robada da acceso | Email de aviso en cada inicio de sesión desde un dispositivo nuevo, con enlace para cerrar todas las sesiones. Las acciones de dinero ya piden código por email | ✅ Decidido (28.13) |
 | H40 | "Liquidado" en la wallet | Si es lo cobrado por ventas totales (H28) y por ventas en el secundario, se muestra como un acumulado informativo, fuera del saldo | ✅ Decidido (28.13) |
+| H41 | Qué se firma en DocuSign | Poder especial marco y declaración jurada, dos firmas del titular en el mismo documento. El cónyuge, si hay, firma ese documento. El compromiso no se firma ahí | ✅ Decidido (28.14) |
+| H42 | El compromiso se ejecutaba solo | Un Admin lo aprueba o lo rechaza. El saldo y las unidades se bloquean al aprobar | ✅ Decidido (28.14) |
+| H43 | Escritura pública del poder antes de habilitar | No hace falta. Habilitar sale de DocuSign y de la evaluación PLAFT | ✅ Decidido (28.14) |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
@@ -10941,13 +10963,13 @@ Lo cerrado está en ADR-13 y en la sección 28. Aquí queda lo que falta para es
 | Cuentas AWS | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>` |
 | DocuSign dev y prod | Integration key, user id, RSA privada, clave HMAC de Connect, account id e id de la plantilla del poder. Van a Secrets Manager, no al repo |
 | Cuentas bancarias de PROPIA | Banco, titular, RUC, número y CCI de cada una, en soles y en dólares. Se cargan en `treasury_bank_accounts` desde el backoffice |
-| Textos legales | El texto del poder especial marco (plantilla de DocuSign), los términos y la política de privacidad |
+| Textos legales | El texto del poder especial marco y el de la declaración jurada (una sola plantilla de DocuSign), los términos y la política de privacidad |
 
 ### A.2 Sigue abierto
 
 | # | Qué | Diseño mientras tanto |
 |---|---|---|
-| 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, si un poder firmado en DocuSign basta para disponer de inmuebles (Código Civil, art. 156, pide escritura pública), el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. Si el poder necesita escritura, se añade un paso en el onboarding en el que Operaciones sube la escritura antes de `enabled` |
+| 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. 🆕 V2.5: no hay paso de escritura pública del poder (H43). Habilitar no lo espera |
 | 2 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
 | 3 | ~~Qué es "Liquidado" en la wallet del prototipo~~ | ✅ Cerrado en V2.4 (28.13, H40): acumulado informativo de lo cobrado por ventas, fuera del saldo |
 | 4 | 🆕 V2.4. Legal: plazo de respuesta del libro de reclamaciones y cuánto se conservan las hojas; plazo de conservación de datos tras cerrar una cuenta (PLAFT); si la unión de hecho inscrita firma como cónyuge; si los copropietarios pueden renunciar al retracto por adelantado (H21); si el poder alcanza para vender el inmueble completo con el voto de la mayoría (H28); plazos de los derechos sobre datos personales (H38) | Se diseña con lo de 28.12 y 29.15. Cambia un número en `settings` o un texto, no el modelo |
