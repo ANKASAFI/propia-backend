@@ -8,7 +8,9 @@
 >
 > **Versión 2.1 — 2026-10-08.** Añade los controles de prioridad 0, todos sin coste o dentro de una capa gratuita: idempotencia de los `POST` (9.6), contrato OpenAPI versionado con detección de cambios incompatibles (17.4), Actions fijadas por SHA, auditoría de workflows, SBOM y procedencia firmada del artefacto (17.1, 17.2), y la CSP con `script-src` que el frontend genera en su build (16.8). Ese código **no se ejecutó** al escribirlo: va marcado 🆕 **V2.1** y su verificación está en el checklist (21).
 >
-> **Versión 2.2 — 2026-10-08.** Cierra las decisiones de producto que cambian el núcleo antes de escribir el dominio: región `sa-east-1`, rol `Usuario`, audiencias `interno`/`externo`, papelera, datos sensibles, avisos y reportes (ADR-13). El código tocado va marcado 🆕 **V2.2** y no se ejecutó.
+> **Versión 2.2 — 2026-10-08.** Cierra las decisiones de producto que cambian el núcleo antes de escribir el dominio: región `sa-east-1`, papelera, datos sensibles, avisos y reportes (ADR-13). El código tocado va marcado 🆕 **V2.2** y no se ejecutó.
+>
+> **Versión 2.3 — 2026-10-09.** Añade el dominio de PROPIA a partir del prototipo `propia_desktop` (sección 28): cuatro roles, onboarding con poder firmado en DocuSign, wallet sobre un libro mayor de partida doble, propiedades por unidades, cierre notarial, renta mensual y mercado secundario con retracto. Es diseño: entidades, estados, reglas y contrato. Marcado 🆕 **V2.3**, sin ejecutar.
 
 ---
 
@@ -41,6 +43,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | 🆕 **V2** | Núcleo nuevo o reescrito en la v2 (no existía así en el original) | **Copiar literalmente**, igual que el núcleo. La etiqueta solo indica procedencia |
 | 🆕 **V2.1** | Añadido en la 2.1, escrito contra el código verificado pero sin ejecutar | Copiar igual. La primera implementación corre el checklist de la sección 21 antes de darlo por bueno |
 | 🆕 **V2.2** | Decisión de producto del 2026-10-08, escrita en el núcleo | Copiar igual. Si choca con un bloque V2, manda V2.2 |
+| 🆕 **V2.3** | Dominio de PROPIA (sección 28) | Es diseño, no código para copiar. Se implementa con la forma de la sección 12. Si choca con un bloque anterior, manda V2.3 |
 | 🟦 **EJEMPLO DE DOMINIO** | Código del dominio original, incluido solo como referencia de patrón | **No copiar**. Leer, entender la forma, aplicarla al dominio nuevo |
 | 🟥 **DEUDA — NO REPLICAR** | El original lo hace así y está mal | **No copiar**. La sección 19 explica la corrección obligatoria |
 
@@ -119,6 +122,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 - [25. Rendimiento](#25-rendimiento)
 - [26. Datos, backups, recuperación y cumplimiento](#26-datos-backups-recuperación-y-cumplimiento)
 - [27. Registro de decisiones (ADR)](#27-registro-de-decisiones-adr)
+- [28. Dominio PROPIA](#28-dominio-propia)
 - [Anexo A — Puntos abiertos y cómo resolverlos](#anexo-a--puntos-abiertos-y-cómo-resolverlos)
 
 ---
@@ -144,12 +148,12 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | `<DOMINIO_BASE>` | Dominio registrado en Route 53 | dominio | *pendiente* |
 | `<HOSTED_ZONE_ID>` | Id de la zona alojada de `<DOMINIO_BASE>` en Route 53 | `Z...` | *pendiente* |
 | `<DOMINIO_APP>` | Dominio público del stage (front **y** API, mismo origen) | `app-<stage>.<DOMINIO_BASE>`; en prod `app.<DOMINIO_BASE>` | derivado |
-| `<ROL_A>` | Grupo de Cognito de quien usa la app sin administrar usuarios | nombre de grupo | `Usuario` |
+| `<ROL_A>` | Grupo de Cognito del inversionista. Lo recibe toda persona que se registra sola | nombre de grupo | `Inversionista` |
+| `<ROL_C>` | Grupo interno que valida depósitos y paga retiros (28) | nombre de grupo | `Tesoreria` |
+| `<ROL_D>` | Grupo interno que lleva propiedades, cierres, rentas y el secundario (28) | nombre de grupo | `Operaciones` |
 | `<ROL_B>` | Grupo de Cognito administrador | nombre de grupo | `Admin` |
 | `<ALERT_EMAIL>` | Buzón que recibe alarmas y avisos de presupuesto | email | *pendiente* |
 | `<SENTRY_DSN_BACKEND>` | DSN del proyecto de Sentry del backend (no es secreto) | URL | *pendiente* |
-| `<ENTITY_ID>` | Identificador natural de la entidad de negocio principal | definido por el dominio | *pendiente* |
-| `<DOC_TIPO_1>`, `<DOC_TIPO_2>`, `<DOC_TIPO_3>` | Tipos de documento que el sistema ingiere | slug minúsculas | *pendiente* |
 | `<TERMS_URL>` | URL pública de términos y condiciones | URL | *pendiente* |
 | `<AUTOR>` | Autor del `package.json` | nombre | `<org>` |
 
@@ -165,6 +169,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | Stack CDK de CI (uno por cuenta) | `<app-short>-ci` |
 | Función Lambda HTTP | `<app-short>-<stage>-api` |
 | Función Lambda worker | `<app-short>-<stage>-ingest-worker` |
+| Función Lambda de webhooks (🆕 V2.3) | `<app-short>-<stage>-webhooks` |
 | Función Lambda de migraciones | `<app-short>-<stage>-migrator` |
 | Función Lambda cron | `<app-short>-<stage>-job-<nombre>` |
 | Alias de Lambda que recibe tráfico | `live` |
@@ -1888,9 +1893,12 @@ CloudFront no debe cachear esta ruta: el behavior de `/api/*` reenvía todo y la
 // src/common/auth/roles.ts
 import { SetMetadata } from '@nestjs/common';
 
-export const ROLES = ['<ROL_A>', '<ROL_B>'] as const;
+export const ROLES = ['<ROL_A>', '<ROL_B>', '<ROL_C>', '<ROL_D>'] as const;
 export type Role = (typeof ROLES)[number];
 export const ADMIN_ROLE: Role = '<ROL_B>';
+export const INVESTOR_ROLE: Role = '<ROL_A>';
+export const TREASURY_ROLE: Role = '<ROL_C>';
+export const OPERATIONS_ROLE: Role = '<ROL_D>';
 
 export const ROLES_KEY = 'roles';
 export const Roles = (...roles: Role[]) => SetMetadata(ROLES_KEY, roles);
@@ -2017,7 +2025,7 @@ export class RolesGuard implements CanActivate {
 }
 ```
 
-`ROLES` tiene dos entradas: `<ROL_A>` (operación) y `<ROL_B>` (administración, propuesto `Admin`). Un usuario puede tener varios grupos de Cognito; el guard deja pasar si **alguno** coincide con los roles exigidos. Sin `@Roles(...)` la ruta solo exige sesión.
+🆕 V2.3. `ROLES` tiene cuatro entradas: `<ROL_A>` (`Inversionista`), `<ROL_B>` (`Admin`), `<ROL_C>` (`Tesoreria`) y `<ROL_D>` (`Operaciones`). Los tres internos los asigna un Admin; nadie se registra como interno. El reparto de permisos está en 28.2. Un usuario puede tener varios grupos de Cognito; el guard deja pasar si **alguno** coincide con los roles exigidos. Sin `@Roles(...)` la ruta solo exige sesión.
 
 El guard JWT distingue tres fallos y no los mezcla:
 
@@ -4304,25 +4312,27 @@ export class UsersModule {}
 
 `PATCH /api/users/:id/status` exige `<ROL_B>`. Desactivar a un usuario no revoca por sí solo sus refresh tokens: el administrador que desactiva llama también al flujo de `logout-all` de ese usuario (queda como paso del servicio de dominio cuando exista la pantalla; el endpoint `logout-all` ya revoca la sesión de quien llama). Un usuario `disabled` recibe 403 en el guard aunque su access token siga siendo válido, así que el efecto es inmediato para la API.
 
-### 10.7 Puerta para invertir
+### 10.7 Alta del inversionista y puerta para invertir
 
-🆕 **V2.2.** El alta no la aprueba nadie. `userStatus` nace en `active` y la persona entra en ese momento. Lo que no puede hacer todavía es invertir.
+🆕 **V2.3.** El alta no la aprueba nadie. `userStatus` nace en `active` y la persona entra en ese momento. Al confirmar el email, `confirmSignUp` llama a `AdminAddUserToGroup` con `<ROL_A>`: toda persona que se registra sola es inversionista. Los grupos internos solo los asigna un Admin (28.2). La Lambda de la API necesita `cognito-idp:AdminAddUserToGroup` sobre el pool del stage, y nada más de administración de Cognito.
 
-El recorrido del `Usuario` es este, y en este orden:
+Con cuenta, el inversionista ve las propiedades, la cartera vacía y el secundario. Para comprometer, comprar o vender necesita `investorStatus = 'enabled'`, que se gana en este orden (el onboarding de 4 pasos del prototipo):
 
-1. Entra (sesión válida).
-2. Llena su ficha de datos. Puede guardarla a medias.
-3. La firma. Firmar congela esa versión: si después cambia un dato, la firma deja de valer y tiene que firmar otra vez.
-4. Solo con la ficha firmada puede armar una operación de inversión.
-5. Sube el comprobante de la transferencia. El dinero no pasa por la app: no hay pasarela, ni tarjeta, ni Yape, ni datos de pago que guardar.
-6. Envía la operación. Queda en `submitted`. El `Admin` abre el comprobante y la aprueba o la rechaza. El admin no aprueba la cuenta.
+1. **Perfil.** Nombre, tipo de documento (`DNI`, `CE` o `PASAPORTE`), número, fecha de nacimiento y teléfono.
+2. **Estado civil.** `soltero`, `casado` o `conviviente`. Si es casado, régimen: `separacion` o `gananciales`. Con gananciales, el nombre y el email del cónyuge son obligatorios.
+3. **Origen de fondos.** Una de las cinco opciones del prototipo y la declaración de licitud (casilla obligatoria, con fecha e IP).
+4. **Poder especial marco.** Se firma en DocuSign (28.6). La verificación de identidad va dentro del mismo sobre (ID Verification del plan de DocuSign). Con gananciales, el cónyuge es el segundo firmante del sobre y no crea cuenta.
 
-`GET /api/auth/me` incluye `fichaStatus`: `draft` o `signed`. Crear una operación con `draft` responde 403 con el código `FICHA_NOT_SIGNED`. El cliente, con ese código, lleva a la ficha y no pinta la pantalla de invertir como si estuviera rota.
+| `investorStatus` | Cuándo |
+|---|---|
+| `onboarding` | Falta alguno de los pasos 1 a 3 |
+| `signing` | Sobre enviado. El titular, o el cónyuge, todavía no firmó |
+| `enabled` | DocuSign confirmó por webhook que firmaron todos y que la identidad se verificó |
+| `rejected` | La identidad no se verificó o alguien rechazó el sobre. Operaciones lo ve y puede reabrir el paso 4 |
 
-La operación la crea el `Usuario` en `draft` (`@Idempotent()`). El comprobante es un documento de la sección 13, tipo `comprobante`, con `contentType` `application/pdf`, `image/jpeg` o `image/png`. Enviarla exige ese documento en `processed`: si falta o sigue en `scanning`, responde 409 `COMPROBANTE_REQUIRED`. Desde `submitted` el archivo queda congelado. Pasarla a `approved` o `rejected` es solo de `Admin`, en la misma transacción que la auditoría, y el admin descarga el archivo por la URL prefirmada de 13.2. `approved` no se reabre. `rejected` vuelve a `draft` para que el usuario suba otro comprobante y la envíe de nuevo. Rechazar no borra la fila. El usuario ve las suyas.
+`GET /api/auth/me` incluye `investorStatus`. Una operación de dinero con otro estado responde 403 con el código `INVESTOR_NOT_ENABLED`. El cliente, con ese código, lleva al paso que falta. Cambiar los datos del paso 1 o 2 después de `enabled` vuelve a `signing`: el poder firmado es el de esos datos.
 
-Cómo se firma y qué campos lleva la ficha siguen en el Anexo A. Hasta cerrarlos no se escribe el módulo.
-
+---
 ---
 ## 11. Capa de datos: entidades, convenciones y migraciones
 
@@ -4367,15 +4377,9 @@ export type UserStatus = (typeof USER_STATUS)[keyof typeof USER_STATUS];
 
 export const COGNITO_STATUS = { UNCONFIRMED: 'unconfirmed', CONFIRMED: 'confirmed' } as const;
 export type CognitoStatus = (typeof COGNITO_STATUS)[keyof typeof COGNITO_STATUS];
-
-/** 🆕 V2.2. Dos audiencias, las mismas dos roles. El admin solo puede ser interno. */
-export const USER_KIND = { INTERNO: 'interno', EXTERNO: 'externo' } as const;
-export type UserKind = (typeof USER_KIND)[keyof typeof USER_KIND];
-
 @Entity('users')
 @Check(`"user_status" IN ('active','blocked','observed','rejected')`)
 @Check(`"cognito_status" IN ('unconfirmed','confirmed')`)
-@Check(`"kind" IN ('interno','externo')`)
 @Check(`"email" = lower("email")`)
 export class User {
   /** `sub` de Cognito. No se genera: lo asigna Cognito al crear la identidad. */
@@ -4392,10 +4396,6 @@ export class User {
 
   @Column({ type: 'varchar', length: 100 })
   lastName: string;
-
-  /** 🆕 V2.2. Lo elige en el alta y solo un Admin lo cambia. */
-  @Column({ type: 'varchar', length: 20 })
-  kind: UserKind;
 
   @Column({ type: 'varchar', length: 20, nullable: true })
   phoneNumber: string | null;
@@ -4658,7 +4658,7 @@ export class Document {
   @Column({ type: 'varchar', length: 1024 })
   s3Key: string;
 
-  /** Identificador natural de la entidad de negocio dueña del documento (<ENTITY_ID>). */
+  /** 🆕 V2.3. Id de la fila dueña del documento (depósito, retiro, propiedad o usuario). */
   @Index()
   @Column({ type: 'varchar', length: 64 })
   entityId: string;
@@ -5710,7 +5710,7 @@ La unicidad es un índice parcial `WHERE status <> 'quarantined'`. Dos subidas c
 | `GET` | `/api/documents` | sesión | Lista por `entityId` |
 | `GET` | `/api/documents/:id/download` | sesión | URL prefirmada de descarga de 60 s, auditada |
 
-`POST /uploads` exige `contentType` permitido (en el núcleo, solo `application/pdf`), `sizeBytes` ≤ 20 MiB y `sha256` en hexadecimal de 64 caracteres. 🆕 V2.2. El tipo `comprobante` acepta además `image/jpeg` e `image/png` (10.7). Los tipos de documento son `<DOC_TIPO_1>`, `<DOC_TIPO_2>`, `<DOC_TIPO_3>` (Anexo A). Hasta que existan, el DTO trae tres slugs de ejemplo que se sustituyen, y uno de ellos pasa a ser `comprobante`.
+`POST /uploads` exige `contentType` permitido (en el núcleo, solo `application/pdf`), `sizeBytes` ≤ 20 MiB y `sha256` en hexadecimal de 64 caracteres. 🆕 V2.3. Los tipos de documento son los de 28.8: `constancia_deposito` y `constancia_retiro` aceptan además `image/jpeg` e `image/png` (la foto del voucher); `escritura`, `partida_registral`, `poder_firmado`, `constancia_retencion` y `tasacion` solo PDF. `entityId` es el id de la fila dueña (depósito, retiro, propiedad o usuario), y `entityType` dice cuál.
 
 ### 13.3 La URL prefirmada
 
@@ -5753,13 +5753,24 @@ import { IsIn, IsInt, IsString, Length, Matches, Max, Min } from 'class-validato
 import { PageQueryDto } from '../../../common/pagination/page';
 import { DOCUMENT_STATUS, type DocumentStatus } from '../document.entity';
 
-/** 🟦 Tipos de documento del dominio. Sustituir por los reales (<DOC_TIPO_n>). */
-export const DOCUMENT_TYPES = ['<DOC_TIPO_1>', '<DOC_TIPO_2>', '<DOC_TIPO_3>'] as const;
-export const ALLOWED_CONTENT_TYPES = ['application/pdf'] as const;
+/** 🆕 V2.3. Tipos de documento de PROPIA (28.8). */
+export const DOCUMENT_TYPES = [
+  'constancia_deposito',
+  'constancia_retiro',
+  'escritura',
+  'partida_registral',
+  'poder_firmado',
+  'constancia_retencion',
+  'tasacion',
+] as const;
+export type DocumentType = (typeof DOCUMENT_TYPES)[number];
+export const ALLOWED_CONTENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png'] as const;
+/** Las imágenes solo valen para la foto de un voucher. El servicio rechaza el resto con 400. */
+export const IMAGE_DOCUMENT_TYPES: readonly DocumentType[] = ['constancia_deposito', 'constancia_retiro'];
 export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
 
 export class CreateUploadDto {
-  @ApiProperty({ example: '20123456789', description: '<ENTITY_ID> dueño del documento' })
+  @ApiProperty({ format: 'uuid', description: 'Id de la fila dueña del documento (depósito, retiro, propiedad o usuario)' })
   @Matches(/^[A-Za-z0-9-]{1,64}$/)
   entityId: string;
 
@@ -5774,7 +5785,7 @@ export class CreateUploadDto {
   filename: string;
 
   @ApiProperty({ enum: ALLOWED_CONTENT_TYPES })
-  @IsIn(ALLOWED_CONTENT_TYPES, { message: 'Solo se aceptan archivos PDF.' })
+  @IsIn(ALLOWED_CONTENT_TYPES, { message: 'Solo se aceptan archivos PDF, JPEG o PNG.' })
   contentType: (typeof ALLOWED_CONTENT_TYPES)[number];
 
   @ApiProperty({ example: 482133, maximum: MAX_DOCUMENT_BYTES })
@@ -7203,7 +7214,7 @@ describe('Documentos en modo local (e2e)', () => {
 
   const intent = {
     entityId: '20123456789',
-    documentType: '<DOC_TIPO_1>',
+    documentType: 'escritura',
     filename: 'EEFF 2026.pdf',
     contentType: 'application/pdf',
     sizeBytes: pdf.length,
@@ -7264,11 +7275,11 @@ describe('Documentos en modo local (e2e)', () => {
     const res = await http
       .post('/api/documents/uploads')
       .set('Cookie', cookie)
-      .send({ ...intent, contentType: 'image/png', sizeBytes: 50 * 1024 * 1024 });
+      .send({ ...intent, contentType: 'image/gif', sizeBytes: 50 * 1024 * 1024 });
     expect(res.status).toBe(400);
     expect(res.body.message).toEqual(
       expect.arrayContaining([
-        'Solo se aceptan archivos PDF.',
+        'Solo se aceptan archivos PDF, JPEG o PNG.',
         'El archivo supera el tamaño máximo de 20 MB.',
       ]),
     );
@@ -7317,9 +7328,9 @@ describe('Worker de ingesta (e2e)', () => {
     const sha = randomUUID().replace(/-/g, '').padEnd(64, '0');
     return ctx.db.getRepository(Document).save({
       filename: 'Estado financiero 2026.pdf',
-      s3Key: `incoming/20123456789/estado_financiero/${randomUUID()}-${sha.slice(0, 8)} doc.pdf`,
+      s3Key: `incoming/20123456789/escritura/${randomUUID()}-${sha.slice(0, 8)} doc.pdf`,
       entityId: '20123456789',
-      documentType: 'estado_financiero',
+      documentType: 'escritura',
       status: 'scanning',
       sha256: sha,
       contentType: 'application/pdf',
@@ -7925,6 +7936,8 @@ import { name, paramPath } from './naming';
 
 export const ROLE_A = '<ROL_A>';
 export const ROLE_B = '<ROL_B>';
+export const ROLE_C = '<ROL_C>';
+export const ROLE_D = '<ROL_D>';
 
 export class AuthStack extends Stack {
   readonly userPool: cognito.UserPool;
@@ -7977,7 +7990,7 @@ export class AuthStack extends Stack {
       // email: cognito.UserPoolEmail.withSES({ fromEmail: 'no-reply@<DOMINIO_BASE>', sesRegion: cfg.region }),
     });
 
-    for (const group of [ROLE_A, ROLE_B]) {
+    for (const group of [ROLE_A, ROLE_B, ROLE_C, ROLE_D]) {
       new cognito.CfnUserPoolGroup(this, `Group${group.replace(/\W/g, '')}`, {
         userPoolId: this.userPool.userPoolId,
         groupName: group,
@@ -9200,7 +9213,7 @@ rm -rf infra-synth && mkdir infra-synth
 cp -r infra/bin infra/lib infra/cdk.json infra/tsconfig.json infra/package.json infra-synth/
 ln -s ../infra/node_modules infra-synth/node_modules
 REGION="${REGION:-sa-east-1}"
-grep -rl '<' infra-synth/bin infra-synth/lib | xargs sed -i "s/<REGION>/${REGION}/g; s/<HOSTED_ZONE_ID>/Z0123456789ABCDEFGHIJ/g; s/<DOMINIO_BASE>/example.com/g; s/<ALERT_EMAIL>/alerts@example.com/g; s#<SENTRY_DSN_BACKEND>#https://public@o0.ingest.sentry.io/0#g; s/<GITHUB_ORG>/ANKASAFI/g; s/<app-frontend>/propia-frontend/g; s/<app-short>/propia/g; s/<app_snake>/propia/g; s/<app>/propia-backend/g; s/<org>/anka/g; s/<ACCOUNT_NONPROD>/111111111111/g; s/<ACCOUNT_PROD>/222222222222/g; s/<ROL_A>/Operaciones/g; s/<ROL_B>/Admin/g"
+grep -rl '<' infra-synth/bin infra-synth/lib | xargs sed -i "s/<REGION>/${REGION}/g; s/<HOSTED_ZONE_ID>/Z0123456789ABCDEFGHIJ/g; s/<DOMINIO_BASE>/example.com/g; s/<ALERT_EMAIL>/alerts@example.com/g; s#<SENTRY_DSN_BACKEND>#https://public@o0.ingest.sentry.io/0#g; s/<GITHUB_ORG>/ANKASAFI/g; s/<app-frontend>/propia-frontend/g; s/<app-short>/propia/g; s/<app_snake>/propia/g; s/<app>/propia-backend/g; s/<org>/anka/g; s/<ACCOUNT_NONPROD>/111111111111/g; s/<ACCOUNT_PROD>/222222222222/g; s/<ROL_A>/Inversionista/g; s/<ROL_B>/Admin/g; s/<ROL_C>/Tesoreria/g; s/<ROL_D>/Operaciones/g"
 cd infra-synth
 npx tsc -p tsconfig.json
 export CDK_DISABLE_VERSION_CHECK=1
@@ -9891,7 +9904,9 @@ El primer push a `main` despliega `dev`. Si no hay cuenta todavía, esta fase se
 - [ ] No queda `synchronize: true`, ni `enableCors`, ni un token leído de `Authorization`, ni `runMigrations()` fuera del migrator.
 - [ ] `rg -n "process\.env" src/modules` no devuelve nada.
 - [ ] Toda entidad editable tiene `@VersionColumn()`. Todo importe es `numeric` / `string`.
-- [ ] 🆕 V2.2. Toda entidad de negocio tiene `deletedAt` y sus lecturas lo filtran. `users` tiene `kind`. Un campo sensible no aparece en logs ni en `before`/`after` (sale `"[redactado]"`).
+- [ ] 🆕 V2.3. Una transacción del libro mayor que no suma cero por moneda falla en el `COMMIT`. Un `UPDATE` sobre `ledger_entries` falla. Dos compromisos simultáneos por la última unidad: uno 201, otro 409. El job de conciliación pasa en limpio después de la suite.
+- [ ] 🆕 V2.3. El webhook rechaza con 401 un cuerpo con la firma HMAC alterada y no escribe nada. El mismo evento dos veces deja una sola transición.
+- [ ] 🆕 V2.2. Toda entidad de negocio tiene `deletedAt` y sus lecturas lo filtran. `users` no tiene columna de audiencia: el rol sale de los grupos (9.1). Un campo sensible no aparece en logs ni en `before`/`after` (sale `"[redactado]"`).
 - [ ] `MIGRATIONS` lista todas las clases de `src/migrations/`, en orden, y el trigger `audit_logs_immutable` sigue en la migración inicial.
 
 ### Contrato
@@ -10203,7 +10218,7 @@ No hay borrado físico de usuarios ni de auditoría. Desactivar es el mecanismo.
 
 ### 26.4 Datos personales
 
-🆕 **V2.2.** El producto guarda datos sensibles (salud, financieros o biométricos; cuáles, en el Anexo A). El email, el nombre y el sub viven en `users` y, como `sub`, en `audit_logs` y en `uploaded_by_sub`.
+🆕 **V2.3.** El producto guarda datos financieros y de identidad (ADR-13, fila 6): documento, fecha de nacimiento, estado civil y cónyuge, origen de fondos, cuentas bancarias, saldos y movimientos. La biometría no se guarda aquí (28.6). El email, el nombre y el sub viven en `users` y, como `sub`, en `audit_logs` y en `uploaded_by_sub`.
 
 Reglas que valen desde la primera entidad de dominio:
 
@@ -10273,55 +10288,293 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 
 ### ADR-13. Decisiones de producto del 2026-10-08
 
-🆕 **V2.2.** Cerradas antes de escribir el dominio. Cambiar una fila es un PR que actualiza esta tabla y el sitio que nombra.
+🆕 **V2.2, revisado en V2.3** con el prototipo `propia_desktop`. Cerradas antes de escribir el dominio. Cambiar una fila es un PR que actualiza esta tabla y el sitio que nombra.
 
 | # | Decisión | Qué queda escrito |
 |---|---|---|
 | 1 | Una organización por instalación | ADR-12. No hay `tenant_id` |
-| 2 | La usan empleados y externos, con pantallas distintas | `users.kind`: `interno` o `externo`. El grupo `Admin` solo se asigna a un interno. `<ROL_A>` es `Usuario` |
-| 3 | El alta es abierta y entra ese día | `selfSignup: true`. `userStatus` nace en `active`. Invertir exige ficha firmada; el Admin valida la operación, no la cuenta (10.7) |
+| 2 | Inversionistas y equipo interno, con pantallas distintas | Grupos de Cognito: `Inversionista` (lo recibe quien se registra), `Admin`, `Tesoreria` y `Operaciones` (los asigna un Admin). Permisos en 28.2 |
+| 3 | El alta es abierta y entra ese día | `selfSignup: true`, `userStatus` nace en `active`. Para mover dinero hace falta el onboarding de 4 pasos y el poder firmado (10.7) |
 | 4 | Email, contraseña y MFA. Sin SSO | `mfa: 'REQUIRED'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes |
-| 5 | Los usuarios están en Perú | `<REGION>` = `sa-east-1` (São Paulo: no hay región de AWS en Perú). `geoAllowList: ['PE']` solo en prod. El certificado y el WAF de CloudFront siguen en `us-east-1` y no guardan datos. Guardar datos personales peruanos en Brasil es una transferencia internacional (Ley 29733): el texto legal que la cubre sigue en el Anexo A |
-| 6 | Datos sensibles | 26.4. No se loguean, se redactan en la auditoría, y el export de los datos de una persona existe antes de prod |
+| 5 | Los usuarios están en Perú | `<REGION>` = `sa-east-1` (São Paulo: no hay región de AWS en Perú). `geoAllowList: ['PE']` solo en prod. El webhook de DocuSign no pasa por CloudFront (28.6). El certificado y el WAF de CloudFront siguen en `us-east-1` y no guardan datos. La transferencia de datos personales a Brasil (Ley 29733) está en el Anexo A |
+| 6 | Datos sensibles: financieros y de identidad | Documento, fecha de nacimiento, estado civil y cónyuge, origen de fondos, cuentas bancarias, saldos y movimientos. La selfie y la biometría se quedan en DocuSign; aquí solo el resultado. No se loguean y se redactan en la auditoría (26.4) |
 | 7 | Español, preparado para traducir | Los mensajes de la API siguen en español y en un solo sitio (ADR-11). El cliente no hardcodea textos (blueprint del frontend) |
 | 8 | Auditoría de todo cambio | `audit_logs` append-only, dentro de la transacción, con antes/después (9.5, 12.2) |
-| 9 | Papelera, no borrado físico | `deletedAt` en las entidades de negocio (11.1). Sin purga automática |
-| 10 | Escritorio, usable en el móvil. Con internet | El cliente es responsive. No hay modo offline ni app nativa |
-| 11 | Documentos PDF, Office e imágenes | El flujo de S3 de la sección 13. Sin captura de cámara como camino principal |
-| 12 | Aviso por email y dentro de la app. Sin tiempo real | Tabla `notifications` (destinatario, título, cuerpo, `readAt`). Al crearla se manda el mismo texto por SES. El cliente la consulta al entrar y cada 60 s con la pestaña visible. No hay WebSocket |
-| 13 | Reportes: Excel, CSV, PDF y tableros | CSV y `.xlsx` (exceljs) los genera la API. El PDF lo genera la API con pdfkit, sin Chromium: no cabe en Lambda. Los gráficos son del cliente (ECharts) contra endpoints de agregados |
-| 14 | Sin integración con otros sistemas | No hay API para terceros ni importación desde un ERP. Exportar un archivo no cuenta como integración |
-| 15 | Dominio propio, ya registrado | Falta el nombre y el id de la zona (Anexo A). El correo sale por SES en ese dominio, no por el remitente de Cognito |
+| 9 | Papelera, no borrado físico | `deletedAt` en las entidades de negocio editables (11.1). El libro mayor y los movimientos de dinero no tienen papelera: no se borran nunca (28.3) |
+| 10 | Escritorio, usable en el móvil. Con internet | El cliente es responsive a partir del prototipo de escritorio. No hay modo offline ni app nativa |
+| 11 | Documentos | Los tipos de 28.8. Las constancias aceptan PDF, JPEG o PNG; el resto, PDF |
+| 12 | Aviso por email y dentro de la app. Sin tiempo real | Tabla `notifications`. Al crearla se manda el mismo texto por SES. El cliente la consulta al entrar y cada 60 s con la pestaña visible. Eventos en 28.9 |
+| 13 | Reportes: Excel, CSV, PDF y tableros | CSV y `.xlsx` (exceljs) los genera la API. El PDF lo genera la API con pdfkit, sin Chromium. Los gráficos son del cliente (ECharts) |
+| 14 | Una sola integración: DocuSign | Firma del poder y verificación de identidad, detrás de `SignatureProvider` para pasar a Keynua (ADR-14). Sin API bancaria, de notaría ni de SUNARP |
+| 15 | Dominio propio, ya registrado | Falta el nombre y el id de la zona (Anexo A). El correo sale por SES en ese dominio |
 | 16 | Dos cuentas AWS | ADR-8. Faltan los números de cuenta |
 | 17 | 24/7, con una caída tolerable de horas | Prod: `t4g.small`, sin Multi-AZ, un NAT, una instancia de Lambda provisionada, backup de 35 días, presupuesto 400 USD/mes |
-| 18 | Invertir es un paso posterior al alta | Ficha (`draft` → `signed`) y operación (`draft` → `submitted` → `approved` \| `rejected`). Ver 10.7 |
-| 19 | El dinero no entra en la app | El usuario sube un comprobante (PDF, JPEG o PNG) por el flujo de S3. El Admin valida mirando ese archivo. Sin pasarela de pago |
+| 18 | Invierte quien está habilitado | `investorStatus = 'enabled'` (10.7). Sin eso, 403 `INVESTOR_NOT_ENABLED` |
+| 19 | El dinero entra por una wallet | Depósito a una cuenta bancaria de PROPIA, constancia, validación de Tesorería, saldo disponible. La renta entra a la wallet. El retiro lo paga Tesorería a mano (28.3) |
+| 20 | Soles y dólares, sin conversión | Cada propiedad tiene una moneda. La wallet tiene un saldo por moneda. Se deposita, invierte, cobra y retira en la misma |
+| 21 | Personas naturales con DNI, CE o pasaporte | No invierten empresas |
+| 22 | Cuotas y máximo por inversionista, por propiedad | Los define Operaciones al crear la propiedad (28.4) |
+| 23 | El compromiso no se deshace | El dinero comprometido queda bloqueado hasta el cierre (28.4) |
+| 24 | Propiedad no financiada en plazo | PROPIA compra las unidades que faltan con su cuenta institucional y la operación sigue. Esas unidades se pueden vender después en el secundario (28.4) |
+| 25 | Renta, gastos, retenciones y valorización los registra Operaciones | El sistema reparte la renta neta por unidades. Las retenciones se suben en PDF. La valorización se carga a mano con cada tasación (28.5) |
+| 26 | Notaría y SUNARP a mano | Operaciones avanza cada paso y sube la escritura y la partida (28.4, 28.7) |
+| 27 | Secundario | Ventana interna para copropietarios configurable (7 días), precio libre, 3 % del precio al vendedor (configurable, lo cobra PROPIA) y retracto de 30 días (28.7) |
+| 28 | Acceso | La landing es pública. Con cuenta se ven las propiedades y el secundario. Sin cuenta no se ve nada más |
+| 29 | Backoffice dentro de la misma app | `/admin`, con el estilo del prototipo. Las pantallas de cada rol, en el blueprint del frontend |
+
+### ADR-14. La firma va detrás de una interfaz
+
+Se empieza con DocuSign porque ya hay cuentas de dev y prod, y se piensa pasar a Keynua. El dominio solo conoce `SignatureProvider` (28.6) y la tabla `signature_envelopes` lleva la columna `provider`. Cambiar de proveedor es escribir otra implementación y cambiar `SIGNATURE_PROVIDER`; los poderes ya firmados siguen valiendo porque su PDF está guardado como documento `poder_firmado`. No se usa la UI embebida en iframe de ningún proveedor: el navegador sale al proveedor y vuelve, así la CSP no cambia de proveedor a proveedor.
+
+### ADR-15. Libro mayor de partida doble
+
+Todo movimiento de dinero es una transacción con asientos que suman cero por moneda. El saldo de una cuenta es la suma de sus asientos, y la columna `balance` es una caché que se actualiza en la misma transacción. Se descartó guardar solo un saldo por usuario: no explica de dónde salió un sol, no se puede conciliar con el banco y un bug lo corrompe sin dejar rastro. Los asientos no se editan ni se borran (trigger, igual que `audit_logs`); un error se corrige con una transacción inversa.
+
+---
+## 28. Dominio PROPIA
+
+🆕 **V2.3.** El modelo de negocio sale del prototipo `propia_desktop` y de las decisiones del ADR-13. Esta sección es el diseño: entidades, estados, reglas y contrato. El código se escribe con la forma de la sección 12 (entidad, DTO, servicio, controlador, auditoría en la transacción, `@Idempotent()` en todo `POST` que crea).
+
+PROPIA es un marketplace de copropiedad inmobiliaria. Una propiedad se divide en **unidades** del mismo precio (el "ticket"). Varias personas compran unidades; al cerrar, cada una queda inscrita en SUNARP como dueña de una **cuota ideal** (su porcentaje). PROPIA actúa como **apoderado** de todos gracias al **poder especial marco** que cada inversionista firma al registrarse: compra, administra el alquiler y reparte la renta neta cada mes. Quien quiere salir publica una oferta en el **mercado secundario**; los demás copropietarios tienen preferencia y un **retracto** de 30 días.
+
+### 28.1 Mapa de módulos
+
+| Módulo | Tablas | Sección |
+|---|---|---|
+| `investors` | `investor_profiles`, `signature_envelopes` | 10.7, 28.6 |
+| `ledger` | `ledger_accounts`, `ledger_transactions`, `ledger_entries` | 28.3 |
+| `treasury` | `treasury_bank_accounts`, `payout_bank_accounts`, `deposits`, `withdrawals` | 28.3 |
+| `properties` | `properties`, `property_valuations` | 28.4, 28.5 |
+| `investments` | `commitments`, `holdings` | 28.4 |
+| `rents` | `rent_periods`, `rent_expenses`, `rent_distributions` | 28.5 |
+| `secondary` | `secondary_offers` | 28.7 |
+| `notifications` | `notifications` | 28.9 |
+| `documents` | `documents` (sección 13) | 28.8 |
+
+Toda tabla de dinero usa `numeric(14,2)` y una columna `currency` con `CHECK (currency IN ('PEN','USD'))`. Ninguna operación mezcla monedas: un `INSERT` que lo intente falla por un `CHECK` o por el trigger de 28.3, no por una validación del servicio.
+
+### 28.2 Roles y permisos
+
+| Acción | Inversionista | Tesoreria | Operaciones | Admin |
+|---|---|---|---|---|
+| Ver propiedades y secundario | ✅ | ✅ | ✅ | ✅ |
+| Onboarding, wallet, cartera, ofertas propias | ✅ suyas | — | — | — |
+| Validar o rechazar depósitos | — | ✅ | — | ver |
+| Pagar o rechazar retiros | — | ✅ | — | ver |
+| Crear y editar propiedades, avanzar cierres | — | — | ✅ | ver |
+| Registrar renta, gastos, valorizaciones, retenciones | — | — | ✅ | ver |
+| Avanzar ofertas del secundario (retracto, notaría, SUNARP) | — | — | ✅ | ver |
+| Reabrir un onboarding rechazado | — | — | ✅ | ✅ |
+| Usuarios internos, grupos y configuración (`settings`) | — | — | — | ✅ |
+
+Un interno no tiene wallet ni invierte con su usuario interno. La cuenta institucional de PROPIA (28.4) no es un usuario de Cognito: es una fila de `users` con `id` fijo `00000000-0000-0000-0000-000000000001` y sin login, que el migrator crea en el seed.
+
+### 28.3 Wallet, libro mayor, depósitos y retiros
+
+**Cuentas.** `ledger_accounts` tiene una fila por `(owner, kind, currency)`:
+
+| `kind` | Dueño | Qué es |
+|---|---|---|
+| `available` | inversionista o PROPIA | Saldo disponible. `CHECK (balance >= 0)` |
+| `committed` | inversionista o PROPIA | Bloqueado en compromisos o compras del secundario. `CHECK (balance >= 0)` |
+| `withdrawing` | inversionista | Retiro pedido, pendiente de que Tesorería transfiera. `CHECK (balance >= 0)` |
+| `bank` | sistema | Contrapartida del dinero en las cuentas bancarias de PROPIA. Puede ser negativa |
+| `property_settlement` | sistema | Lo pagado por las propiedades al cerrar |
+| `commissions` | sistema | Comisiones del secundario cobradas por PROPIA |
+
+**Asientos.** `ledger_transactions` (id, `type`, `reference_type`, `reference_id`, `actor_sub`, `request_id`, `created_at`) y `ledger_entries` (id, `transaction_id`, `account_id`, `currency`, `amount` con signo). Un trigger `DEFERRABLE INITIALLY DEFERRED` comprueba al hacer `COMMIT` que cada transacción suma cero por moneda. Otro rechaza `UPDATE` y `DELETE`. El servicio `LedgerService.post(type, reference, lines, manager)` es la única puerta: bloquea las cuentas con `SELECT … FOR UPDATE` en orden de id (para no cruzarse en un deadlock), inserta los asientos y actualiza `balance`. Si un `CHECK (balance >= 0)` salta, la transacción entera se revierte y el servicio responde 409 `INSUFFICIENT_FUNDS`.
+
+**Lo que ve el inversionista** (pantalla Wallet), por moneda:
+
+| Línea | De dónde sale |
+|---|---|
+| Disponible | `available` |
+| Comprometido | `committed` |
+| En retiro | `withdrawing` |
+| Pendiente de validación | Suma de sus `deposits` en `submitted`. No es saldo: no suma al total |
+| Saldo total | Disponible + comprometido + en retiro |
+| Movimientos | Sus asientos, con el texto del `type` y la referencia |
+
+**Depósito.** El inversionista elige moneda, ve las cuentas de PROPIA de esa moneda (`treasury_bank_accounts`, que edita el Admin: banco, titular, RUC, tipo, número, CCI, moneda) y transfiere desde su banco. Luego crea el depósito: banco destino, monto y constancia (documento `constancia_deposito`). Estado `submitted`. Tesorería compara con el extracto y:
+
+- **aprueba:** asiento `bank` −monto / `available` +monto. Estado `approved`.
+- **rechaza** con motivo obligatorio. Estado `rejected`. No toca el libro.
+
+Tesorería no edita el monto. Si no coincide con el banco, rechaza con el motivo y el inversionista crea otro.
+
+**Retiro.** El inversionista registra sus cuentas de destino en Perfil (`payout_bank_accounts`: banco, tipo, número, CCI, moneda, una predeterminada por moneda). Pide un retiro a una de ellas por un monto ≤ disponible: asiento `available` −monto / `withdrawing` +monto, estado `requested`. Tesorería transfiere fuera de la app, sube la `constancia_retiro` y lo marca pagado: asiento `withdrawing` −monto / `bank` +monto, estado `paid`. Si lo rechaza (motivo obligatorio): `withdrawing` → `available`, estado `rejected`. El inversionista puede cancelar mientras está en `requested`.
+
+**Conciliación.** Un job diario (sección 14) compara la suma de asientos de cada cuenta con `balance` y la suma total por moneda con cero. Cualquier diferencia es una alarma, no una corrección automática.
+
+### 28.4 Propiedades, compromisos y cierre
+
+**Propiedad** (`properties`): código, nombre, distrito y ciudad, descripción, gastos y riesgos (texto), moneda, precio, `units_total`, `unit_price`, `max_units_per_investor`, `funding_deadline`, renta anual estimada (%), día de pago de la renta, imagen de portada (documento privado servido por URL prefirmada) y `status`. `CHECK (price = unit_price * units_total)`: el precio se divide exacto, sin centavos sueltos.
+
+| `status` | Quién la mueve | Qué pasa |
+|---|---|---|
+| `draft` | Operaciones | Editable, invisible para inversionistas. Única que acepta papelera |
+| `funding` | Operaciones la publica | Visible. Acepta compromisos |
+| `funded` | Sistema, al llenarse; o al vencer el plazo, cuando PROPIA completa | Ya no acepta compromisos. Aviso a Operaciones |
+| `notary` | Operaciones | Firma de escritura en curso. Sube `escritura` |
+| `registered` | Operaciones, con la `partida_registral` subida | Liquida compromisos y crea `holdings` |
+| `operating` | Sistema, tras `registered` | Reparte renta. Admite ofertas del secundario |
+
+**Compromiso** (`commitments`): inversionista, propiedad, unidades, monto (`units * unit_price`), estado `active` → `settled`. Crearlo exige `investorStatus = 'enabled'`, propiedad en `funding`, `units ≤ unidades libres` y `units + las que ya tiene comprometidas ≤ max_units_per_investor`. Se bloquea la fila de la propiedad (`FOR UPDATE`) antes de contar las unidades libres: dos compromisos simultáneos no pueden vender la misma unidad. Asiento `available` −monto / `committed` +monto. No se cancela (ADR-13, 23). Si con él se llega a `units_total`, la propiedad pasa a `funded` en la misma transacción.
+
+**Plazo vencido.** El job diario busca propiedades en `funding` con `funding_deadline` pasado. Para cada una, la cuenta institucional de PROPIA crea un compromiso por las unidades libres (asiento `bank` −monto / `committed` de PROPIA +monto: el dinero de PROPIA no pasa por una wallet) y la propiedad pasa a `funded`. Ese compromiso es como cualquier otro: al registrar, PROPIA tiene `holdings` y puede vender en el secundario.
+
+**Registro.** Al pasar a `registered`, para cada compromiso: asiento `committed` −monto / `property_settlement` +monto, estado `settled`, y una fila en `holdings` (inversionista, propiedad, unidades, `locked_units` en 0). La cuota ideal es `units / units_total`, calculada al leer.
+
+### 28.5 Renta, gastos, valorización y retenciones
+
+**Período de renta** (`rent_periods`): propiedad, mes (`YYYY-MM`), renta bruta cobrada, fecha de pago y estado `draft` → `distributed`. Los gastos van en `rent_expenses` (concepto, monto): mantenimiento, arbitrios, seguro, los que haya. Renta neta = bruta − gastos.
+
+Distribuir lo hace Operaciones y no se deshace. Para cada `holding` de la propiedad, `parte = floor(neta * units / units_total, 2 decimales)`; los centavos que sobran van al `available` de PROPIA. Un solo asiento: `bank` −neta / `available` +parte de cada uno. Una fila por inversionista en `rent_distributions` (para el historial de pagos de la cartera) y un aviso. Un error se corrige con otro período de ajuste, no editando el distribuido.
+
+**Valorización** (`property_valuations`): fecha, valor y `tasacion` en PDF. La cartera muestra la última: `valor * units / units_total` y su variación contra lo invertido.
+
+**Retenciones.** Operaciones sube una `constancia_retencion` por inversionista y año. La app no calcula impuestos.
+
+**Cartera** (pantalla Mi cartera), por propiedad: monto invertido, cuota ideal, valorización estimada, renta acumulada (suma de `rent_distributions`), última renta mensual, proyección anual (última × 12), próximo pago (día de pago de la propiedad), gastos del último período prorrateados, historial de pagos y documentos (escritura, partida, su poder firmado, sus constancias). Las propiedades en `funding`/`funded`/`notary` aparecen como "En proceso de cierre" con el paso actual.
+
+### 28.6 Firma e identidad con DocuSign
+
+```ts
+// src/modules/investors/signature/signature-provider.ts
+export interface PowerOfAttorneyRequest {
+  userSub: string;
+  signer: { name: string; email: string; documentType: 'DNI' | 'CE' | 'PASAPORTE'; documentNumber: string };
+  /** Solo con sociedad de gananciales: firma en el mismo sobre, sin cuenta. */
+  spouse?: { name: string; email: string };
+}
+
+export interface SignatureEvent {
+  envelopeId: string;
+  status: 'sent' | 'completed' | 'declined' | 'voided';
+  identityVerified: boolean | null;
+}
+
+export interface SignatureProvider {
+  readonly name: 'docusign' | 'keynua';
+  createPowerOfAttorney(req: PowerOfAttorneyRequest): Promise<{ envelopeId: string }>;
+  /** URL de un solo uso a la que el navegador sale para firmar y desde la que vuelve a `returnUrl`. */
+  signingUrl(envelopeId: string, userSub: string, returnUrl: string): Promise<string>;
+  verifyWebhook(rawBody: Buffer, headers: Record<string, string | undefined>): boolean;
+  parseWebhook(rawBody: Buffer): SignatureEvent;
+  downloadSignedPdf(envelopeId: string): Promise<Buffer>;
+}
+```
+
+`DocuSignProvider` usa la eSignature REST API con JWT Grant: integration key, user id, RSA privada y la clave HMAC de Connect viven en Secrets Manager (`/<org>/<app-short>/<stage>/docusign`), nunca en variables de entorno. dev apunta a la cuenta demo de DocuSign y prod a la de producción, que ya existen. El sobre sale de una plantilla con el texto del poder: el titular es firmante embebido (`clientUserId`) con el flujo de ID Verification; el cónyuge, si hay, es firmante remoto por email en el orden 2.
+
+El navegador no confía en el parámetro con el que vuelve de DocuSign. La verdad es el webhook de DocuSign Connect, y no entra por CloudFront por dos razones: la restricción geográfica de prod (`PE`) es de toda la distribución y bloquearía a los servidores de DocuSign, y la política de origen de `/api/*` ya reenvía 10 de 10 cabeceras, así que no cabe `X-DocuSign-Signature-1`.
+
+Entra por una Lambda propia, `<app-short>-<stage>-webhooks`, con Function URL (`authType: NONE`), dentro de la VPC y con el mismo empaquetado que el worker (6.11). Verifica `X-DocuSign-Signature-1` (HMAC-SHA256 del cuerpo crudo, en base64) antes de parsear nada; sin firma válida, 401 y no toca la base. La concurrencia reservada es 2, para que un flood no agote las conexiones del proxy. Si cdk-nag marca la URL sin autenticación, la aceptación va en `nag.ts` con este motivo: la autenticación es el HMAC. Un evento repetido no hace nada dos veces: se guarda en `signature_envelopes.events` y se compara el estado. Con `completed` e identidad verificada, el PDF firmado se guarda como `poder_firmado` y el inversionista pasa a `enabled`. Mientras tanto, el cliente vuelve a pedir `me()` cada pocos segundos.
+
+Los datos biométricos y la imagen del documento no salen de DocuSign. Aquí se guardan el resultado (`identityVerified`), las fechas y el PDF del poder.
+
+### 28.7 Mercado secundario
+
+**Oferta** (`secondary_offers`): vendedor, propiedad (en `operating`), unidades, precio total (libre, en la moneda de la propiedad), `commission_pct` copiado de `settings` al publicar, comprador y fechas de cada paso. Publicarla bloquea esas unidades en `holdings.locked_units`; el vendedor no puede ofrecer más de las que tiene libres.
+
+| `status` | Quién | Qué pasa |
+|---|---|---|
+| `internal_window` | Vendedor publica | Solo la ven los copropietarios de esa propiedad durante `secondary.internal_window_days` (7) |
+| `open` | Sistema, al vencer la ventana | La ve cualquier inversionista con cuenta |
+| `buyer_found` | Comprador habilitado acepta | Asiento del comprador `available` −precio / `committed` +precio. La oferta sale del listado |
+| `retracto` | Operaciones, tras verificar | Corren `secondary.retracto_days` (30). Un copropietario puede ejercer su preferencia al mismo precio: sus fondos se bloquean y los del comprador original vuelven a `available` |
+| `notary` | Operaciones | Firma en notaría |
+| `completed` | Operaciones, con la partida | Unidades del vendedor al comprador en `holdings`. Asiento: `committed` del comprador −precio / `available` del vendedor +(precio − comisión) / `commissions` +comisión |
+| `cancelled` | Vendedor, solo antes de `buyer_found` | Libera `locked_units` |
+
+La compra es de la oferta entera, como en el prototipo. La comisión es `round(precio * commission_pct / 100, 2)` y se le descuenta al vendedor; el comprador paga el precio publicado.
+
+### 28.8 Documentos
+
+| Tipo | Quién lo sube | Dueño (`entityType`) | Quién lo ve |
+|---|---|---|---|
+| `constancia_deposito` | Inversionista | `deposit` | El inversionista y Tesorería |
+| `constancia_retiro` | Tesorería | `withdrawal` | El inversionista y Tesorería |
+| `poder_firmado` | Sistema, desde DocuSign | `user` | El inversionista, Operaciones y Admin |
+| `escritura`, `partida_registral` | Operaciones | `property` u `offer` | Los copropietarios de esa propiedad e internos |
+| `constancia_retencion` | Operaciones | `user` | El inversionista y Operaciones |
+| `tasacion` | Operaciones | `property` | Internos |
+
+La descarga comprueba ese permiso en el servicio antes de firmar la URL. El listado de 13.2 filtra por `entityType` y `entityId`.
+
+### 28.9 Avisos
+
+Un aviso es una fila en `notifications` y el mismo texto por email. Se crean dentro de la transacción del cambio (el email sale después del `COMMIT`):
+
+| Evento | A quién |
+|---|---|
+| Depósito aprobado o rechazado | Inversionista |
+| Depósito nuevo, retiro nuevo | Tesorería |
+| Retiro pagado o rechazado | Inversionista |
+| Poder firmado, identidad rechazada | Inversionista. Rechazo también a Operaciones |
+| Propiedad financiada, plazo vencido | Operaciones y los comprometidos |
+| Cada paso de cierre (`notary`, `registered`) | Los comprometidos |
+| Renta distribuida | Cada copropietario |
+| Oferta nueva en una propiedad suya (ventana interna) | Copropietarios |
+| Comprador encontrado, retracto ejercido, venta completada | Vendedor y compradores implicados |
+
+### 28.10 Contrato (resumen)
+
+| Ruta | Rol |
+|---|---|
+| `GET/PUT /api/investor/profile`, `POST /api/investor/poder` (crea el sobre y devuelve la URL de firma) | Inversionista |
+| `GET /api/wallet` (saldos por moneda), `GET /api/wallet/movements` | Inversionista |
+| `GET /api/treasury/bank-accounts` | Inversionista (lectura); Admin edita |
+| `POST /api/deposits`, `GET /api/deposits` | Inversionista: los suyos |
+| `POST /api/deposits/{id}/approve`, `/reject` | Tesoreria |
+| `GET/POST/DELETE /api/payout-accounts` | Inversionista |
+| `POST /api/withdrawals`, `POST /api/withdrawals/{id}/cancel` | Inversionista |
+| `POST /api/withdrawals/{id}/pay`, `/reject` | Tesoreria |
+| `GET /api/properties`, `GET /api/properties/{id}` | Cualquiera con sesión |
+| `POST/PATCH /api/properties`, `POST /api/properties/{id}/status` | Operaciones |
+| `POST /api/properties/{id}/commitments` | Inversionista habilitado |
+| `GET /api/portfolio`, `GET /api/portfolio/{propertyId}` | Inversionista |
+| `POST /api/properties/{id}/rent-periods`, `/{periodId}/distribute`, `/valuations` | Operaciones |
+| `GET /api/secondary/offers`, `POST /api/secondary/offers`, `/{id}/cancel`, `/{id}/buy`, `/{id}/retracto` | Inversionista |
+| `POST /api/secondary/offers/{id}/status` | Operaciones |
+| `GET /api/notifications`, `POST /api/notifications/{id}/read` | Cualquiera con sesión |
+| Function URL de `<app-short>-<stage>-webhooks` | DocuSign Connect, con HMAC (28.6) |
+| `GET/PUT /api/settings`, `POST /api/users/{id}/groups` | Admin |
+
+Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respuesta con dinero lo manda como string con dos decimales y su `currency`.
+
+### 28.11 Configuración editable (`settings`)
+
+| Clave | Valor inicial |
+|---|---|
+| `secondary.internal_window_days` | `7` |
+| `secondary.commission_pct` | `3.00` |
+| `secondary.retracto_days` | `30` |
+| `terms_and_conditions_url` | `<TERMS_URL>` |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
 
-Lo cerrado el 2026-10-08 está en ADR-13 y en 10.7. Aquí queda lo que todavía bloquea escribir el módulo de inversión y un prod con usuarios reales.
+Lo cerrado está en ADR-13 y en la sección 28. Aquí queda lo que falta para escribir algún módulo o para salir a prod.
 
 ### A.1 Cerrado, falta el dato
 
-| Dato | Decisión ya tomada | Falta |
-|---|---|---|
-| Dominio | Propio y ya registrado. Correo por SES (`no-reply@<DOMINIO_BASE>`), no el remitente de Cognito | El nombre y el `<HOSTED_ZONE_ID>` |
-| Cuentas | Dos (ADR-8) | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>` |
-| Rol | `<ROL_A>` = `Usuario`, `<ROL_B>` = `Admin` | Nada |
-| Alta | Abierta. Entra ese día, con MFA, sin SSO, plan Essentials | Nada en la cuenta. La ficha es otra puerta (10.7) |
-| Invertir | Ficha firmada. El dinero se mueve fuera. El usuario sube el comprobante y el Admin lo valida | Cómo se firma y los campos de la ficha (A.2) |
-| País | Prod solo desde Perú (`PE`). dev y qa sin filtro | Nada |
-| Cognito Plus | No. Essentials cubre MFA y cuesta menos; con menos de 100 usuarios no se paga Plus | Nada, salvo que se reabra |
+| Dato | Falta |
+|---|---|
+| Dominio | El nombre y el `<HOSTED_ZONE_ID>`. El correo sale por SES desde `no-reply@<DOMINIO_BASE>` |
+| Cuentas AWS | `<ACCOUNT_NONPROD>` y `<ACCOUNT_PROD>` |
+| DocuSign dev y prod | Integration key, user id, RSA privada, clave HMAC de Connect, account id e id de la plantilla del poder. Van a Secrets Manager, no al repo |
+| Cuentas bancarias de PROPIA | Banco, titular, RUC, número y CCI de cada una, en soles y en dólares. Se cargan en `treasury_bank_accounts` desde el backoffice |
+| Textos legales | El texto del poder especial marco (plantilla de DocuSign), los términos y la política de privacidad |
 
-### A.2 Sigue abierto, y cambia el código
+### A.2 Sigue abierto
 
-| # | Pregunta | Por qué no se puede dejar para después |
+| # | Qué | Diseño mientras tanto |
 |---|---|---|
-| 1 | ¿Cómo se firma la ficha? | Cambia lo que se guarda como prueba (casilla, trazo o firma digital) |
-| 2 | En el registro, ¿cómo se sabe si es interno o externo? | `users.kind` es obligatorio y solo un Admin lo cambia después |
-| 3 | ¿Qué datos sensibles hay: salud, financieros, biométricos, o una mezcla? | Cambia qué columnas se redactan y si hace falta cifrado de columna |
-| 4 | La transferencia de datos personales de Perú a `sa-east-1` (Brasil), ¿qué texto legal la cubre? | AWS no tiene región en Perú. Sin ese texto no hay prod |
+| 1 | La firma del cónyuge: falta confirmarla | Segundo firmante del mismo sobre, sin cuenta. Hasta que firme, el titular no puede invertir |
+| 2 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, si un poder firmado en DocuSign basta para disponer de inmuebles (Código Civil, art. 156, pide escritura pública), el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. Si el poder necesita escritura, se añade un paso en el onboarding en el que Operaciones sube la escritura antes de `enabled` |
+| 3 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
+| 4 | Qué es "Liquidado" en la wallet del prototipo | No está en el diseño. Se añade cuando se sepa qué saldo muestra |
 
 ### A.3 El resto de marcadores pendientes
 
@@ -10329,8 +10582,6 @@ Lo cerrado el 2026-10-08 está en ADR-13 y en 10.7. Aquí queda lo que todavía 
 |---|---|---|
 | `<ALERT_EMAIL>` | Operaciones | Suscripción del topic de alarmas |
 | `<SENTRY_DSN_BACKEND>` | Quien cree el proyecto de Sentry | Variable de la Lambda. Vacío = Sentry no se inicializa, y todo lo demás funciona. El plan Developer de Sentry es gratis (1 usuario, 5.000 errores al mes compartidos con el proyecto del frontend). Solo se mandan 5xx, así que la cuota alcanza mientras la app esté sana |
-| `<ENTITY_ID>` | El dominio | Columna `entityId` de documentos: el identificador natural del dueño del archivo |
-| `<DOC_TIPO_1..3>` | El dominio | El DTO de documentos rechaza cualquier tipo que no esté en la lista |
 | `<TERMS_URL>` | Legal | `GET /api/auth/terms-link` lo devuelve para que el signup lo muestre |
 
 ### A.4 Lo que se verificó y lo que no
