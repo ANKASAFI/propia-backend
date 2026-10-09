@@ -81,7 +81,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | Infraestructura | Recursos creados a mano + `serverless.yml` | **AWS CDK** para todo: red, base de datos, Cognito, S3, CloudFront, WAF, alarmas, OIDC. **cdk-nag** (AWS Solutions) como gate de seguridad | 16 |
 | Dominio y CORS | Front y API en orígenes distintos, CORS `*` en Lambda | **Mismo dominio**: CloudFront sirve el front y enruta `/api/*` a la API. Sin CORS ni preflight | 2, 8 |
 | Sesión | Tokens en cookies legibles por JS, Bearer en cada llamada | **Cookies `httpOnly`** emitidas por el backend, rotación de refresh token, protección CSRF | 10 |
-| MFA | No | **TOTP** con flujo de retos genérico. Obligatorio u opcional por config (🆕 V2.4: opcional en PROPIA, 10.8) | 10 |
+| MFA | No | **TOTP** con flujo de retos genérico. Obligatorio, opcional o apagado por config (🆕 V2.4: apagado en PROPIA por ahora, 10.8) | 10 |
 | Validación JWT | Solo firma y expiración | Firma + `iss` + `client_id` + `token_use=access`; falla cerrado ante error de BD | 10.4 |
 | Rate limiting | Throttler en memoria (inútil en Lambda) | **AWS WAF** (reglas gestionadas y por tasa) + throttling de API Gateway | 23 |
 | Base de datos | Pública, contraseña, sin pool limitado | **Privada**, RDS Proxy con **IAM de extremo a extremo** (ningún rol de aplicación tiene contraseña), Multi-AZ en prod, PITR, cifrado | 7.2, 16.4, 26 |
@@ -155,6 +155,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | `<ROL_A>` | Grupo de Cognito del inversionista. Lo recibe toda persona que se registra sola | nombre de grupo | `Inversionista` |
 | `<ROL_C>` | Grupo interno que valida depósitos y paga retiros (28) | nombre de grupo | `Tesoreria` |
 | `<ROL_D>` | Grupo interno que lleva propiedades, cierres, rentas y el secundario (28) | nombre de grupo | `Operaciones` |
+| `<ROL_E>` | 🆕 V2.4. Grupo interno que hace la evaluación PLAFT y revisa las alertas (10.7, 29.15) | nombre de grupo | `Cumplimiento` |
 | `<ROL_B>` | Grupo de Cognito administrador | nombre de grupo | `Admin` |
 | `<ALERT_EMAIL>` | Buzón que recibe alarmas y avisos de presupuesto | email | *pendiente* |
 | `<SENTRY_DSN_BACKEND>` | DSN del proyecto de Sentry del backend (no es secreto) | URL | *pendiente* |
@@ -1897,12 +1898,13 @@ CloudFront no debe cachear esta ruta: el behavior de `/api/*` reenvía todo y la
 // src/common/auth/roles.ts
 import { SetMetadata } from '@nestjs/common';
 
-export const ROLES = ['<ROL_A>', '<ROL_B>', '<ROL_C>', '<ROL_D>'] as const;
+export const ROLES = ['<ROL_A>', '<ROL_B>', '<ROL_C>', '<ROL_D>', '<ROL_E>'] as const;
 export type Role = (typeof ROLES)[number];
 export const ADMIN_ROLE: Role = '<ROL_B>';
 export const INVESTOR_ROLE: Role = '<ROL_A>';
 export const TREASURY_ROLE: Role = '<ROL_C>';
 export const OPERATIONS_ROLE: Role = '<ROL_D>';
+export const COMPLIANCE_ROLE: Role = '<ROL_E>';
 
 export const ROLES_KEY = 'roles';
 export const Roles = (...roles: Role[]) => SetMetadata(ROLES_KEY, roles);
@@ -2029,7 +2031,7 @@ export class RolesGuard implements CanActivate {
 }
 ```
 
-🆕 V2.3. `ROLES` tiene cuatro entradas: `<ROL_A>` (`Inversionista`), `<ROL_B>` (`Admin`), `<ROL_C>` (`Tesoreria`) y `<ROL_D>` (`Operaciones`). Los tres internos los asigna un Admin; nadie se registra como interno. El reparto de permisos está en 28.2. Un usuario puede tener varios grupos de Cognito; el guard deja pasar si **alguno** coincide con los roles exigidos. Sin `@Roles(...)` la ruta solo exige sesión.
+🆕 V2.3, ampliado en V2.4. `ROLES` tiene cinco entradas: `<ROL_A>` (`Inversionista`), `<ROL_B>` (`Admin`), `<ROL_C>` (`Tesoreria`), `<ROL_D>` (`Operaciones`) y `<ROL_E>` (`Cumplimiento`). Los cuatro internos los asigna un Admin; nadie se registra como interno. El reparto de permisos está en 28.2. Un usuario puede tener varios grupos de Cognito; el guard deja pasar si **alguno** coincide con los roles exigidos. Sin `@Roles(...)` la ruta solo exige sesión.
 
 El guard JWT distingue tres fallos y no los mezcla:
 
@@ -4335,7 +4337,7 @@ Con cuenta, el inversionista ve las propiedades, la cartera vacía y el secundar
 | `enabled` | La evaluación PLAFT se aprobó |
 | `rejected` | La identidad no se verificó, alguien rechazó el sobre o la evaluación PLAFT no se aprobó. Con motivo. Operaciones puede reabrir el paso que corresponda |
 
-**Evaluación PLAFT** (🆕 V2.4). Cualquiera se registra y entra, pero nadie invierte sin pasarla. El paso 3 añade la declaración de persona expuesta políticamente (PEP: sí o no, cargo y entidad) y la de beneficiario final. Con `review`, la persona aparece en la cola de `/admin/inversionistas` de Operaciones, con un nivel de riesgo que la app sugiere y el evaluador puede cambiar:
+**Evaluación PLAFT** (🆕 V2.4). Cualquiera se registra y entra, pero nadie invierte sin pasarla. El paso 3 añade la declaración de persona expuesta políticamente (PEP: sí o no, cargo y entidad) y la de beneficiario final. Con `review`, la persona aparece en la cola de `/admin/cumplimiento` de `<ROL_E>` (Cumplimiento), con un nivel de riesgo que la app sugiere y el evaluador puede cambiar:
 
 | Riesgo sugerido | Cuándo |
 |---|---|
@@ -4347,19 +4349,11 @@ El evaluador revisa a la persona en las listas restrictivas (ONU, OFAC y las que
 
 `GET /api/auth/me` incluye `investorStatus`. Una operación de dinero con otro estado responde 403 con el código `INVESTOR_NOT_ENABLED`. El cliente, con ese código, lleva al paso que falta. Cambiar los datos del paso 1 o 2 después de `enabled` vuelve a `signing`: el poder firmado es el de esos datos.
 
-### 10.8 MFA opcional
+### 10.8 Sin MFA por ahora
 
-🆕 **V2.4.** El user pool tiene `mfa: 'OPTIONAL'`. Con eso Cognito no devuelve `MFA_SETUP` en el login: quien no activó el MFA entra con su contraseña, y quien lo activó recibe `SOFTWARE_TOKEN_MFA`, que el flujo de retos de la sección 10 ya resuelve. El test de invitación de 15.3 pasa a `NEW_PASSWORD_REQUIRED` → sesión.
+🆕 **V2.4.** El user pool tiene `mfa: 'OFF'`: nadie configura ni usa un segundo factor, ni los inversionistas ni los internos. Cognito no devuelve `MFA_SETUP` ni `SOFTWARE_TOKEN_MFA`; el flujo de retos de la sección 10 queda para `NEW_PASSWORD_REQUIRED` (invitaciones de internos, 28.12). El test de invitación de 15.3 pasa a `NEW_PASSWORD_REQUIRED` → sesión. Lo que protege el dinero sin MFA son los códigos por email de las acciones sensibles (28.12) y el aviso de inicio de sesión desde un dispositivo nuevo (H39, 29.15).
 
-Se activa desde `/perfil`, con sesión:
-
-| Ruta | Qué hace |
-|---|---|
-| `POST /api/auth/mfa/setup` | `AssociateSoftwareToken` con el access token. Devuelve `{ secretCode, otpauthUri }` para el QR |
-| `POST /api/auth/mfa/verify` `{ code }` | `VerifySoftwareToken` y `SetUserMFAPreference` (TOTP preferido). Audita `USER_MFA_ENROLLED` |
-| `DELETE /api/auth/mfa` `{ code }` | Pide un código válido y desactiva el MFA. Audita y avisa por email |
-
-`GET /api/auth/me` incluye `mfaEnabled`. Los internos (`<ROL_B>`, `<ROL_C>`, `<ROL_D>`) lo necesitan: sin él, el guard de roles responde 403 `MFA_REQUIRED` en cualquier ruta interna y el cliente los lleva a activarlo. Un interno no puede desactivarlo.
+Encenderlo después no cambia el modelo: `mfa: 'OPTIONAL'` en `config.ts` y tres rutas con sesión para activarlo desde `/perfil`: `POST /api/auth/mfa/setup` (`AssociateSoftwareToken`, devuelve el secreto y la URI del QR), `POST /api/auth/mfa/verify { code }` (`VerifySoftwareToken` y `SetUserMFAPreference`) y `DELETE /api/auth/mfa { code }`. El reto `SOFTWARE_TOKEN_MFA` del login ya está resuelto en la sección 10.
 
 ---
 ---
@@ -5791,11 +5785,13 @@ export const DOCUMENT_TYPES = [
   'poder_firmado',
   'constancia_retencion',
   'tasacion',
+  'constancia_pago',
+  'sustento_plaft',
 ] as const;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export const ALLOWED_CONTENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png'] as const;
 /** Las imágenes solo valen para la foto de un voucher. El servicio rechaza el resto con 400. */
-export const IMAGE_DOCUMENT_TYPES: readonly DocumentType[] = ['constancia_deposito', 'constancia_retiro'];
+export const IMAGE_DOCUMENT_TYPES: readonly DocumentType[] = ['constancia_deposito', 'constancia_retiro', 'constancia_pago', 'sustento_plaft'];
 export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
 
 export class CreateUploadDto {
@@ -7610,8 +7606,8 @@ export interface StageConfig {
     /** ESSENTIALS: rotación de refresh token y MFA. PLUS: además protección contra amenazas (más costo por usuario). */
     featurePlan: 'ESSENTIALS' | 'PLUS';
     selfSignup: boolean;
-    /** REQUIRED: todo usuario configura TOTP en su primer login. OPTIONAL: cada usuario decide. */
-    mfa: 'REQUIRED' | 'OPTIONAL';
+    /** REQUIRED: todo usuario configura TOTP en su primer login. OPTIONAL: cada usuario decide. OFF: sin MFA. */
+    mfa: 'REQUIRED' | 'OPTIONAL' | 'OFF';
   };
   network: { maxAzs: number; natGateways: number };
   db: {
@@ -7657,7 +7653,7 @@ export const CONFIG: Record<Stage, StageConfig> = {
     stage: 'dev',
     account: '<ACCOUNT_NONPROD>',
     domainName: 'app-dev.<DOMINIO_BASE>',
-    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OPTIONAL' },
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OFF' },
     network: { maxAzs: 2, natGateways: 1 },
     db: {
       instanceClass: 't4g.micro',
@@ -7683,7 +7679,7 @@ export const CONFIG: Record<Stage, StageConfig> = {
     stage: 'qa',
     account: '<ACCOUNT_NONPROD>',
     domainName: 'app-qa.<DOMINIO_BASE>',
-    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OPTIONAL' },
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OFF' },
     network: { maxAzs: 2, natGateways: 1 },
     db: {
       instanceClass: 't4g.small',
@@ -7709,7 +7705,7 @@ export const CONFIG: Record<Stage, StageConfig> = {
     stage: 'prod',
     account: '<ACCOUNT_PROD>',
     domainName: 'app.<DOMINIO_BASE>',
-    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OPTIONAL' },
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OFF' },
     network: { maxAzs: 2, natGateways: 1 },
     db: {
       instanceClass: 't4g.small',
@@ -7737,7 +7733,7 @@ Los tres stages están en el mismo archivo para que un cambio de tamaño de inst
 
 `auth.featurePlan` queda en `ESSENTIALS` (ADR-13): con menos de 100 usuarios no se paga Cognito Plus. `geoAllowList` de prod es `['PE']`. Vacío, como en dev y qa, deja el WAF sin filtro geográfico.
 
-`selfSignup: true` y `mfa: 'OPTIONAL'` (🆕 V2.4, 10.8) acompañan al user pool. Cerrar el alta es poner `selfSignup: false` y dar de alta a la gente con `create-admin` o con `AdminCreateUser`.
+`selfSignup: true` y `mfa: 'OFF'` (🆕 V2.4, 10.8) acompañan al user pool. Cerrar el alta es poner `selfSignup: false` y dar de alta a la gente con `create-admin` o con `AdminCreateUser`.
 
 ### 16.3 Nombres
 
@@ -7967,6 +7963,7 @@ export const ROLE_A = '<ROL_A>';
 export const ROLE_B = '<ROL_B>';
 export const ROLE_C = '<ROL_C>';
 export const ROLE_D = '<ROL_D>';
+export const ROLE_E = '<ROL_E>';
 
 export class AuthStack extends Stack {
   readonly userPool: cognito.UserPool;
@@ -7999,8 +7996,8 @@ export class AuthStack extends Stack {
         familyName: { required: true, mutable: true },
         phoneNumber: { required: false, mutable: true },
       },
-      mfa: cfg.auth.mfa === 'REQUIRED' ? cognito.Mfa.REQUIRED : cognito.Mfa.OPTIONAL,
-      mfaSecondFactor: { otp: true, sms: false },
+      mfa: { REQUIRED: cognito.Mfa.REQUIRED, OPTIONAL: cognito.Mfa.OPTIONAL, OFF: cognito.Mfa.OFF }[cfg.auth.mfa],
+      ...(cfg.auth.mfa === 'OFF' ? {} : { mfaSecondFactor: { otp: true, sms: false } }),
       // Debe coincidir con PASSWORD_RULE de auth.dto.ts.
       passwordPolicy: {
         minLength: 12,
@@ -8019,7 +8016,7 @@ export class AuthStack extends Stack {
       // email: cognito.UserPoolEmail.withSES({ fromEmail: 'no-reply@<DOMINIO_BASE>', sesRegion: cfg.region }),
     });
 
-    for (const group of [ROLE_A, ROLE_B, ROLE_C, ROLE_D]) {
+    for (const group of [ROLE_A, ROLE_B, ROLE_C, ROLE_D, ROLE_E]) {
       new cognito.CfnUserPoolGroup(this, `Group${group.replace(/\W/g, '')}`, {
         userPoolId: this.userPool.userPoolId,
         groupName: group,
@@ -9242,7 +9239,7 @@ rm -rf infra-synth && mkdir infra-synth
 cp -r infra/bin infra/lib infra/cdk.json infra/tsconfig.json infra/package.json infra-synth/
 ln -s ../infra/node_modules infra-synth/node_modules
 REGION="${REGION:-sa-east-1}"
-grep -rl '<' infra-synth/bin infra-synth/lib | xargs sed -i "s/<REGION>/${REGION}/g; s/<HOSTED_ZONE_ID>/Z0123456789ABCDEFGHIJ/g; s/<DOMINIO_BASE>/example.com/g; s/<ALERT_EMAIL>/alerts@example.com/g; s#<SENTRY_DSN_BACKEND>#https://public@o0.ingest.sentry.io/0#g; s/<GITHUB_ORG>/ANKASAFI/g; s/<app-frontend>/propia-frontend/g; s/<app-short>/propia/g; s/<app_snake>/propia/g; s/<app>/propia-backend/g; s/<org>/anka/g; s/<ACCOUNT_NONPROD>/111111111111/g; s/<ACCOUNT_PROD>/222222222222/g; s/<ROL_A>/Inversionista/g; s/<ROL_B>/Admin/g; s/<ROL_C>/Tesoreria/g; s/<ROL_D>/Operaciones/g"
+grep -rl '<' infra-synth/bin infra-synth/lib | xargs sed -i "s/<REGION>/${REGION}/g; s/<HOSTED_ZONE_ID>/Z0123456789ABCDEFGHIJ/g; s/<DOMINIO_BASE>/example.com/g; s/<ALERT_EMAIL>/alerts@example.com/g; s#<SENTRY_DSN_BACKEND>#https://public@o0.ingest.sentry.io/0#g; s/<GITHUB_ORG>/ANKASAFI/g; s/<app-frontend>/propia-frontend/g; s/<app-short>/propia/g; s/<app_snake>/propia/g; s/<app>/propia-backend/g; s/<org>/anka/g; s/<ACCOUNT_NONPROD>/111111111111/g; s/<ACCOUNT_PROD>/222222222222/g; s/<ROL_A>/Inversionista/g; s/<ROL_B>/Admin/g; s/<ROL_C>/Tesoreria/g; s/<ROL_D>/Operaciones/g; s/<ROL_E>/Cumplimiento/g"
 cd infra-synth
 npx tsc -p tsconfig.json
 export CDK_DISABLE_VERSION_CHECK=1
@@ -9965,7 +9962,7 @@ El primer push a `main` despliega `dev`. Si no hay cuenta todavía, esta fase se
 
 ### Seguridad que se comprueba a mano una vez en dev
 
-- [ ] 🆕 V2.4. Login sin MFA entra directo. Al activar el MFA desde el perfil (10.8), el siguiente login pide el código. Un interno sin MFA recibe 403 `MFA_REQUIRED` en las rutas del backoffice.
+- [ ] 🆕 V2.4. Login sin MFA: la contraseña entra directo. Una invitación de interno pasa por `NEW_PASSWORD_REQUIRED` y entra. Añadir una cuenta de retiro sin `emailCode` responde 403 `EMAIL_CODE_REQUIRED` (28.12).
 - [ ] La cookie de access tiene `HttpOnly`, `Secure`, `SameSite=Strict` y no tiene `Domain`.
 - [ ] `POST /api/auth/refresh` sin la cookie de refresh responde 401 y no crea sesión.
 - [ ] Un usuario desactivado recibe 403 con un access token todavía vigente.
@@ -10082,7 +10079,7 @@ Leer el secreto una vez y guardarlo en una variable de módulo hace que, el día
 ### 23.1 Identidad
 
 - Cognito es el único sitio que ve contraseñas. Mínimo 12 caracteres, cuatro clases, historial de 5, y el DTO repite la misma regla para fallar antes de llamar al pool (10.5).
-- 🆕 V2.4. MFA TOTP opcional para inversionistas (`mfa: 'OPTIONAL'`), activable desde el perfil. Obligatorio para los internos, que la API comprueba (10.8).
+- 🆕 V2.4. Sin MFA por ahora (`mfa: 'OFF'`, 10.8). Las acciones de dinero y de cuenta piden un código por email (28.12).
 - El access token dura 15 minutos y el refresh rota en cada uso, con 10 segundos de gracia para pestañas duplicadas (10.4, 16.5).
 - Cerrar sesión revoca el refresh en Cognito (`RevokeToken`). Cerrar todas las sesiones usa `GlobalSignOut`. Borrar la cookie sin revocar deja un refresh válido hasta los 30 días.
 - Un usuario `disabled` queda fuera en el siguiente request, aunque el access token no haya caducado (9.1).
@@ -10322,9 +10319,9 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 | # | Decisión | Qué queda escrito |
 |---|---|---|
 | 1 | Una organización por instalación | ADR-12. No hay `tenant_id` |
-| 2 | Inversionistas y equipo interno, con pantallas distintas | Grupos de Cognito: `Inversionista` (lo recibe quien se registra), `Admin`, `Tesoreria` y `Operaciones` (los asigna un Admin). Permisos en 28.2 |
+| 2 | Inversionistas y equipo interno, con pantallas distintas | Grupos de Cognito: `Inversionista` (lo recibe quien se registra), `Admin`, `Tesoreria`, `Operaciones` y, 🆕 V2.4, `Cumplimiento` (los asigna un Admin por invitación, 28.12). Permisos en 28.2 |
 | 3 | El alta es abierta y entra ese día | `selfSignup: true`, `userStatus` nace en `active`. Para mover dinero hace falta el onboarding de 4 pasos y el poder firmado (10.7) |
-| 4 | Email y contraseña. MFA opcional para inversionistas, obligatorio para internos. Sin SSO | 🆕 V2.4. `mfa: 'OPTIONAL'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes. Activación desde el perfil y regla de internos en 10.8 |
+| 4 | Email y contraseña. Sin MFA por ahora. Sin SSO | 🆕 V2.4. `mfa: 'OFF'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes. Las acciones sensibles piden código por email (28.12). Encender el MFA después está en 10.8 |
 | 5 | Los usuarios están en Perú | `<REGION>` = `sa-east-1` (São Paulo: no hay región de AWS en Perú). `geoAllowList: ['PE']` solo en prod. El webhook de DocuSign no pasa por CloudFront (28.6). El certificado y el WAF de CloudFront siguen en `us-east-1` y no guardan datos. La transferencia de datos personales a Brasil (Ley 29733) está en el Anexo A |
 | 6 | Datos sensibles: financieros y de identidad | Documento, fecha de nacimiento, estado civil y cónyuge, origen de fondos, cuentas bancarias, saldos y movimientos. La selfie y la biometría se quedan en DocuSign; aquí solo el resultado. No se loguean y se redactan en la auditoría (26.4) |
 | 7 | Español, preparado para traducir | Los mensajes de la API siguen en español y en un solo sitio (ADR-11). El cliente no hardcodea textos (blueprint del frontend) |
@@ -10384,19 +10381,21 @@ Toda tabla de dinero usa `numeric(14,2)` y una columna `currency` con `CHECK (cu
 
 ### 28.2 Roles y permisos
 
-| Acción | Inversionista | Tesoreria | Operaciones | Admin |
-|---|---|---|---|---|
-| Ver propiedades y secundario | ✅ | ✅ | ✅ | ✅ |
-| Onboarding, wallet, cartera, ofertas propias | ✅ suyas | — | — | — |
-| Validar o rechazar depósitos | — | ✅ | — | ver |
-| Pagar o rechazar retiros | — | ✅ | — | ver |
-| Crear y editar propiedades, avanzar cierres | — | — | ✅ | ver |
-| Registrar renta, gastos, valorizaciones, retenciones | — | — | ✅ | ver |
-| Avanzar ofertas del secundario (retracto, notaría, SUNARP) | — | — | ✅ | ver |
-| Reabrir un onboarding rechazado | — | — | ✅ | ✅ |
-| 🆕 V2.4. Evaluación PLAFT: aprobar, observar o rechazar | — | — | ✅ | ver |
-| 🆕 V2.4. Confirmar la compra del resto por PROPIA o ampliar el plazo; confirmar la cancelación de una propiedad | — | — | proponer | ✅ |
-| Usuarios internos, grupos y configuración (`settings`) | — | — | — | ✅ |
+| Acción | Inversionista | Tesoreria | Operaciones | Cumplimiento | Admin |
+|---|---|---|---|---|---|
+| Ver propiedades y secundario | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Onboarding, wallet, cartera, ofertas propias | ✅ suyas | — | — | — | — |
+| Validar o rechazar depósitos | — | ✅ | — | — | ver |
+| Pagar o rechazar retiros | — | ✅ | — | — | ver |
+| Crear y editar propiedades, avanzar cierres | — | — | ✅ | — | ver |
+| Registrar renta, gastos, valorizaciones, retenciones | — | — | ✅ | — | ver |
+| Avanzar ofertas del secundario (retracto, notaría, SUNARP) | — | — | ✅ | — | ver |
+| Reabrir un onboarding rechazado | — | — | ✅ | — | ✅ |
+| 🆕 V2.4. Evaluación PLAFT: aprobar, observar o rechazar | — | — | — | ✅ | ver |
+| 🆕 V2.4. Confirmar la compra del resto por PROPIA o ampliar el plazo; confirmar la cancelación de una propiedad | — | — | proponer | — | ✅ |
+| Usuarios internos, grupos y configuración (`settings`) | — | — | — | — | ✅ |
+| 🆕 V2.4. Alertas de operaciones inusuales (29.15) | — | — | — | ✅ | ver |
+| 🆕 V2.4. Libro de reclamaciones y solicitudes sobre datos personales | — | — | — | — | ✅ |
 
 Un interno no tiene wallet ni invierte con su usuario interno. La cuenta institucional de PROPIA (28.4) no es un usuario de Cognito: es una fila de `users` con `id` fijo `00000000-0000-0000-0000-000000000001` y sin login, que el migrator crea en el seed.
 
@@ -10536,6 +10535,8 @@ La compra es de la oferta entera, como en el prototipo. La comisión es `round(p
 | `escritura`, `partida_registral` | Operaciones | `property` u `offer` | Los copropietarios de esa propiedad e internos |
 | `constancia_retencion` | Operaciones | `user` | El inversionista y Operaciones |
 | `tasacion` | Operaciones | `property` | Internos |
+| 🆕 V2.4. `constancia_pago` | Tesorería | `property_payment` o `institutional_withdrawal` | Tesorería, Operaciones y Admin |
+| 🆕 V2.4. `sustento_plaft` | Inversionista, a pedido de Cumplimiento | `user` | El inversionista y Cumplimiento |
 
 La descarga comprueba ese permiso en el servicio antes de firmar la URL. El listado de 13.2 filtra por `entityType` y `entityId`.
 
@@ -10549,7 +10550,7 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | Depósito nuevo, retiro nuevo | Tesorería |
 | Retiro pagado o rechazado | Inversionista |
 | Poder firmado, identidad rechazada | Inversionista. Rechazo también a Operaciones |
-| 🆕 V2.4. Pasa a `review`, evaluación observada, aprobada o rechazada | `review`: Operaciones. El resto: inversionista |
+| 🆕 V2.4. Pasa a `review`, evaluación observada, aprobada o rechazada | `review`: Cumplimiento. El resto: inversionista |
 | 🆕 V2.4. Plazo vencido con unidades libres, propiedad propuesta para cancelar | Admin |
 | Propiedad financiada, plazo vencido | Operaciones y los comprometidos |
 | Cada paso de cierre (`notary`, `registered`) | Los comprometidos |
@@ -10579,8 +10580,13 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | `GET /api/notifications`, `POST /api/notifications/{id}/read` | Cualquiera con sesión |
 | Function URL de `<app-short>-<stage>-webhooks` | DocuSign Connect, con HMAC (28.6) |
 | `GET/PUT /api/settings`, `POST /api/users/{id}/groups` | Admin |
-| 🆕 V2.4. `POST /api/auth/mfa/setup`, `/verify`, `DELETE /api/auth/mfa` | Cualquiera con sesión (10.8) |
-| 🆕 V2.4. `GET /api/plaft/reviews`, `POST /api/plaft/reviews/{userId}/approve`, `/observe`, `/reject` | Operaciones |
+| 🆕 V2.4. `POST /api/security/email-code`, `POST /api/account/close` | Inversionista (28.12) |
+| 🆕 V2.4. `POST /api/users/invite`, `POST /api/users/{id}/suspend`, `/unsuspend`, `/deceased` | Admin (28.12) |
+| 🆕 V2.4. `POST /api/investor/poder/resend`, `PUT /api/investor/poder/spouse` | Inversionista (28.12) |
+| 🆕 V2.4. `POST /api/properties/{id}/payments`, `POST /api/institutional-withdrawals`, `POST /api/bank-statements` | Tesoreria (28.12) |
+| 🆕 V2.4. `POST /api/complaints` | Público, con límite por IP en el WAF (28.12) |
+| 🆕 V2.4. `GET /api/complaints`, `POST /api/complaints/{id}/answer` | Admin |
+| 🆕 V2.4. `GET /api/plaft/reviews`, `POST /api/plaft/reviews/{userId}/approve`, `/observe`, `/reject`; `GET /api/plaft/alerts`, `POST /api/plaft/alerts/{id}/review` | Cumplimiento |
 | 🆕 V2.4. `POST /api/properties/{id}/cancel` (propone), `/cancel/confirm`, `/deadline/extend`, `/deadline/institutional-buy` | Operaciones propone; Admin confirma |
 | 🆕 V2.4. `PATCH /api/secondary/offers/{id}` (solo bajar el precio) | Inversionista, el vendedor |
 
@@ -10597,22 +10603,60 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | 🆕 V2.4. `default_currency` | `USD` |
 | 🆕 V2.4. `secondary.offer_expiry_days` | `90` |
 | 🆕 V2.4. `rent.management_fee_pct` | `0.00` |
-| 🆕 V2.4. `approvals.dual_threshold_usd` / `approvals.dual_threshold_pen` | `<a definir>` / `<a definir>` |
+| 🆕 V2.4. `approvals.dual_threshold_usd` / `approvals.dual_threshold_pen` | vacíos hasta que producto dé el monto |
+| 🆕 V2.4. `secondary.closing_cost_estimate_usd` / `_pen` | `<a definir>` |
 
-🆕 V2.4. **Doble aprobación.** Un depósito, un retiro, un reparto de renta o un pago al vendedor por encima del umbral de su moneda queda en `pending_second_approval` tras la primera aprobación, y lo completa otra persona con el mismo rol (o un Admin). Quien inició o aprobó primero no puede dar la segunda. Por debajo del umbral basta una. Publicar o cancelar una propiedad siempre lleva dos.
+🆕 V2.4. **Doble aprobación.** Un depósito, un retiro, un reparto de renta o un pago al vendedor por encima del umbral de su moneda queda en `pending_second_approval` tras la primera aprobación, y lo completa otra persona con el mismo rol (o un Admin). Quien inició o aprobó primero no puede dar la segunda. Por debajo del umbral basta una. Mientras el umbral esté vacío, el monto no exige doble aprobación. Cancelar una propiedad y retirar ingresos de PROPIA siempre llevan dos, haya umbral o no.
 
+### 28.12 Decisiones de V2.4 que completan el dominio
+
+🆕 **V2.4.** Cierran los huecos de 29.14 marcados como decididos. Cada punto dice qué tablas, estados, asientos y rutas añade. Lo que no se nombra aquí sigue como en 28.1 a 28.11.
+
+**Códigos por email para acciones sensibles (H10).** No hay MFA (10.8), así que añadir una cuenta de retiro, pedir un retiro, cambiar el email y cerrar la cuenta piden un código de 6 dígitos enviado al email. `POST /api/security/email-code { purpose }` lo genera y lo guarda con hash; vale 10 minutos y 5 intentos. La acción lo recibe como `emailCode`; si falta o no vale, responde 403 `EMAIL_CODE_REQUIRED`. Una cuenta de retiro nueva tiene `usable_from = now + 24 h`, y Tesorería confirma al pagar que el titular sea el inversionista.
+
+**Alta de internos y separación de funciones (H2, O4).** `POST /api/users/invite { email, name, groups }` (Admin) llama a `AdminCreateUser` con contraseña temporal por email y a `AdminAddUserToGroup`. El login resuelve `NEW_PASSWORD_REQUIRED` con el flujo de la sección 10. Quien se registra por `/signup` es siempre `<ROL_A>`. Un `<ROL_A>` no recibe grupos internos y un interno no recibe `<ROL_A>` (409 `ROLE_CONFLICT`). Tampoco se combinan `<ROL_C>`, `<ROL_D>` y `<ROL_E>` entre sí. `<ROL_B>` va solo.
+
+**Sobre del poder (H3, H4, H6).** `POST /api/investor/poder/resend` reenvía el email al firmante pendiente, una vez cada 24 h. `PUT /api/investor/poder/spouse { name, email }` anula el sobre y crea otro. El sobre vence a los 30 días (expiración de DocuSign); el webhook `voided` devuelve al inversionista al paso 4 con aviso, y el día 25 sale un aviso de que va a vencer. Firmar de nuevo lo provocan el nombre, el documento, el estado civil, el régimen y los datos del cónyuge; el teléfono y la dirección no. La unión de hecho inscrita en SUNARP se trata como casado con gananciales (legal lo confirma, Anexo A).
+
+**Depósitos (H7, H8, O1).** El depósito lleva `origin_payout_account_id` (una cuenta del propio inversionista: sin cuentas registradas no puede depositar) y `operation_number`. `UNIQUE (treasury_bank_account_id, operation_number)`: una operación repetida responde 409 `DUPLICATE_OPERATION`. Tesorería puede subir el extracto de una cuenta en CSV (`bank_statements`, `bank_statement_lines`). La app propone parejas por número de operación, monto y fecha (±2 días), y Tesorería las confirma en lote; cada aprobación queda igual que una individual, con doble aprobación por encima del umbral. Las líneas sin pareja quedan en la conciliación.
+
+**Pagos del cierre (H13, H14).** `property_payments` (propiedad, concepto `vendedor | notaria | registro | alcabala | otros`, monto, fecha, constancia `constancia_pago`, Tesorería) con asiento `property_settlement` −monto / `bank` +monto. La propiedad no pasa a `registered` sin al menos un pago `vendedor`. Al registrar, lo que queda en `property_settlement` de esa propiedad (precio − pagos) se cierra según la decisión **H33** (29.15). El documento `constancia_pago` se añade a `DOCUMENT_TYPES`; lo ven Tesorería, Operaciones y Admin.
+
+**Renta negativa (H16).** Si la neta sale negativa, el período pasa a `carried`, sin asientos. El negativo entra al período siguiente como gasto "Saldo del período anterior".
+
+**Secundario (H14, H19, H22, O2).** El vendedor paga notaría y registro de la transferencia. Al publicar ve un costo estimado (`secondary.closing_cost_estimate_usd` / `_pen`); al completar, Operaciones registra el real y el asiento queda `committed` del comprador −precio / `available` del vendedor +(precio − comisión − costo) / `commissions` +comisión / `bank` +costo. Si las ventas de una propiedad se firman juntas en una escritura al mes, el costo se reparte entre ellas a prorrata del precio. Al abrirse el retracto se avisa a todos los copropietarios con el precio y la fecha límite. Operaciones publica y gestiona desde `/admin/secundario` las ofertas de la cuenta institucional, cuyo neto va al `available` de PROPIA.
+
+**Suspensión y fallecimiento (H23, H27).** `userStatus` admite `suspended` y `deceased`. Los pone un Admin con motivo (y acta de defunción en el segundo): `AdminUserGlobalSignOut` y `AdminDisableUser`. Sin login ni movimientos de dinero; la renta sigue llegando a la wallet. La sucesión es manual: con la sucesión inscrita, Operaciones propone pasar cuotas y saldos a herederos ya habilitados, y un Admin lo confirma. Las cuotas se mueven en `holdings` y el saldo con un asiento `available` del causante −monto / `available` del heredero +monto.
+
+**Ingresos de PROPIA (H25).** `institutional_withdrawals` (Tesorería, con constancia, siempre con doble aprobación): `commissions` o `available` de PROPIA −monto / `bank` +monto.
+
+**Cierre de cuenta (H26).** `POST /api/account/close` con `emailCode`. Exige saldo cero en las dos monedas y nada vivo: cuotas, compromisos, ofertas, depósitos o retiros. Pasa a `userStatus = 'closed'` y `AdminDisableUser`. Los datos se conservan el plazo legal (Anexo A) y después se anonimizan.
+
+**Avisos, versiones y tablero (O3, O5, O6).** Se añaden a 28.9: propiedad publicada (a habilitados), comprador encontrado (a Operaciones), sobre por vencer, depósito o retiro con más de 24 h sin atender (a Tesorería) y evaluación PLAFT con más de 48 h (a Cumplimiento). `consents` guarda tipo (`terms | privacy | poder`), versión, fecha e IP de cada aceptación. `/admin` muestra a cada rol su cola con la antigüedad de cada pendiente.
+
+**Libro de reclamaciones (H24).** Es la única pantalla funcional sin sesión: `/libro-de-reclamaciones`, enlazada en el pie de la landing, del login y de la app. `POST /api/complaints` es `@Public()`, con un límite de peticiones por IP en el WAF. El formulario pide los datos de la norma:
+
+- Consumidor: nombre, documento, domicilio, teléfono y email; si es menor, su padre, madre o apoderado.
+- Servicio contratado y monto, si lo hay.
+- Tipo: reclamo (disconformidad con el servicio) o queja (malestar con la atención).
+- Detalle y pedido.
+
+Arriba se muestran la razón social, el RUC y la dirección de PROPIA SAC. Cada hoja recibe un correlativo (`R-2026-000001`) y sale por email en PDF al momento. `complaints` guarda la hoja, la respuesta, quién respondió y las fechas. El Admin las atiende en `/admin/reclamaciones`, con la cuenta de días que quedan del plazo legal (legal confirma el plazo vigente y cuánto tiempo se conservan, Anexo A). La respuesta sale por email y queda en auditoría.
+
+---
 ## 29. Flujos end to end
 
-🆕 **V2.4.** Cada flujo de PROPIA paso a paso, desde el inversionista hasta el equipo interno: quién actúa, en qué pantalla, qué estado cambia, qué asiento se escribe y a quién se avisa. Sirve para comprobar que ningún flujo queda abierto. Lo que todavía no cierra está marcado **⚠️ Hn** y se decide en 29.14. Las pantallas son las del blueprint del frontend (9.6) y del canvas `docs/design/propia-canvas.html` de ese repositorio.
+🆕 **V2.4.** Cada flujo de PROPIA paso a paso, desde el inversionista hasta el equipo interno: quién actúa, en qué pantalla, qué estado cambia, qué asiento se escribe y a quién se avisa. Sirve para comprobar que ningún flujo queda abierto. Lo que no cerraba está marcado **⚠️ Hn**. Su estado (decidido o pendiente) está en 29.14 y 29.15, y lo decidido se implementa según 28.12. Las pantallas son las del blueprint del frontend (9.6) y del canvas `docs/design/propia-canvas.html` de ese repositorio.
 
 ### 29.1 Actores
 
 | Actor | Dónde actúa |
 |---|---|
-| Inversionista | La app, con cuenta y MFA |
+| Inversionista | La app, con su cuenta |
 | Cónyuge | Solo DocuSign, por email. No tiene cuenta |
 | Tesorería | `/admin/depositos`, `/admin/retiros` |
 | Operaciones | `/admin/propiedades`, `/admin/rentas`, `/admin/secundario`, `/admin/inversionistas` |
+| Cumplimiento | `/admin/cumplimiento`: evaluación PLAFT y alertas (🆕 V2.4) |
 | Admin | `/admin/usuarios`, `/admin/configuracion`. Ve todo lo demás |
 | Sistema | Jobs diarios (sección 14) y el webhook de DocuSign (28.6) |
 | Fuera de la app | Bancos, notaría, SUNARP, inquilinos y vendedores de inmuebles. La app registra lo que hicieron, no habla con ellos |
@@ -10623,9 +10667,8 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 |---|---|---|---|---|
 | 1 | Inversionista | `/signup` | Email, contraseña y aceptación de términos y privacidad | Usuario de Cognito sin confirmar |
 | 2 | Inversionista | `/signup` | Código del email | `confirmSignUp`, grupo `<ROL_A>`, fila en `users` (`active`), `investorStatus = 'onboarding'` |
-| 3 | Inversionista | `/login` | Contraseña, y el código si activó el MFA (opcional, 10.8) | Cookies de sesión. Va a `/onboarding` |
-| 4 | Inversionista | `/recuperar` | Código por email y contraseña nueva | Si tenía MFA, se mantiene |
-| 5 | Inversionista o interno | — | Perdió el teléfono con el MFA activado | ⚠️ **H1**: no hay flujo |
+| 3 | Inversionista | `/login` | Email y contraseña (sin MFA, 10.8) | Cookies de sesión. Va a `/onboarding` |
+| 4 | Inversionista | `/recuperar` | Código por email y contraseña nueva | Se cierran sus otras sesiones |
 | 6 | Admin | `/admin/usuarios` | Da de alta a un interno | ⚠️ **H2**: hoy solo se pueden añadir grupos a un usuario que ya existe, y ese usuario se registró como inversionista |
 
 ### 29.3 Habilitación: perfil y poder
@@ -10636,8 +10679,8 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | 2 | Inversionista | `/onboarding` | Paso 4: `POST /api/investor/poder` crea el sobre. Titular en orden 1, embebido y con verificación de identidad; cónyuge en orden 2, por email | `signing`. El navegador sale a DocuSign |
 | 3 | Inversionista | DocuSign | Verifica su identidad y firma | Vuelve a `/onboarding/poder`, que pide `me()` cada 3 s |
 | 4 | Cónyuge | Email de DocuSign | Firma | — |
-| 5 | Sistema | Webhook | `completed` con identidad verificada | Guarda `poder_firmado`, pasa a `review`. Aviso a Operaciones |
-| 6 | Operaciones | `/admin/inversionistas` | Evaluación PLAFT: riesgo, listas, sustento si hace falta (10.7) | ✅ **H5**. Aprueba (`enabled`, aviso), observa o rechaza |
+| 5 | Sistema | Webhook | `completed` con identidad verificada | Guarda `poder_firmado`, pasa a `review`. Aviso a Cumplimiento |
+| 6 | Cumplimiento | `/admin/cumplimiento` | Evaluación PLAFT: riesgo, listas, sustento si hace falta (10.7) | ✅ **H5**. Aprueba (`enabled`, aviso), observa o rechaza |
 
 Ramas:
 
@@ -10756,43 +10799,43 @@ Un flujo está cerrado cuando cada cuenta del libro mayor tiene una salida. Hoy:
 | `committed` | Compromiso, compra en el secundario | Registro de la propiedad, venta completada, retracto que libera al comprador, propiedad cancelada | ✅ |
 | `withdrawing` | Retiro pedido | Pagado, rechazado o cancelado | ✅ |
 | `bank` | Contrapartida de todo lo que entra o sale del banco | — | ✅ |
-| `property_settlement` | Registro de la propiedad | — | ⚠️ **H13**: falta el pago al vendedor |
-| `commissions` | Venta completada | — | ⚠️ **H25** |
-| `available` de PROPIA | Céntimos de renta, renta de sus unidades, ventas de sus unidades | — | ⚠️ **H25** |
+| `property_settlement` | Registro de la propiedad | Pagos del cierre y, al registrar, la diferencia (28.12, H33) | ✅ |
+| `commissions` | Venta completada, comisión de administración | Retiro de ingresos de PROPIA (28.12) | ✅ |
+| `available` de PROPIA | Céntimos de renta, renta de sus unidades, ventas de sus unidades | Retiro de ingresos de PROPIA (28.12) | ✅ |
 
 ### 29.14 Huecos y propuestas
 
 | # | Hueco | Propuesta | Peso |
 |---|---|---|---|
-| H1 | MFA perdido (solo afecta a quien lo activó) | Admin reinicia el MFA después de una videollamada con documento. Queda en auditoría y se avisa por email | Pendiente |
-| H2 | Alta de internos | El Admin invita por email (`AdminCreateUser`) con un grupo interno y sin `<ROL_A>`. Un interno no puede registrarse por `/signup` | Bloquea |
-| H3 | Cónyuge que no firma | Reenviar el email, corregir el email del cónyuge (anula el sobre y crea otro) y vencimiento a los 30 días con aviso | Bloquea |
-| H4 | Qué datos obligan a refirmar | Nombre, documento, estado civil, régimen y cónyuge. Teléfono y dirección no | Bloquea |
+| H1 | MFA perdido (solo afecta a quien lo activó) | Admin reinicia el MFA después de una videollamada con documento. Queda en auditoría y se avisa por email | No aplica: sin MFA (10.8) |
+| H2 | Alta de internos | El Admin invita por email (`AdminCreateUser`) con un grupo interno y sin `<ROL_A>`. Un interno no puede registrarse por `/signup` | ✅ Decidido (28.12) |
+| H3 | Cónyuge que no firma | Reenviar el email, corregir el email del cónyuge (anula el sobre y crea otro) y vencimiento a los 30 días con aviso | ✅ Decidido (28.12) |
+| H4 | Qué datos obligan a refirmar | Nombre, documento, estado civil, régimen y cónyuge. Teléfono y dirección no | ✅ Decidido (28.12) |
 | H5 | Debida diligencia | Todos pasan por la evaluación PLAFT antes de invertir (10.7) | ✅ Decidido |
-| H6 | Convivientes | Unión de hecho inscrita en SUNARP = igual que casado con gananciales | Bloquea (legal) |
-| H7 | Constancia duplicada | Pedir el número de operación. Único por banco y número. Tesorería ve los posibles duplicados resaltados | Recomendado |
-| H8 | Cuenta de origen de terceros | El inversionista elige de cuál de sus cuentas transfirió. Tesorería rechaza si el extracto muestra otro titular | Recomendado |
+| H6 | Convivientes | Unión de hecho inscrita en SUNARP = igual que casado con gananciales | ✅ Decidido (28.12). Legal confirma |
+| H7 | Constancia duplicada | Pedir el número de operación. Único por banco y número. Tesorería ve los posibles duplicados resaltados | ✅ Decidido (28.12) |
+| H8 | Cuenta de origen de terceros | El inversionista elige de cuál de sus cuentas transfirió. Tesorería rechaza si el extracto muestra otro titular | ✅ Decidido (28.12) |
 | H9 | Una sola persona aprueba | Doble aprobación por encima de un umbral por moneda en `settings` (28.11) | ✅ Decidido |
-| H10 | Cuenta de retiro nueva | Código por email (o MFA, si lo activó) al añadirla y 24 h de espera antes del primer retiro. Tesorería confirma que el titular sea el inversionista | Pendiente |
+| H10 | Cuenta de retiro nueva | Código por email (o MFA, si lo activó) al añadirla y 24 h de espera antes del primer retiro. Tesorería confirma que el titular sea el inversionista | ✅ Decidido (28.12) |
 | H11 | PROPIA compra sola | El Admin confirma o amplía el plazo una vez (28.4) | ✅ Decidido |
 | H12 | Unidad perdida mientras se valida el depósito | Sin reserva por ahora | ✅ Decidido |
-| H13 | Pago al vendedor | Tesorería registra el pago con constancia: `property_settlement` −precio / `bank` +precio. Al registrar, la cuenta queda en cero por propiedad, y eso se comprueba | Bloquea |
-| H14 | Gastos de cierre | Compra inicial: incluidos en el precio (28.4). Secundario: propuesta, los paga el comprador aparte del precio | ✅ Compra inicial / Pendiente secundario |
+| H13 | Pago al vendedor | Tesorería registra el pago con constancia: `property_settlement` −precio / `bank` +precio. Al registrar, la cuenta queda en cero por propiedad, y eso se comprueba | ✅ Decidido (28.12) |
+| H14 | Gastos de cierre | Compra inicial: incluidos en el precio (28.4). Secundario: propuesta, los paga el comprador aparte del precio | ✅ Decidido: compra inicial en el precio; en el secundario paga el vendedor (28.12) |
 | H15 | Compra que se cae | Estado `cancelled` con doble aprobación (28.4) | ✅ Decidido |
-| H16 | Renta neta negativa | No se reparte. El saldo negativo pasa al período siguiente | Bloquea |
+| H16 | Renta neta negativa | No se reparte. El saldo negativo pasa al período siguiente | ✅ Decidido (28.12) |
 | H17 | Renta y venta a mitad de mes | Cobra quien tiene las unidades el día del reparto (28.5) | ✅ Decidido |
 | H18 | Ingreso de PROPIA por administrar | Configurable, arranca en 0 % (28.5) | ✅ Decidido |
-| H19 | Aviso de retracto | Aviso a todos los copropietarios al abrirse el retracto, con el precio y la fecha límite | Bloquea |
-| H20 | Oferta sin fin | Vence a los 90 días, configurable. Se puede bajar el precio (28.7) | ✅ Decidido |
-| H21 | 30 días de retracto en cada venta | Consultar con legal si el poder o un pacto de copropietarios puede recoger la renuncia previa. Si se puede, se quita el paso | Optimización (legal) |
-| H22 | Unidades de PROPIA | Operaciones publica y gestiona ofertas a nombre de la cuenta institucional desde `/admin/secundario` | Bloquea |
-| H23 | Bloquear a un inversionista | `userStatus = 'suspended'` desde `/admin/inversionistas` por Admin, con motivo. No entra ni mueve dinero. Su renta sigue llegando a la wallet | Bloquea |
-| H24 | Libro de reclamaciones | Página pública con formulario, número correlativo, copia por email y bandeja para el Admin. Respuesta en el plazo legal | Bloquea (legal) |
-| H25 | Ingresos de PROPIA | Tesorería registra el retiro de ingresos de PROPIA: `commissions` o `available` de PROPIA −monto / `bank` +monto, con constancia y doble aprobación | Bloquea |
-| H26 | Cierre de cuenta | Solo con saldo cero y sin cuotas, compromisos ni ofertas. Cognito se desactiva y los datos se guardan el plazo legal de conservación | Recomendado |
-| H27 | Fallecimiento | Operaciones congela la cuenta y, con la sucesión inscrita, pasa saldo y cuotas a los herederos, que hacen su propio onboarding. Es manual y queda en auditoría | Recomendado |
+| H19 | Aviso de retracto | Aviso a todos los copropietarios al abrirse el retracto, con el precio y la fecha límite | ✅ Decidido (28.12) |
+| H20 | Oferta sin fin | Vence a los 90 días, configurable. Se puede bajar el precio (28.7) | ✅ Decidido (28.12) |
+| H21 | 30 días de retracto en cada venta | Consultar con legal si el poder o un pacto de copropietarios puede recoger la renuncia previa. Si se puede, se quita el paso | Pendiente de legal |
+| H22 | Unidades de PROPIA | Operaciones publica y gestiona ofertas a nombre de la cuenta institucional desde `/admin/secundario` | ✅ Decidido (28.12) |
+| H23 | Bloquear a un inversionista | `userStatus = 'suspended'` desde `/admin/inversionistas` por Admin, con motivo. No entra ni mueve dinero. Su renta sigue llegando a la wallet | ✅ Decidido (28.12) |
+| H24 | Libro de reclamaciones | Página pública con formulario, número correlativo, copia por email y bandeja para el Admin. Respuesta en el plazo legal | ✅ Decidido (28.12). Legal confirma plazos |
+| H25 | Ingresos de PROPIA | Tesorería registra el retiro de ingresos de PROPIA: `commissions` o `available` de PROPIA −monto / `bank` +monto, con constancia y doble aprobación | ✅ Decidido (28.12) |
+| H26 | Cierre de cuenta | Solo con saldo cero y sin cuotas, compromisos ni ofertas. Cognito se desactiva y los datos se guardan el plazo legal de conservación | ✅ Decidido (28.12) |
+| H27 | Fallecimiento | Operaciones congela la cuenta y, con la sucesión inscrita, pasa saldo y cuotas a los herederos, que hacen su propio onboarding. Es manual y queda en auditoría | ✅ Decidido (28.12) |
 
-Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo:
+Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo. 🆕 V2.4: todas decididas (28.12):
 
 | # | Qué | Por qué |
 |---|---|---|
@@ -10802,6 +10845,26 @@ Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo:
 | O4 | `Tesoreria` y `Operaciones` no pueden estar en el mismo usuario | Separación de funciones sin código extra en cada flujo |
 | O5 | Se guarda la versión de los términos y del texto del poder que aceptó cada persona | Si el texto cambia, se sabe quién firmó cuál y a quién pedirle la nueva versión |
 | O6 | Tablero de pendientes en el backoffice: depósitos, retiros, cierres por vencer y retractos por terminar, con antigüedad | Una sola pantalla para el día a día de los tres roles |
+
+### 29.15 Segunda pasada: lo que todavía no está diseñado
+
+🆕 **V2.4.** Con los huecos de 29.14 cerrados, se volvió a recorrer la vida de un inversionista y de un inmueble de punta a punta. Esto es lo que aparece:
+
+| # | Hueco | Propuesta | Peso |
+|---|---|---|---|
+| H28 | Venta total del inmueble. No hay salida final: el inmueble se tiene para siempre | Estados `selling` → `sold`. Operaciones registra la venta (precio, gastos y comisión de salida configurable), el sistema reparte el neto a prorrata en las wallets y cierra los `holdings`. Las ofertas abiertas se cancelan | Bloquea |
+| H29 | Gasto extraordinario grande (techo, ascensor) que se come la renta de varios meses | Fondo de reserva por propiedad: un % de la renta bruta (`rent.reserve_pct`, arranca en 0) se aparta cada mes en una cuenta `reserve` de la propiedad y paga esos gastos | Recomendado |
+| H30 | Comprobantes de pago. PROPIA cobra comisiones y tiene que emitir boleta o factura electrónica | Primera versión: Tesorería emite el comprobante fuera de la app y lo sube. Después, integración con un proveedor de facturación electrónica | Bloquea (contador) |
+| H31 | Impuesto a la renta del alquiler de cada copropietario | Si el contador confirma que PROPIA retiene y paga por cada uno: `rent.tax_withholding_pct` por domiciliado y no domiciliado, retenido en el reparto a una cuenta `tax_payable` que Tesorería paga a SUNAT. La constancia de retención anual ya existe | Bloquea (contador) |
+| H32 | Antes de invertir solo se ven fotos y textos | Los habilitados ven, durante el fondeo, la partida, la tasación, el contrato de arriendo (con los datos del inquilino tapados) y el estudio de títulos | Recomendado |
+| H33 | Los gastos de cierre van en el precio, pero el real casi nunca coincide con el estimado | La diferencia es de PROPIA: si sobra, a su `available`; si falta, sale de su `bank` | Bloquea |
+| H34 | Comisión del banco y ITF al pagar un retiro | PROPIA las asume | Recomendado |
+| H35 | Edad y residencia | Solo mayores de 18. Pasaporte y CE se aceptan, y el perfil pregunta si es domiciliado en Perú (sirve para H31) | Recomendado |
+| H36 | Estado de cuenta | PDF mensual y anual por moneda, descargable desde la wallet: saldo inicial, movimientos y saldo final | Recomendado |
+| H37 | PLAFT después de habilitar: nadie mira las operaciones | Alertas a Cumplimiento con reglas configurables: depósito único alto, suma de depósitos del mes alta, depósito y retiro sin invertir en menos de 30 días. Cumplimiento las marca revisadas; el reporte a la UIF se hace fuera de la app | Bloquea (legal) |
+| H38 | Derechos sobre los datos personales (acceso, rectificación, cancelación y oposición, Ley 29733) | Formulario en el perfil y bandeja del Admin junto a las reclamaciones, con plazo | Bloquea (legal) |
+| H39 | Sin MFA, una contraseña robada da acceso | Email de aviso en cada inicio de sesión desde un dispositivo nuevo, con enlace para cerrar todas las sesiones. Las acciones de dinero ya piden código por email | Recomendado |
+| H40 | "Liquidado" en la wallet | Si es lo cobrado por ventas totales (H28) y por ventas en el secundario, se muestra como un acumulado informativo, fuera del saldo | Pendiente |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
@@ -10825,6 +10888,8 @@ Lo cerrado está en ADR-13 y en la sección 28. Aquí queda lo que falta para es
 | 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, si un poder firmado en DocuSign basta para disponer de inmuebles (Código Civil, art. 156, pide escritura pública), el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. Si el poder necesita escritura, se añade un paso en el onboarding en el que Operaciones sube la escritura antes de `enabled` |
 | 2 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
 | 3 | Qué es "Liquidado" en la wallet del prototipo | En el prototipo es la tercera línea y suma al saldo total (disponible 28.500 + comprometido 45.000 + liquidado 5.000 = 78.500). Mientras se decide, ese lugar lo ocupa "En retiro" (`withdrawing`, 28.3). Si resulta ser otro saldo, se añade como cuenta del libro mayor sin tocar las demás |
+| 4 | 🆕 V2.4. Legal: plazo de respuesta del libro de reclamaciones y cuánto se conservan las hojas; plazo de conservación de datos tras cerrar una cuenta (PLAFT); si la unión de hecho inscrita firma como cónyuge; si los copropietarios pueden renunciar al retracto por adelantado (H21); plazos de los derechos sobre datos personales (H38) | Se diseña con lo de 28.12 y 29.15. Cambia un número en `settings` o un texto, no el modelo |
+| 5 | 🆕 V2.4. Contador: comprobantes electrónicos de las comisiones (H30) y retención del impuesto a la renta del alquiler de cada copropietario (H31) | Primera versión: comprobante emitido fuera y subido. Sin retención hasta que el contador lo confirme |
 
 ### A.3 El resto de marcadores pendientes
 
