@@ -1,8 +1,17 @@
 # PROPIA API
 
-API local de PROPIA. PostgreSQL en `127.0.0.1:5432`, base `propia`, usuario `propia`, clave `propia_local_dev`.
+API local de PROPIA. PostgreSQL 18 en `127.0.0.1:5432`, base `propia`, usuario `propia`, clave `propia_local_dev`.
+
+En la Mac, terminal de VS Code con la carpeta `propia-backend` abierta:
 
 ```bash
+brew install node postgresql@18
+brew services start postgresql@18
+export PATH="$(brew --prefix postgresql@18)/bin:$PATH"
+corepack enable
+corepack prepare pnpm@10.15.0 --activate
+psql postgres -c "CREATE ROLE propia LOGIN PASSWORD 'propia_local_dev';"
+psql postgres -c "CREATE DATABASE propia OWNER propia;"
 pnpm install
 pnpm dev
 ```
