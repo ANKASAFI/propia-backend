@@ -8,8 +8,7 @@ En la Mac, terminal de VS Code con la carpeta `propia-backend` abierta:
 brew install node postgresql@18
 brew services start postgresql@18
 export PATH="$(brew --prefix postgresql@18)/bin:$PATH"
-corepack enable
-corepack prepare pnpm@10.15.0 --activate
+npm install -g pnpm@10.15.0
 psql postgres -c "CREATE ROLE propia LOGIN PASSWORD 'propia_local_dev';"
 psql postgres -c "CREATE DATABASE propia OWNER propia;"
 pnpm install
