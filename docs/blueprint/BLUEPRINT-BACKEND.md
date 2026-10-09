@@ -81,7 +81,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | Infraestructura | Recursos creados a mano + `serverless.yml` | **AWS CDK** para todo: red, base de datos, Cognito, S3, CloudFront, WAF, alarmas, OIDC. **cdk-nag** (AWS Solutions) como gate de seguridad | 16 |
 | Dominio y CORS | Front y API en orígenes distintos, CORS `*` en Lambda | **Mismo dominio**: CloudFront sirve el front y enruta `/api/*` a la API. Sin CORS ni preflight | 2, 8 |
 | Sesión | Tokens en cookies legibles por JS, Bearer en cada llamada | **Cookies `httpOnly`** emitidas por el backend, rotación de refresh token, protección CSRF | 10 |
-| MFA | No | **TOTP obligatorio** (configurable) con flujo de retos genérico | 10 |
+| MFA | No | **TOTP** con flujo de retos genérico. Obligatorio u opcional por config (🆕 V2.4: opcional en PROPIA, 10.8) | 10 |
 | Validación JWT | Solo firma y expiración | Firma + `iss` + `client_id` + `token_use=access`; falla cerrado ante error de BD | 10.4 |
 | Rate limiting | Throttler en memoria (inútil en Lambda) | **AWS WAF** (reglas gestionadas y por tasa) + throttling de API Gateway | 23 |
 | Base de datos | Pública, contraseña, sin pool limitado | **Privada**, RDS Proxy con **IAM de extremo a extremo** (ningún rol de aplicación tiene contraseña), Multi-AZ en prod, PITR, cifrado | 7.2, 16.4, 26 |
@@ -4331,10 +4331,35 @@ Con cuenta, el inversionista ve las propiedades, la cartera vacía y el secundar
 |---|---|
 | `onboarding` | Falta alguno de los pasos 1 a 3 |
 | `signing` | Sobre enviado. El titular, o el cónyuge, todavía no firmó |
-| `enabled` | DocuSign confirmó por webhook que firmaron todos y que la identidad se verificó |
-| `rejected` | La identidad no se verificó o alguien rechazó el sobre. Operaciones lo ve y puede reabrir el paso 4 |
+| `review` | 🆕 V2.4. Firmaron todos y la identidad se verificó. Falta la evaluación PLAFT (abajo) |
+| `enabled` | La evaluación PLAFT se aprobó |
+| `rejected` | La identidad no se verificó, alguien rechazó el sobre o la evaluación PLAFT no se aprobó. Con motivo. Operaciones puede reabrir el paso que corresponda |
+
+**Evaluación PLAFT** (🆕 V2.4). Cualquiera se registra y entra, pero nadie invierte sin pasarla. El paso 3 añade la declaración de persona expuesta políticamente (PEP: sí o no, cargo y entidad) y la de beneficiario final. Con `review`, la persona aparece en la cola de `/admin/inversionistas` de Operaciones, con un nivel de riesgo que la app sugiere y el evaluador puede cambiar:
+
+| Riesgo sugerido | Cuándo |
+|---|---|
+| Alto | PEP, origen de fondos "Otro" o documento CE/pasaporte |
+| Medio | Origen "Herencia" o "Negocio propio" |
+| Bajo | El resto |
+
+El evaluador revisa a la persona en las listas restrictivas (ONU, OFAC y las que indique el oficial de cumplimiento; la consulta es manual y la app guarda la fecha, quién la hizo y el resultado), puede pedir un documento de sustento (el inversionista lo sube desde `/onboarding`) y decide: **aprobar** (`enabled`), **observar** (sigue en `review` con el pedido visible para el inversionista) o **rechazar** (`rejected`, con motivo). Todo queda en `plaft_reviews` (inversionista, nivel de riesgo, listas consultadas, decisión, motivo, evaluador, fecha) y en auditoría. La evaluación no se puede aprobar por la misma persona que la pidió reabrir.
 
 `GET /api/auth/me` incluye `investorStatus`. Una operación de dinero con otro estado responde 403 con el código `INVESTOR_NOT_ENABLED`. El cliente, con ese código, lleva al paso que falta. Cambiar los datos del paso 1 o 2 después de `enabled` vuelve a `signing`: el poder firmado es el de esos datos.
+
+### 10.8 MFA opcional
+
+🆕 **V2.4.** El user pool tiene `mfa: 'OPTIONAL'`. Con eso Cognito no devuelve `MFA_SETUP` en el login: quien no activó el MFA entra con su contraseña, y quien lo activó recibe `SOFTWARE_TOKEN_MFA`, que el flujo de retos de la sección 10 ya resuelve. El test de invitación de 15.3 pasa a `NEW_PASSWORD_REQUIRED` → sesión.
+
+Se activa desde `/perfil`, con sesión:
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /api/auth/mfa/setup` | `AssociateSoftwareToken` con el access token. Devuelve `{ secretCode, otpauthUri }` para el QR |
+| `POST /api/auth/mfa/verify` `{ code }` | `VerifySoftwareToken` y `SetUserMFAPreference` (TOTP preferido). Audita `USER_MFA_ENROLLED` |
+| `DELETE /api/auth/mfa` `{ code }` | Pide un código válido y desactiva el MFA. Audita y avisa por email |
+
+`GET /api/auth/me` incluye `mfaEnabled`. Los internos (`<ROL_B>`, `<ROL_C>`, `<ROL_D>`) lo necesitan: sin él, el guard de roles responde 403 `MFA_REQUIRED` en cualquier ruta interna y el cliente los lleva a activarlo. Un interno no puede desactivarlo.
 
 ---
 ---
@@ -7632,7 +7657,7 @@ export const CONFIG: Record<Stage, StageConfig> = {
     stage: 'dev',
     account: '<ACCOUNT_NONPROD>',
     domainName: 'app-dev.<DOMINIO_BASE>',
-    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'REQUIRED' },
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OPTIONAL' },
     network: { maxAzs: 2, natGateways: 1 },
     db: {
       instanceClass: 't4g.micro',
@@ -7658,7 +7683,7 @@ export const CONFIG: Record<Stage, StageConfig> = {
     stage: 'qa',
     account: '<ACCOUNT_NONPROD>',
     domainName: 'app-qa.<DOMINIO_BASE>',
-    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'REQUIRED' },
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OPTIONAL' },
     network: { maxAzs: 2, natGateways: 1 },
     db: {
       instanceClass: 't4g.small',
@@ -7684,7 +7709,7 @@ export const CONFIG: Record<Stage, StageConfig> = {
     stage: 'prod',
     account: '<ACCOUNT_PROD>',
     domainName: 'app.<DOMINIO_BASE>',
-    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'REQUIRED' },
+    auth: { featurePlan: 'ESSENTIALS', selfSignup: true, mfa: 'OPTIONAL' },
     network: { maxAzs: 2, natGateways: 1 },
     db: {
       instanceClass: 't4g.small',
@@ -7712,7 +7737,7 @@ Los tres stages están en el mismo archivo para que un cambio de tamaño de inst
 
 `auth.featurePlan` queda en `ESSENTIALS` (ADR-13): con menos de 100 usuarios no se paga Cognito Plus. `geoAllowList` de prod es `['PE']`. Vacío, como en dev y qa, deja el WAF sin filtro geográfico.
 
-`selfSignup: true` y `mfa: 'REQUIRED'` acompañan al user pool. Cerrar el alta es poner `selfSignup: false` y dar de alta a la gente con `create-admin` o con `AdminCreateUser`.
+`selfSignup: true` y `mfa: 'OPTIONAL'` (🆕 V2.4, 10.8) acompañan al user pool. Cerrar el alta es poner `selfSignup: false` y dar de alta a la gente con `create-admin` o con `AdminCreateUser`.
 
 ### 16.3 Nombres
 
@@ -9940,7 +9965,7 @@ El primer push a `main` despliega `dev`. Si no hay cuenta todavía, esta fase se
 
 ### Seguridad que se comprueba a mano una vez en dev
 
-- [ ] Login con MFA: el primer acceso obliga a configurar TOTP y el segundo pide el código.
+- [ ] 🆕 V2.4. Login sin MFA entra directo. Al activar el MFA desde el perfil (10.8), el siguiente login pide el código. Un interno sin MFA recibe 403 `MFA_REQUIRED` en las rutas del backoffice.
 - [ ] La cookie de access tiene `HttpOnly`, `Secure`, `SameSite=Strict` y no tiene `Domain`.
 - [ ] `POST /api/auth/refresh` sin la cookie de refresh responde 401 y no crea sesión.
 - [ ] Un usuario desactivado recibe 403 con un access token todavía vigente.
@@ -10057,7 +10082,7 @@ Leer el secreto una vez y guardarlo en una variable de módulo hace que, el día
 ### 23.1 Identidad
 
 - Cognito es el único sitio que ve contraseñas. Mínimo 12 caracteres, cuatro clases, historial de 5, y el DTO repite la misma regla para fallar antes de llamar al pool (10.5).
-- MFA TOTP obligatorio en el primer login (`mfa: 'REQUIRED'`).
+- 🆕 V2.4. MFA TOTP opcional para inversionistas (`mfa: 'OPTIONAL'`), activable desde el perfil. Obligatorio para los internos, que la API comprueba (10.8).
 - El access token dura 15 minutos y el refresh rota en cada uso, con 10 segundos de gracia para pestañas duplicadas (10.4, 16.5).
 - Cerrar sesión revoca el refresh en Cognito (`RevokeToken`). Cerrar todas las sesiones usa `GlobalSignOut`. Borrar la cookie sin revocar deja un refresh válido hasta los 30 días.
 - Un usuario `disabled` queda fuera en el siguiente request, aunque el access token no haya caducado (9.1).
@@ -10299,7 +10324,7 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 | 1 | Una organización por instalación | ADR-12. No hay `tenant_id` |
 | 2 | Inversionistas y equipo interno, con pantallas distintas | Grupos de Cognito: `Inversionista` (lo recibe quien se registra), `Admin`, `Tesoreria` y `Operaciones` (los asigna un Admin). Permisos en 28.2 |
 | 3 | El alta es abierta y entra ese día | `selfSignup: true`, `userStatus` nace en `active`. Para mover dinero hace falta el onboarding de 4 pasos y el poder firmado (10.7) |
-| 4 | Email, contraseña y MFA. Sin SSO | `mfa: 'REQUIRED'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes |
+| 4 | Email y contraseña. MFA opcional para inversionistas, obligatorio para internos. Sin SSO | 🆕 V2.4. `mfa: 'OPTIONAL'`, plan `ESSENTIALS`. Menos de 100 usuarios activos al mes. Activación desde el perfil y regla de internos en 10.8 |
 | 5 | Los usuarios están en Perú | `<REGION>` = `sa-east-1` (São Paulo: no hay región de AWS en Perú). `geoAllowList: ['PE']` solo en prod. El webhook de DocuSign no pasa por CloudFront (28.6). El certificado y el WAF de CloudFront siguen en `us-east-1` y no guardan datos. La transferencia de datos personales a Brasil (Ley 29733) está en el Anexo A |
 | 6 | Datos sensibles: financieros y de identidad | Documento, fecha de nacimiento, estado civil y cónyuge, origen de fondos, cuentas bancarias, saldos y movimientos. La selfie y la biometría se quedan en DocuSign; aquí solo el resultado. No se loguean y se redactan en la auditoría (26.4) |
 | 7 | Español, preparado para traducir | Los mensajes de la API siguen en español y en un solo sitio (ADR-11). El cliente no hardcodea textos (blueprint del frontend) |
@@ -10315,7 +10340,7 @@ No hay `tenant_id` en las tablas. El producto, hoy, es una organización por des
 | 17 | 24/7, con una caída tolerable de horas | Prod: `t4g.small`, sin Multi-AZ, un NAT, una instancia de Lambda provisionada, backup de 35 días, presupuesto 400 USD/mes |
 | 18 | Invierte quien está habilitado | `investorStatus = 'enabled'` (10.7). Sin eso, 403 `INVESTOR_NOT_ENABLED` |
 | 19 | El dinero entra por una wallet | Depósito a una cuenta bancaria de PROPIA, constancia, validación de Tesorería, saldo disponible. La renta entra a la wallet. El retiro lo paga Tesorería a mano (28.3) |
-| 20 | Soles y dólares, sin conversión | Cada propiedad tiene una moneda. La wallet tiene un saldo por moneda. Se deposita, invierte, cobra y retira en la misma |
+| 20 | Dólares y soles, sin conversión | Cada propiedad tiene una moneda. La wallet tiene un saldo por moneda. Se deposita, invierte, cobra y retira en la misma. 🆕 V2.4: la moneda por defecto es USD (`settings.default_currency`): es la que traen preseleccionada una propiedad nueva, la wallet y los filtros. PEN funciona igual en todo |
 | 21 | Personas naturales con DNI, CE o pasaporte | No invierten empresas |
 | 22 | Cuotas y máximo por inversionista, por propiedad | Los define Operaciones al crear la propiedad (28.4) |
 | 23 | El compromiso no se deshace | El dinero comprometido queda bloqueado hasta el cierre (28.4) |
@@ -10345,7 +10370,7 @@ PROPIA es un marketplace de copropiedad inmobiliaria. Una propiedad se divide en
 
 | Módulo | Tablas | Sección |
 |---|---|---|
-| `investors` | `investor_profiles`, `signature_envelopes` | 10.7, 28.6 |
+| `investors` | `investor_profiles`, `signature_envelopes`, `plaft_reviews` (🆕 V2.4) | 10.7, 28.6 |
 | `ledger` | `ledger_accounts`, `ledger_transactions`, `ledger_entries` | 28.3 |
 | `treasury` | `treasury_bank_accounts`, `payout_bank_accounts`, `deposits`, `withdrawals` | 28.3 |
 | `properties` | `properties`, `property_valuations` | 28.4, 28.5 |
@@ -10369,6 +10394,8 @@ Toda tabla de dinero usa `numeric(14,2)` y una columna `currency` con `CHECK (cu
 | Registrar renta, gastos, valorizaciones, retenciones | — | — | ✅ | ver |
 | Avanzar ofertas del secundario (retracto, notaría, SUNARP) | — | — | ✅ | ver |
 | Reabrir un onboarding rechazado | — | — | ✅ | ✅ |
+| 🆕 V2.4. Evaluación PLAFT: aprobar, observar o rechazar | — | — | ✅ | ver |
+| 🆕 V2.4. Confirmar la compra del resto por PROPIA o ampliar el plazo; confirmar la cancelación de una propiedad | — | — | proponer | ✅ |
 | Usuarios internos, grupos y configuración (`settings`) | — | — | — | ✅ |
 
 Un interno no tiene wallet ni invierte con su usuario interno. La cuenta institucional de PROPIA (28.4) no es un usuario de Cognito: es una fila de `users` con `id` fijo `00000000-0000-0000-0000-000000000001` y sin login, que el migrator crea en el seed.
@@ -10412,20 +10439,21 @@ Tesorería no edita el monto. Si no coincide con el banco, rechaza con el motivo
 
 ### 28.4 Propiedades, compromisos y cierre
 
-**Propiedad** (`properties`): código, nombre, distrito y ciudad, descripción, gastos y riesgos (texto), moneda, precio, `units_total`, `unit_price`, `max_units_per_investor`, `funding_deadline`, renta anual estimada (%), día de pago de la renta, imagen de portada (documento privado servido por URL prefirmada) y `status`. `CHECK (price = unit_price * units_total)`: el precio se divide exacto, sin centavos sueltos.
+**Propiedad** (`properties`): código, nombre, distrito y ciudad, descripción, gastos y riesgos (texto), moneda (USD por defecto), precio (🆕 V2.4: incluye los gastos de cierre de la compra —notaría, registro y alcabala—, que Operaciones suma al calcularlo; el inversionista no paga nada aparte), `units_total`, `unit_price`, `max_units_per_investor`, `funding_deadline`, renta anual estimada (%), día de pago de la renta, imagen de portada (documento privado servido por URL prefirmada) y `status`. `CHECK (price = unit_price * units_total)`: el precio se divide exacto, sin centavos sueltos.
 
 | `status` | Quién la mueve | Qué pasa |
 |---|---|---|
 | `draft` | Operaciones | Editable, invisible para inversionistas. Única que acepta papelera |
 | `funding` | Operaciones la publica | Visible. Acepta compromisos |
-| `funded` | Sistema, al llenarse; o al vencer el plazo, cuando PROPIA completa | Ya no acepta compromisos. Aviso a Operaciones |
+| `funded` | Sistema, al llenarse; o el Admin, al confirmar la compra del resto por PROPIA | Ya no acepta compromisos. Aviso a Operaciones |
 | `notary` | Operaciones | Firma de escritura en curso. Sube `escritura` |
 | `registered` | Operaciones, con la `partida_registral` subida | Liquida compromisos y crea `holdings` |
 | `operating` | Sistema, tras `registered` | Reparte renta. Admite ofertas del secundario |
+| `cancelled` | 🆕 V2.4. Operaciones la propone desde `funding`, `funded` o `notary` con motivo, y un Admin la confirma | La compra se cayó. Cada compromiso vuelve: `committed` −monto / `available` +monto, estado `refunded`. El de PROPIA vuelve a `bank`. Aviso a todos los comprometidos. No se deshace |
 
 **Compromiso** (`commitments`): inversionista, propiedad, unidades, monto (`units * unit_price`), estado `active` → `settled`. Crearlo exige `investorStatus = 'enabled'`, propiedad en `funding`, `units ≤ unidades libres` y `units + las que ya tiene comprometidas ≤ max_units_per_investor`. Se bloquea la fila de la propiedad (`FOR UPDATE`) antes de contar las unidades libres: dos compromisos simultáneos no pueden vender la misma unidad. Asiento `available` −monto / `committed` +monto. No se cancela (ADR-13, 23). Si con él se llega a `units_total`, la propiedad pasa a `funded` en la misma transacción.
 
-**Plazo vencido.** El job diario busca propiedades en `funding` con `funding_deadline` pasado. Para cada una, la cuenta institucional de PROPIA crea un compromiso por las unidades libres (asiento `bank` −monto / `committed` de PROPIA +monto: el dinero de PROPIA no pasa por una wallet) y la propiedad pasa a `funded`. Ese compromiso es como cualquier otro: al registrar, PROPIA tiene `holdings` y puede vender en el secundario.
+**Plazo vencido.** 🆕 V2.4: el job diario no compra solo. Busca propiedades en `funding` con `funding_deadline` pasado y crea una tarea para el Admin en su tablero, con aviso. El Admin elige entre **ampliar el plazo** una sola vez o **confirmar la compra del resto**. Al confirmar, la cuenta institucional de PROPIA crea un compromiso por las unidades libres (asiento `bank` −monto / `committed` de PROPIA +monto: el dinero de PROPIA no pasa por una wallet) y la propiedad pasa a `funded`. Ese compromiso es como cualquier otro: al registrar, PROPIA tiene `holdings` y puede vender en el secundario.
 
 **Registro.** Al pasar a `registered`, para cada compromiso: asiento `committed` −monto / `property_settlement` +monto, estado `settled`, y una fila en `holdings` (inversionista, propiedad, unidades, `locked_units` en 0). La cuota ideal es `units / units_total`, calculada al leer.
 
@@ -10433,7 +10461,9 @@ Tesorería no edita el monto. Si no coincide con el banco, rechaza con el motivo
 
 **Período de renta** (`rent_periods`): propiedad, mes (`YYYY-MM`), renta bruta cobrada, fecha de pago y estado `draft` → `distributed`. Los gastos van en `rent_expenses` (concepto, monto): mantenimiento, arbitrios, seguro, los que haya. Renta neta = bruta − gastos.
 
-Distribuir lo hace Operaciones y no se deshace. Para cada `holding` de la propiedad, `parte = floor(neta * units / units_total, 2 decimales)`; los centavos que sobran van al `available` de PROPIA. Un solo asiento: `bank` −neta / `available` +parte de cada uno. Una fila por inversionista en `rent_distributions` (para el historial de pagos de la cartera) y un aviso. Un error se corrige con otro período de ajuste, no editando el distribuido.
+🆕 V2.4. Si `settings.rent.management_fee_pct` es mayor que cero, la comisión de administración es `round(bruta * pct / 100, 2)`, se descuenta antes de repartir y va a `commissions`. Arranca en `0.00` y la cambia el Admin; el período guarda el porcentaje que usó.
+
+Distribuir lo hace Operaciones y no se deshace. Cobran quienes tienen las unidades el día del reparto (🆕 V2.4): una venta del secundario completada antes de ese día ya cobra para el comprador, y mientras la oferta está viva la renta sigue siendo del vendedor. Para cada `holding` de la propiedad, `parte = floor(neta * units / units_total, 2 decimales)`; los centavos que sobran van al `available` de PROPIA. Un solo asiento: `bank` −neta / `available` +parte de cada uno. Una fila por inversionista en `rent_distributions` (para el historial de pagos de la cartera) y un aviso. Un error se corrige con otro período de ajuste, no editando el distribuido.
 
 **Valorización** (`property_valuations`): fecha, valor y `tasacion` en PDF. La cartera muestra la última: `valor * units / units_total` y su variación contra lo invertido.
 
@@ -10473,7 +10503,7 @@ export interface SignatureProvider {
 
 El navegador no confía en el parámetro con el que vuelve de DocuSign. La verdad es el webhook de DocuSign Connect, y no entra por CloudFront por dos razones: la restricción geográfica de prod (`PE`) es de toda la distribución y bloquearía a los servidores de DocuSign, y la política de origen de `/api/*` ya reenvía 10 de 10 cabeceras, así que no cabe `X-DocuSign-Signature-1`.
 
-Entra por una Lambda propia, `<app-short>-<stage>-webhooks`, con Function URL (`authType: NONE`), dentro de la VPC y con el mismo empaquetado que el worker (6.11). Verifica `X-DocuSign-Signature-1` (HMAC-SHA256 del cuerpo crudo, en base64) antes de parsear nada; sin firma válida, 401 y no toca la base. La concurrencia reservada es 2, para que un flood no agote las conexiones del proxy. Si cdk-nag marca la URL sin autenticación, la aceptación va en `nag.ts` con este motivo: la autenticación es el HMAC. Un evento repetido no hace nada dos veces: se guarda en `signature_envelopes.events` y se compara el estado. Con `completed` e identidad verificada, el PDF firmado se guarda como `poder_firmado` y el inversionista pasa a `enabled`. Mientras tanto, el cliente vuelve a pedir `me()` cada pocos segundos.
+Entra por una Lambda propia, `<app-short>-<stage>-webhooks`, con Function URL (`authType: NONE`), dentro de la VPC y con el mismo empaquetado que el worker (6.11). Verifica `X-DocuSign-Signature-1` (HMAC-SHA256 del cuerpo crudo, en base64) antes de parsear nada; sin firma válida, 401 y no toca la base. La concurrencia reservada es 2, para que un flood no agote las conexiones del proxy. Si cdk-nag marca la URL sin autenticación, la aceptación va en `nag.ts` con este motivo: la autenticación es el HMAC. Un evento repetido no hace nada dos veces: se guarda en `signature_envelopes.events` y se compara el estado. Con `completed` e identidad verificada, el PDF firmado se guarda como `poder_firmado` y el inversionista pasa a `review` para la evaluación PLAFT (10.7). Mientras tanto, el cliente vuelve a pedir `me()` cada pocos segundos.
 
 Los datos biométricos y la imagen del documento no salen de DocuSign. Aquí se guardan el resultado (`identityVerified`), las fechas y el PDF del poder.
 
@@ -10490,6 +10520,9 @@ Los datos biométricos y la imagen del documento no salen de DocuSign. Aquí se 
 | `notary` | Operaciones | Firma en notaría |
 | `completed` | Operaciones, con la partida | Unidades del vendedor al comprador en `holdings`. Asiento: `committed` del comprador −precio / `available` del vendedor +(precio − comisión) / `commissions` +comisión |
 | `cancelled` | Vendedor, solo antes de `buyer_found` | Libera `locked_units` |
+| `expired` | 🆕 V2.4. Sistema, a los `secondary.offer_expiry_days` (90) sin comprador | Libera `locked_units`. Aviso al vendedor |
+
+🆕 V2.4. Antes de `buyer_found` el vendedor puede bajar el precio, no subirlo. Al bajarlo, la oferta vuelve a `internal_window` y se avisa a los copropietarios.
 
 La compra es de la oferta entera, como en el prototipo. La comisión es `round(precio * commission_pct / 100, 2)` y se le descuenta al vendedor; el comprador paga el precio publicado.
 
@@ -10516,6 +10549,8 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | Depósito nuevo, retiro nuevo | Tesorería |
 | Retiro pagado o rechazado | Inversionista |
 | Poder firmado, identidad rechazada | Inversionista. Rechazo también a Operaciones |
+| 🆕 V2.4. Pasa a `review`, evaluación observada, aprobada o rechazada | `review`: Operaciones. El resto: inversionista |
+| 🆕 V2.4. Plazo vencido con unidades libres, propiedad propuesta para cancelar | Admin |
 | Propiedad financiada, plazo vencido | Operaciones y los comprometidos |
 | Cada paso de cierre (`notary`, `registered`) | Los comprometidos |
 | Renta distribuida | Cada copropietario |
@@ -10544,6 +10579,10 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | `GET /api/notifications`, `POST /api/notifications/{id}/read` | Cualquiera con sesión |
 | Function URL de `<app-short>-<stage>-webhooks` | DocuSign Connect, con HMAC (28.6) |
 | `GET/PUT /api/settings`, `POST /api/users/{id}/groups` | Admin |
+| 🆕 V2.4. `POST /api/auth/mfa/setup`, `/verify`, `DELETE /api/auth/mfa` | Cualquiera con sesión (10.8) |
+| 🆕 V2.4. `GET /api/plaft/reviews`, `POST /api/plaft/reviews/{userId}/approve`, `/observe`, `/reject` | Operaciones |
+| 🆕 V2.4. `POST /api/properties/{id}/cancel` (propone), `/cancel/confirm`, `/deadline/extend`, `/deadline/institutional-buy` | Operaciones propone; Admin confirma |
+| 🆕 V2.4. `PATCH /api/secondary/offers/{id}` (solo bajar el precio) | Inversionista, el vendedor |
 
 Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respuesta con dinero lo manda como string con dos decimales y su `currency`.
 
@@ -10555,6 +10594,12 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | `secondary.commission_pct` | `3.00` |
 | `secondary.retracto_days` | `30` |
 | `terms_and_conditions_url` | `<TERMS_URL>` |
+| 🆕 V2.4. `default_currency` | `USD` |
+| 🆕 V2.4. `secondary.offer_expiry_days` | `90` |
+| 🆕 V2.4. `rent.management_fee_pct` | `0.00` |
+| 🆕 V2.4. `approvals.dual_threshold_usd` / `approvals.dual_threshold_pen` | `<a definir>` / `<a definir>` |
+
+🆕 V2.4. **Doble aprobación.** Un depósito, un retiro, un reparto de renta o un pago al vendedor por encima del umbral de su moneda queda en `pending_second_approval` tras la primera aprobación, y lo completa otra persona con el mismo rol (o un Admin). Quien inició o aprobó primero no puede dar la segunda. Por debajo del umbral basta una. Publicar o cancelar una propiedad siempre lleva dos.
 
 ## 29. Flujos end to end
 
@@ -10578,9 +10623,9 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 |---|---|---|---|---|
 | 1 | Inversionista | `/signup` | Email, contraseña y aceptación de términos y privacidad | Usuario de Cognito sin confirmar |
 | 2 | Inversionista | `/signup` | Código del email | `confirmSignUp`, grupo `<ROL_A>`, fila en `users` (`active`), `investorStatus = 'onboarding'` |
-| 3 | Inversionista | `/login` | Contraseña. El primer login configura el TOTP (MFA obligatorio, ADR-13 fila 4) | Cookies de sesión. Va a `/onboarding` |
-| 4 | Inversionista | `/recuperar` | Código por email y contraseña nueva | El MFA se mantiene |
-| 5 | Inversionista | — | Perdió el teléfono del MFA | ⚠️ **H1**: no hay flujo |
+| 3 | Inversionista | `/login` | Contraseña, y el código si activó el MFA (opcional, 10.8) | Cookies de sesión. Va a `/onboarding` |
+| 4 | Inversionista | `/recuperar` | Código por email y contraseña nueva | Si tenía MFA, se mantiene |
+| 5 | Inversionista o interno | — | Perdió el teléfono con el MFA activado | ⚠️ **H1**: no hay flujo |
 | 6 | Admin | `/admin/usuarios` | Da de alta a un interno | ⚠️ **H2**: hoy solo se pueden añadir grupos a un usuario que ya existe, y ese usuario se registró como inversionista |
 
 ### 29.3 Habilitación: perfil y poder
@@ -10591,14 +10636,14 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | 2 | Inversionista | `/onboarding` | Paso 4: `POST /api/investor/poder` crea el sobre. Titular en orden 1, embebido y con verificación de identidad; cónyuge en orden 2, por email | `signing`. El navegador sale a DocuSign |
 | 3 | Inversionista | DocuSign | Verifica su identidad y firma | Vuelve a `/onboarding/poder`, que pide `me()` cada 3 s |
 | 4 | Cónyuge | Email de DocuSign | Firma | — |
-| 5 | Sistema | Webhook | `completed` con identidad verificada | Guarda `poder_firmado`, `enabled`, aviso al inversionista |
+| 5 | Sistema | Webhook | `completed` con identidad verificada | Guarda `poder_firmado`, pasa a `review`. Aviso a Operaciones |
+| 6 | Operaciones | `/admin/inversionistas` | Evaluación PLAFT: riesgo, listas, sustento si hace falta (10.7) | ✅ **H5**. Aprueba (`enabled`, aviso), observa o rechaza |
 
 Ramas:
 
 - La identidad no se verifica o alguien rechaza el sobre: `rejected` y aviso a Operaciones, que reabre el paso 4 desde `/admin/inversionistas`.
 - El cónyuge no firma, se equivocó de email o el sobre vence. ⚠️ **H3**: no hay reenvío, ni cambio de email, ni vencimiento.
 - Cambia sus datos después de `enabled`: vuelve a `signing` con un sobre nuevo. ⚠️ **H4**: no está dicho qué campos obligan a firmar de nuevo.
-- Debida diligencia: hoy nadie revisa a la persona. Se habilita sola al firmar. ⚠️ **H5**: no hay declaración de persona expuesta políticamente (PEP), ni cruce con listas, ni revisión de casos de riesgo.
 - Convivientes: solo pide cónyuge a los casados con gananciales. ⚠️ **H6**: falta decidir el caso de la unión de hecho reconocida.
 
 ### 29.4 Carga de saldo
@@ -10640,9 +10685,9 @@ Ramas:
 | # | Actor | Pantalla | Qué pasa | Resultado |
 |---|---|---|---|---|
 | 1 | Inversionista | `/explorar/[id]` | Simula y compromete N unidades (`POST /api/properties/{id}/commitments`) | Compromiso `active`. Asiento `available` −monto / `committed` +monto |
-| 1b | Inversionista | `/explorar/[id]` | No le alcanza el saldo | 409 `INSUFFICIENT_FUNDS` y botón a Cargar saldo. ⚠️ **H12**: si su depósito está en validación, pierde la unidad mientras espera |
+| 1b | Inversionista | `/explorar/[id]` | No le alcanza el saldo | 409 `INSUFFICIENT_FUNDS` y botón a Cargar saldo. ✅ **H12**: no hay reserva mientras se valida el depósito |
 | 2 | Sistema | — | La última unidad se compromete | `funded` en la misma transacción. Aviso a Operaciones y a los comprometidos |
-| 2b | Sistema | Job diario | Vence el plazo con unidades libres | PROPIA compromete el resto (`bank` −monto / `committed` de PROPIA +monto) y pasa a `funded`. ⚠️ **H11**: lo hace sin que nadie lo apruebe |
+| 2b | Sistema → Admin | Job diario → tablero del Admin | Vence el plazo con unidades libres | ✅ **H11**. Tarea para el Admin: amplía el plazo una vez o confirma que PROPIA compra el resto (`bank` −monto / `committed` de PROPIA +monto) y pasa a `funded` |
 
 ### 29.8 Cierre: notaría, pago al vendedor y SUNARP
 
@@ -10650,11 +10695,11 @@ Ramas:
 |---|---|---|---|---|
 | 1 | Operaciones | `/admin/propiedades/[id]` | Pasa a notaría | `notary`. Aviso a los comprometidos |
 | 2 | Tesorería | — | Paga al vendedor | ⚠️ **H13**: no existe el paso, así que el pago no queda en el libro mayor |
-| 3 | — | — | Notaría, registro y alcabala | ⚠️ **H14**: no está decidido quién paga los gastos de cierre ni cómo se cobran |
+| 3 | — | — | Notaría, registro y alcabala | ✅ **H14**. Incluidos en el precio de la unidad. En el secundario, ⚠️ falta decidir quién los paga |
 | 4 | Operaciones | `/admin/propiedades/[id]` | Sube escritura y partida y registra | `registered`. Por compromiso: `committed` −monto / `property_settlement` +monto, `settled` y fila en `holdings`. Aviso |
 | 5 | Sistema | — | — | `operating`. Ya reparte renta y admite ofertas del secundario |
 
-Rama: la compra se cae (el vendedor se echa atrás, la notaría observa el título, aparece una carga). ⚠️ **H15**: no hay estado para cancelar la propiedad, y el dinero comprometido queda bloqueado para siempre.
+Rama: la compra se cae (el vendedor se echa atrás, la notaría observa el título, aparece una carga). ✅ **H15**: Operaciones propone `cancelled`, un Admin confirma y cada compromiso vuelve a `available` (28.4).
 
 ### 29.9 Renta mensual
 
@@ -10667,8 +10712,8 @@ Rama: la compra se cae (el vendedor se echa atrás, la notaría observa el títu
 Ramas:
 
 - Los gastos superan la renta del mes. ⚠️ **H16**: la neta sale negativa y el asiento no se puede escribir.
-- Una venta del secundario se completa a mitad de mes. ⚠️ **H17**: no está dicho quién cobra ese mes.
-- PROPIA no cobra nada por administrar. ⚠️ **H18**: el único ingreso escrito es el 3 % del secundario.
+- Una venta del secundario se completa a mitad de mes. ✅ **H17**: cobra quien tiene las unidades el día del reparto.
+- Comisión de administración. ✅ **H18**: configurable, arranca en 0 % (28.5).
 
 ### 29.10 Venta en el mercado secundario
 
@@ -10708,7 +10753,7 @@ Un flujo está cerrado cuando cada cuenta del libro mayor tiene una salida. Hoy:
 | Cuenta | Entra por | Sale por | ¿Cierra? |
 |---|---|---|---|
 | `available` | Depósito aprobado, renta, venta en el secundario, retracto ejercido por otro, retiro rechazado o cancelado | Compromiso, compra en el secundario, retiro | ✅ |
-| `committed` | Compromiso, compra en el secundario | Registro de la propiedad, venta completada, retracto que libera al comprador | ⚠️ **H15**: no sale si la compra se cae |
+| `committed` | Compromiso, compra en el secundario | Registro de la propiedad, venta completada, retracto que libera al comprador, propiedad cancelada | ✅ |
 | `withdrawing` | Retiro pedido | Pagado, rechazado o cancelado | ✅ |
 | `bank` | Contrapartida de todo lo que entra o sale del banco | — | ✅ |
 | `property_settlement` | Registro de la propiedad | — | ⚠️ **H13**: falta el pago al vendedor |
@@ -10719,26 +10764,26 @@ Un flujo está cerrado cuando cada cuenta del libro mayor tiene una salida. Hoy:
 
 | # | Hueco | Propuesta | Peso |
 |---|---|---|---|
-| H1 | MFA perdido | Admin reinicia el MFA después de una videollamada con documento. Queda en auditoría y se avisa por email | Bloquea salida a prod |
+| H1 | MFA perdido (solo afecta a quien lo activó) | Admin reinicia el MFA después de una videollamada con documento. Queda en auditoría y se avisa por email | Pendiente |
 | H2 | Alta de internos | El Admin invita por email (`AdminCreateUser`) con un grupo interno y sin `<ROL_A>`. Un interno no puede registrarse por `/signup` | Bloquea |
 | H3 | Cónyuge que no firma | Reenviar el email, corregir el email del cónyuge (anula el sobre y crea otro) y vencimiento a los 30 días con aviso | Bloquea |
 | H4 | Qué datos obligan a refirmar | Nombre, documento, estado civil, régimen y cónyuge. Teléfono y dirección no | Bloquea |
-| H5 | Debida diligencia | Paso 3 con declaración PEP. PEP, origen "Otro" o primer depósito por encima de un umbral configurable pasan a `review`, y Operaciones aprueba antes de `enabled` | Bloquea (legal) |
+| H5 | Debida diligencia | Todos pasan por la evaluación PLAFT antes de invertir (10.7) | ✅ Decidido |
 | H6 | Convivientes | Unión de hecho inscrita en SUNARP = igual que casado con gananciales | Bloquea (legal) |
 | H7 | Constancia duplicada | Pedir el número de operación. Único por banco y número. Tesorería ve los posibles duplicados resaltados | Recomendado |
 | H8 | Cuenta de origen de terceros | El inversionista elige de cuál de sus cuentas transfirió. Tesorería rechaza si el extracto muestra otro titular | Recomendado |
-| H9 | Una sola persona aprueba | Doble aprobación por encima de un umbral en `settings`, para depósitos, retiros, publicación de propiedades y reparto de renta. Quien inicia no puede aprobar | Recomendado |
-| H10 | Cuenta de retiro nueva | MFA otra vez al añadirla y 24 h de espera antes del primer retiro. Tesorería confirma que el titular sea el inversionista | Recomendado |
-| H11 | PROPIA compra sola | El job no compromete. Crea una tarea para el Admin, que confirma o amplía el plazo una vez | Recomendado |
-| H12 | Unidad perdida mientras se valida el depósito | Reserva de 48 h ligada a un depósito `submitted`. Si se aprueba, se convierte en compromiso; si no, se libera | Opcional |
+| H9 | Una sola persona aprueba | Doble aprobación por encima de un umbral por moneda en `settings` (28.11) | ✅ Decidido |
+| H10 | Cuenta de retiro nueva | Código por email (o MFA, si lo activó) al añadirla y 24 h de espera antes del primer retiro. Tesorería confirma que el titular sea el inversionista | Pendiente |
+| H11 | PROPIA compra sola | El Admin confirma o amplía el plazo una vez (28.4) | ✅ Decidido |
+| H12 | Unidad perdida mientras se valida el depósito | Sin reserva por ahora | ✅ Decidido |
 | H13 | Pago al vendedor | Tesorería registra el pago con constancia: `property_settlement` −precio / `bank` +precio. Al registrar, la cuenta queda en cero por propiedad, y eso se comprueba | Bloquea |
-| H14 | Gastos de cierre | Van incluidos en el precio de la unidad, que Operaciones calcula al crear la propiedad. En el secundario los paga el comprador, aparte del precio | Bloquea (negocio) |
-| H15 | Compra que se cae | Estado `cancelled` desde `funding`, `funded` o `notary`, con doble aprobación. Devuelve cada compromiso a `available` y el de PROPIA a `bank`. Aviso a todos | Bloquea |
+| H14 | Gastos de cierre | Compra inicial: incluidos en el precio (28.4). Secundario: propuesta, los paga el comprador aparte del precio | ✅ Compra inicial / Pendiente secundario |
+| H15 | Compra que se cae | Estado `cancelled` con doble aprobación (28.4) | ✅ Decidido |
 | H16 | Renta neta negativa | No se reparte. El saldo negativo pasa al período siguiente | Bloquea |
-| H17 | Renta y venta a mitad de mes | Cobra quien tiene las unidades el día del reparto. Mientras la oferta está viva, la renta sigue siendo del vendedor | Bloquea |
-| H18 | Ingreso de PROPIA por administrar | Comisión de administración configurable, en % de la renta bruta, descontada antes del reparto y llevada a `commissions` | Bloquea (negocio) |
+| H17 | Renta y venta a mitad de mes | Cobra quien tiene las unidades el día del reparto (28.5) | ✅ Decidido |
+| H18 | Ingreso de PROPIA por administrar | Configurable, arranca en 0 % (28.5) | ✅ Decidido |
 | H19 | Aviso de retracto | Aviso a todos los copropietarios al abrirse el retracto, con el precio y la fecha límite | Bloquea |
-| H20 | Oferta sin fin | Vence a los 90 días (configurable). El vendedor puede bajar el precio, pero no subirlo; al bajarlo vuelve la ventana interna | Recomendado |
+| H20 | Oferta sin fin | Vence a los 90 días, configurable. Se puede bajar el precio (28.7) | ✅ Decidido |
 | H21 | 30 días de retracto en cada venta | Consultar con legal si el poder o un pacto de copropietarios puede recoger la renuncia previa. Si se puede, se quita el paso | Optimización (legal) |
 | H22 | Unidades de PROPIA | Operaciones publica y gestiona ofertas a nombre de la cuenta institucional desde `/admin/secundario` | Bloquea |
 | H23 | Bloquear a un inversionista | `userStatus = 'suspended'` desde `/admin/inversionistas` por Admin, con motivo. No entra ni mueve dinero. Su renta sigue llegando a la wallet | Bloquea |
