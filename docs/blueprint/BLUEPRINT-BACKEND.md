@@ -14,7 +14,7 @@
 >
 > **Versión 2.4 — 2026-10-09.** Mapa de flujos end to end, del inversionista al equipo interno (sección 29), con los 27 huecos que faltan cerrar y su propuesta. Marcado 🆕 **V2.4**.
 >
-> **Versión 2.5 — 2026-10-09.** Cierra lo que cambiaba una pantalla antes de diseñar: un solo documento de DocuSign (poder y declaración jurada, dos firmas del titular), el compromiso lo aprueba un Admin antes de bloquear el saldo, y el poder no pasa por escritura pública (28.14). Marcado 🆕 **V2.5**. Si choca con un bloque anterior, manda V2.5.
+> **Versión 2.5 — 2026-10-09.** Cierra lo que cambiaba una pantalla antes de diseñar: un solo documento de DocuSign (poder y declaración jurada, dos firmas del titular), el compromiso lo aprueba un Admin antes de bloquear el saldo, y el poder no pasa por escritura pública. Completa las reglas que el canvas necesitaba: solicitudes cuando la propiedad sale de fondeo, un solo `userStatus`, quién reabre un rechazo, secundario durante una votación y retracto múltiple (28.14, H41 a H52). Marcado 🆕 **V2.5**. Si choca con un bloque anterior, manda V2.5.
 
 ---
 
@@ -4338,7 +4338,7 @@ Con cuenta, el inversionista ve las propiedades, la cartera vacía y el secundar
 | `signing` | Sobre enviado. El titular, o el cónyuge, todavía no firmó |
 | `review` | 🆕 V2.4. Firmaron todos y la identidad se verificó. Falta la evaluación PLAFT (abajo) |
 | `enabled` | La evaluación PLAFT se aprobó |
-| `rejected` | La identidad no se verificó, alguien rechazó el sobre o la evaluación PLAFT no se aprobó. Con motivo. Operaciones puede reabrir el paso que corresponda |
+| `rejected` | La identidad no se verificó, alguien rechazó el sobre o la evaluación PLAFT no se aprobó. Con motivo. 🆕 V2.5: Operaciones reabre la firma; Cumplimiento reabre la evaluación (28.14, H48) |
 
 **Evaluación PLAFT** (🆕 V2.4). Cualquiera se registra y entra, pero nadie invierte sin pasarla. El paso 3 añade la declaración de persona expuesta políticamente (PEP: sí o no, cargo y entidad) y la de beneficiario final. Con `review`, la persona aparece en la cola de `/admin/cumplimiento` de `<ROL_E>` (Cumplimiento), con un nivel de riesgo que la app sugiere y el evaluador puede cambiar:
 
@@ -10589,6 +10589,7 @@ Un aviso es una fila en `notifications` y el mismo texto por email. Se crean den
 | `POST /api/properties/{id}/commitments` | Inversionista habilitado. 🆕 V2.5: crea `pending_approval`, sin asiento |
 | 🆕 V2.5. `POST /api/properties/{id}/commitments/{commitmentId}/cancel` | Inversionista, solo en `pending_approval` |
 | 🆕 V2.5. `POST /api/properties/{id}/commitments/{commitmentId}/approve`, `/reject` | Admin (28.14) |
+| 🆕 V2.5. `PUT /api/settings/plaft` | Cumplimiento (28.14, H52) |
 | `GET /api/portfolio`, `GET /api/portfolio/{propertyId}` | Inversionista |
 | `POST /api/properties/{id}/rent-periods`, `/{periodId}/distribute`, `/valuations` | Operaciones |
 | `GET /api/secondary/offers`, `POST /api/secondary/offers`, `/{id}/cancel`, `/{id}/buy`, `/{id}/retracto` | Inversionista |
@@ -10625,7 +10626,8 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | 🆕 V2.4. `plaft.single_deposit_usd` / `_pen`, `plaft.monthly_deposits_usd` / `_pen` | vacíos hasta que Cumplimiento los ponga |
 | 🆕 V2.4. `plaft.roundtrip_days` | `30` |
 | 🆕 V2.4. `approvals.dual_threshold_usd` / `approvals.dual_threshold_pen` | vacíos hasta que producto dé el monto |
-| 🆕 V2.4. `secondary.closing_cost_estimate_usd` / `_pen` | `<a definir>` |
+| 🆕 V2.4. `secondary.closing_cost_estimate_usd` / `_pen` | 🆕 V2.5. `750.00` / `2800.00` (28.14, H51) |
+| 🆕 V2.5. `commitments.approval_alert_hours` | `24` |
 | 🆕 V2.4. `sale.vote_days` / `sale.approval_pct` / `sale.cooldown_days` | `15` / `50` / `180` |
 | 🆕 V2.4. `sale.exit_commission_pct` | `0.00` |
 
@@ -10713,13 +10715,31 @@ Arrancan vacías (sin alerta) hasta que Cumplimiento ponga los montos. Cumplimie
 
 ### 28.14 Cierre antes del diseño
 
-🆕 **V2.5.** Tres decisiones del 2026-10-09. Cierran lo que todavía podía cambiar una pantalla.
+🆕 **V2.5.** Decisiones del 2026-10-09. Las tres primeras cierran lo que podía cambiar una pantalla. Las siguientes (H44 a H52) completan las reglas que el canvas necesitaba para dibujar cada estado.
 
 **Un documento, dos firmas (H41).** DocuSign firma solo el poder especial marco y la declaración jurada, en el mismo PDF y el mismo sobre. El titular pone las dos firmas en una sola ceremonia. No se modelan como dos sobres ni como dos estados: el webhook `completed` sigue siendo el que pasa a `review`. `consents` guarda una fila `poder` con la versión de esa plantilla, que incluye los dos textos. Si legal quita la declaración jurada, se quita ese campo de firma de la plantilla y el resto no cambia. El cónyuge, cuando hay gananciales o unión de hecho inscrita, firma ese mismo documento en orden 2. El compromiso, los términos y la venta del secundario no pasan por DocuSign. La compra y la transferencia siguen en notaría.
 
 **El Admin aprueba el compromiso (H42).** Enviar la solicitud no bloquea saldo ni aparta unidades. El Admin la ve en `/admin` y es el único que la aprueba o la rechaza (una persona, sin doble aprobación). Al aprobar se comprueban de nuevo saldo y unidades libres y, si alcanzan, se escribe el asiento y el compromiso pasa a `active`. A partir de ahí no se deshace, salvo que la propiedad se cancele (H15). Rechazar exige motivo y no escribe asiento. El inversionista puede cancelar la suya mientras sigue en `pending_approval`. Una solicitud pendiente cuenta como viva para el cierre de cuenta (H26).
 
 **Sin escritura pública (H43).** Habilitar no espera una escritura del poder. Operaciones no sube ese documento antes de `enabled`. La escritura de compraventa de la propiedad sigue siendo el paso de notaría de 28.4, que es otra cosa.
+
+**Solicitudes cuando la propiedad sale de fondeo (H44).** Si la propiedad pasa a `funded` (por otra aprobación o por la compra de PROPIA) o a `cancelled`, en la misma transacción toda solicitud `pending_approval` de esa propiedad pasa a `rejected` con el motivo `PROPERTY_NOT_FUNDING` y aviso al inversionista. Ampliar el plazo no las toca. `POST /api/properties/{id}/deadline/institutional-buy` responde 409 `COMMITMENTS_PENDING` mientras haya solicitudes pendientes: el Admin las resuelve antes de que PROPIA compre el resto.
+
+**Aviso al Admin (H45).** Una solicitud con más de `commitments.approval_alert_hours` (24) sin revisar genera un aviso al Admin y se marca en su tablero, igual que las colas de Tesorería (24 h) y Cumplimiento (48 h).
+
+**Saldo durante la solicitud (H46).** No se bloquea ni se impide usarlo. `GET /api/wallet` devuelve por moneda `pendingCommitmentsTotal`. Retirar, comprar en el secundario, ejercer un retracto o enviar otra solicitud que deje el disponible por debajo de ese total muestra un aviso en el cliente y sigue adelante. La aprobación vuelve a comprobar el saldo (28.4).
+
+**Un solo `userStatus` (H47).** El dominio reemplaza los valores del núcleo (`active`, `blocked`, `observed`, `rejected`) por `active`, `suspended`, `deceased` y `closed`. Lo que el núcleo llamaba `observed` y `rejected` es ahora `investorStatus` (10.7). En la migración del dominio: `USER_STATUS` de 11.2 pasa a esos cuatro valores, el `CHECK` de `users.user_status` se reemplaza, el `enum` de `MeResponse` (10.5) queda `['active', 'suspended', 'deceased', 'closed', 'unknown']`, y los mensajes de la estrategia JWT pasan a «Tu cuenta está suspendida. Comunícate con soporte.» y «Tu cuenta está cerrada.». `deceased` usa el mensaje de suspendida. Los tests de 15.3 que usan `blocked` pasan a `suspended`. Un login con cualquiera de los tres responde 403 `ACCOUNT_DISABLED` con `{ reason }`, y el cliente muestra la pantalla de cuenta suspendida o cerrada.
+
+**Quién reabre un rechazo (H48).** Identidad no verificada o sobre rechazado: Operaciones reabre la firma (paso 4) desde `/admin/inversionistas`. Evaluación PLAFT rechazada: Cumplimiento la reabre desde `/admin/cumplimiento`, y la aprueba otra persona. Las dos acciones piden motivo y quedan en auditoría.
+
+**Secundario durante una votación (H49).** Con la propiedad en `sale_vote`, se pausan las ofertas en `internal_window` y `open` y no se publican nuevas. Las que ya tienen comprador (`buyer_found`, `retracto`, `notary`) siguen su curso. Los votos se cuentan con las participaciones inscritas al cierre de la votación: si una venta del secundario se completa antes, vota el comprador.
+
+**Retracto de varios copropietarios (H50).** Provisional hasta que legal confirme (Anexo A): se queda con la oferta el primero que lo ejerce con saldo suficiente. Los siguientes reciben 409 `RETRACTO_TAKEN` y no se les bloquea nada.
+
+**Costo estimado de notaría en el secundario (H51).** `secondary.closing_cost_estimate_usd` = `750.00` y `_pen` = `2800.00`. Operaciones los ajusta con la tarifa de la notaría. El real se registra al completar.
+
+**Umbrales PLAFT (H52).** Las claves `plaft.*` las edita Cumplimiento desde "Reglas" en `/admin/cumplimiento` (`PUT /api/settings/plaft`). El resto de `settings` lo edita el Admin. Mientras un umbral esté vacío, su regla no corre y la pantalla de alertas lo dice.
 
 ---
 ## 29. Flujos end to end
@@ -10949,6 +10969,15 @@ Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo. 🆕 V2.4: 
 | H41 | Qué se firma en DocuSign | Poder especial marco y declaración jurada, dos firmas del titular en el mismo documento. El cónyuge, si hay, firma ese documento. El compromiso no se firma ahí | ✅ Decidido (28.14) |
 | H42 | El compromiso se ejecutaba solo | Un Admin lo aprueba o lo rechaza. El saldo y las unidades se bloquean al aprobar | ✅ Decidido (28.14) |
 | H43 | Escritura pública del poder antes de habilitar | No hace falta. Habilitar sale de DocuSign y de la evaluación PLAFT | ✅ Decidido (28.14) |
+| H44 | Solicitudes pendientes cuando la propiedad sale de fondeo | Se rechazan solas con aviso. PROPIA no compra el resto con solicitudes pendientes | ✅ Decidido (28.14) |
+| H45 | El Admin tarda en revisar | Aviso a las 24 h, configurable | ✅ Decidido (28.14) |
+| H46 | Saldo usado durante la solicitud | No se bloquea; el cliente avisa y la aprobación vuelve a comprobar | ✅ Decidido (28.14) |
+| H47 | `userStatus` distinto entre repositorios | `active`, `suspended`, `deceased`, `closed` en los dos | ✅ Decidido (28.14) |
+| H48 | Quién reabre un rechazo | Operaciones la firma; Cumplimiento la evaluación | ✅ Decidido (28.14) |
+| H49 | Secundario durante una votación | Se pausan las ofertas sin comprador; las que tienen comprador siguen | ✅ Decidido (28.14) |
+| H50 | Retracto de varios copropietarios | El primero con saldo; legal confirma | ✅ Provisional (28.14) |
+| H51 | Costo estimado de notaría en el secundario | US$ 750 / S/ 2,800, editable | ✅ Decidido (28.14) |
+| H52 | Quién define los umbrales PLAFT | Cumplimiento | ✅ Decidido (28.14) |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
@@ -10969,7 +10998,7 @@ Lo cerrado está en ADR-13 y en la sección 28. Aquí queda lo que falta para es
 
 | # | Qué | Diseño mientras tanto |
 |---|---|---|
-| 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, el retracto cuando lo ejercen varios copropietarios, y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. 🆕 V2.5: no hay paso de escritura pública del poder (H43). Habilitar no lo espera |
+| 1 | Revisión legal en curso: encaje con la SMV (financiamiento participativo) y la UIF, el retracto cuando lo ejercen varios copropietarios (🆕 V2.5: mientras tanto, el primero con saldo, H50), y la transferencia de datos a Brasil (Ley 29733) | Nada de esto cambia el modelo de datos. 🆕 V2.5: no hay paso de escritura pública del poder (H43). Habilitar no lo espera |
 | 2 | Si el ID Verification de DocuSign acepta CE y pasaporte peruanos | Si no, esos documentos pasan a revisión manual de Operaciones antes de `enabled` |
 | 3 | ~~Qué es "Liquidado" en la wallet del prototipo~~ | ✅ Cerrado en V2.4 (28.13, H40): acumulado informativo de lo cobrado por ventas, fuera del saldo |
 | 4 | 🆕 V2.4. Legal: plazo de respuesta del libro de reclamaciones y cuánto se conservan las hojas; plazo de conservación de datos tras cerrar una cuenta (PLAFT); si la unión de hecho inscrita firma como cónyuge; si los copropietarios pueden renunciar al retracto por adelantado (H21); si el poder alcanza para vender el inmueble completo con el voto de la mayoría (H28); plazos de los derechos sobre datos personales (H38) | Se diseña con lo de 28.12 y 29.15. Cambia un número en `settings` o un texto, no el modelo |
