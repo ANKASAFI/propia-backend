@@ -11,6 +11,8 @@
 > **Versión 2.2 — 2026-10-08.** Cierra las decisiones de producto que cambian el núcleo antes de escribir el dominio: región `sa-east-1`, papelera, datos sensibles, avisos y reportes (ADR-13). El código tocado va marcado 🆕 **V2.2** y no se ejecutó.
 >
 > **Versión 2.3 — 2026-10-09.** Añade el dominio de PROPIA a partir del prototipo `propia_desktop` (sección 28): cuatro roles, onboarding con poder firmado en DocuSign, wallet sobre un libro mayor de partida doble, propiedades por unidades, cierre notarial, renta mensual y mercado secundario con retracto. Es diseño: entidades, estados, reglas y contrato. Marcado 🆕 **V2.3**, sin ejecutar.
+>
+> **Versión 2.4 — 2026-10-09.** Mapa de flujos end to end, del inversionista al equipo interno (sección 29), con los 27 huecos que faltan cerrar y su propuesta. Marcado 🆕 **V2.4**.
 
 ---
 
@@ -44,6 +46,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 | 🆕 **V2.1** | Añadido en la 2.1, escrito contra el código verificado pero sin ejecutar | Copiar igual. La primera implementación corre el checklist de la sección 21 antes de darlo por bueno |
 | 🆕 **V2.2** | Decisión de producto del 2026-10-08, escrita en el núcleo | Copiar igual. Si choca con un bloque V2, manda V2.2 |
 | 🆕 **V2.3** | Dominio de PROPIA (sección 28) | Es diseño, no código para copiar. Se implementa con la forma de la sección 12. Si choca con un bloque anterior, manda V2.3 |
+| 🆕 **V2.4** | Flujos end to end (sección 29) | Los pasos se implementan con la sección 28. Un ⚠️ Hn no se implementa hasta que su fila de 29.14 esté decidida |
 | 🟦 **EJEMPLO DE DOMINIO** | Código del dominio original, incluido solo como referencia de patrón | **No copiar**. Leer, entender la forma, aplicarla al dominio nuevo |
 | 🟥 **DEUDA — NO REPLICAR** | El original lo hace así y está mal | **No copiar**. La sección 19 explica la corrección obligatoria |
 
@@ -123,6 +126,7 @@ Cada bloque de este documento lleva una etiqueta. **Respetarlas es obligatorio.*
 - [26. Datos, backups, recuperación y cumplimiento](#26-datos-backups-recuperación-y-cumplimiento)
 - [27. Registro de decisiones (ADR)](#27-registro-de-decisiones-adr)
 - [28. Dominio PROPIA](#28-dominio-propia)
+- [29. Flujos end to end](#29-flujos-end-to-end)
 - [Anexo A — Puntos abiertos y cómo resolverlos](#anexo-a--puntos-abiertos-y-cómo-resolverlos)
 
 ---
@@ -10551,6 +10555,208 @@ Todo `POST` que mueve dinero o crea una fila lleva `@Idempotent()`. Toda respues
 | `secondary.commission_pct` | `3.00` |
 | `secondary.retracto_days` | `30` |
 | `terms_and_conditions_url` | `<TERMS_URL>` |
+
+## 29. Flujos end to end
+
+🆕 **V2.4.** Cada flujo de PROPIA paso a paso, desde el inversionista hasta el equipo interno: quién actúa, en qué pantalla, qué estado cambia, qué asiento se escribe y a quién se avisa. Sirve para comprobar que ningún flujo queda abierto. Lo que todavía no cierra está marcado **⚠️ Hn** y se decide en 29.14. Las pantallas son las del blueprint del frontend (9.6) y del canvas `docs/design/propia-canvas.html` de ese repositorio.
+
+### 29.1 Actores
+
+| Actor | Dónde actúa |
+|---|---|
+| Inversionista | La app, con cuenta y MFA |
+| Cónyuge | Solo DocuSign, por email. No tiene cuenta |
+| Tesorería | `/admin/depositos`, `/admin/retiros` |
+| Operaciones | `/admin/propiedades`, `/admin/rentas`, `/admin/secundario`, `/admin/inversionistas` |
+| Admin | `/admin/usuarios`, `/admin/configuracion`. Ve todo lo demás |
+| Sistema | Jobs diarios (sección 14) y el webhook de DocuSign (28.6) |
+| Fuera de la app | Bancos, notaría, SUNARP, inquilinos y vendedores de inmuebles. La app registra lo que hicieron, no habla con ellos |
+
+### 29.2 Registro, acceso y recuperación
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Inversionista | `/signup` | Email, contraseña y aceptación de términos y privacidad | Usuario de Cognito sin confirmar |
+| 2 | Inversionista | `/signup` | Código del email | `confirmSignUp`, grupo `<ROL_A>`, fila en `users` (`active`), `investorStatus = 'onboarding'` |
+| 3 | Inversionista | `/login` | Contraseña. El primer login configura el TOTP (MFA obligatorio, ADR-13 fila 4) | Cookies de sesión. Va a `/onboarding` |
+| 4 | Inversionista | `/recuperar` | Código por email y contraseña nueva | El MFA se mantiene |
+| 5 | Inversionista | — | Perdió el teléfono del MFA | ⚠️ **H1**: no hay flujo |
+| 6 | Admin | `/admin/usuarios` | Da de alta a un interno | ⚠️ **H2**: hoy solo se pueden añadir grupos a un usuario que ya existe, y ese usuario se registró como inversionista |
+
+### 29.3 Habilitación: perfil y poder
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Inversionista | `/onboarding` | Pasos 1 a 3: perfil, estado civil y origen de fondos (`PUT /api/investor/profile`) | Sigue en `onboarding` hasta completar los tres |
+| 2 | Inversionista | `/onboarding` | Paso 4: `POST /api/investor/poder` crea el sobre. Titular en orden 1, embebido y con verificación de identidad; cónyuge en orden 2, por email | `signing`. El navegador sale a DocuSign |
+| 3 | Inversionista | DocuSign | Verifica su identidad y firma | Vuelve a `/onboarding/poder`, que pide `me()` cada 3 s |
+| 4 | Cónyuge | Email de DocuSign | Firma | — |
+| 5 | Sistema | Webhook | `completed` con identidad verificada | Guarda `poder_firmado`, `enabled`, aviso al inversionista |
+
+Ramas:
+
+- La identidad no se verifica o alguien rechaza el sobre: `rejected` y aviso a Operaciones, que reabre el paso 4 desde `/admin/inversionistas`.
+- El cónyuge no firma, se equivocó de email o el sobre vence. ⚠️ **H3**: no hay reenvío, ni cambio de email, ni vencimiento.
+- Cambia sus datos después de `enabled`: vuelve a `signing` con un sobre nuevo. ⚠️ **H4**: no está dicho qué campos obligan a firmar de nuevo.
+- Debida diligencia: hoy nadie revisa a la persona. Se habilita sola al firmar. ⚠️ **H5**: no hay declaración de persona expuesta políticamente (PEP), ni cruce con listas, ni revisión de casos de riesgo.
+- Convivientes: solo pide cónyuge a los casados con gananciales. ⚠️ **H6**: falta decidir el caso de la unión de hecho reconocida.
+
+### 29.4 Carga de saldo
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Inversionista | `/wallet` → Cargar saldo | Elige moneda y ve las cuentas de PROPIA en esa moneda | — |
+| 2 | Inversionista | Su banco | Transfiere | Fuera de la app |
+| 3 | Inversionista | `/wallet` | Banco destino, monto y constancia (`POST /api/deposits`) | `submitted`. "Pendiente de validación" en su wallet. Aviso a Tesorería |
+| 4 | Tesorería | `/admin/depositos` | Compara la constancia con el extracto y aprueba | `approved`. Asiento `bank` −monto / `available` +monto. Aviso |
+| 4b | Tesorería | `/admin/depositos` | Rechaza con motivo | `rejected`. Sin asiento. Aviso |
+
+Ramas:
+
+- La misma constancia se sube dos veces, o dos personas suben la misma. ⚠️ **H7**: no se pide el número de operación, así que nada lo impide salvo el ojo de Tesorería.
+- La transferencia sale de una cuenta que no es del inversionista. ⚠️ **H8**: no se exige que la cuenta de origen sea suya.
+- Montos altos: aprueba una sola persona. ⚠️ **H9**: sin doble aprobación.
+
+### 29.5 Retiro
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Inversionista | `/perfil` → Cuentas | Registra una cuenta de destino | ⚠️ **H10**: se puede usar al instante y sin comprobar que sea suya |
+| 2 | Inversionista | `/wallet` → Retirar | Cuenta y monto ≤ disponible (`POST /api/withdrawals`) | `requested`. Asiento `available` −monto / `withdrawing` +monto. Aviso a Tesorería |
+| 2b | Inversionista | `/wallet` | Cancela mientras está en `requested` | Asiento inverso |
+| 3 | Tesorería | Su banco | Transfiere | Fuera de la app |
+| 4 | Tesorería | `/admin/retiros` | Sube `constancia_retiro` y marca pagado | `paid`. Asiento `withdrawing` −monto / `bank` +monto. Aviso |
+| 4b | Tesorería | `/admin/retiros` | Rechaza con motivo | `rejected`. Asiento inverso. Aviso |
+
+### 29.6 Alta y publicación de una propiedad
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Operaciones | `/admin/propiedades` | Crea la ficha: datos, moneda, precio, unidades, máximo por inversionista, plazo, renta estimada, día de pago, portada y tasación | `draft`, invisible |
+| 2 | Operaciones | `/admin/propiedades/[id]` | Publica | `funding`. ⚠️ **H9**: la publica una sola persona; los inversionistas no reciben aviso |
+
+### 29.7 Compromiso y fondeo
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Inversionista | `/explorar/[id]` | Simula y compromete N unidades (`POST /api/properties/{id}/commitments`) | Compromiso `active`. Asiento `available` −monto / `committed` +monto |
+| 1b | Inversionista | `/explorar/[id]` | No le alcanza el saldo | 409 `INSUFFICIENT_FUNDS` y botón a Cargar saldo. ⚠️ **H12**: si su depósito está en validación, pierde la unidad mientras espera |
+| 2 | Sistema | — | La última unidad se compromete | `funded` en la misma transacción. Aviso a Operaciones y a los comprometidos |
+| 2b | Sistema | Job diario | Vence el plazo con unidades libres | PROPIA compromete el resto (`bank` −monto / `committed` de PROPIA +monto) y pasa a `funded`. ⚠️ **H11**: lo hace sin que nadie lo apruebe |
+
+### 29.8 Cierre: notaría, pago al vendedor y SUNARP
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Operaciones | `/admin/propiedades/[id]` | Pasa a notaría | `notary`. Aviso a los comprometidos |
+| 2 | Tesorería | — | Paga al vendedor | ⚠️ **H13**: no existe el paso, así que el pago no queda en el libro mayor |
+| 3 | — | — | Notaría, registro y alcabala | ⚠️ **H14**: no está decidido quién paga los gastos de cierre ni cómo se cobran |
+| 4 | Operaciones | `/admin/propiedades/[id]` | Sube escritura y partida y registra | `registered`. Por compromiso: `committed` −monto / `property_settlement` +monto, `settled` y fila en `holdings`. Aviso |
+| 5 | Sistema | — | — | `operating`. Ya reparte renta y admite ofertas del secundario |
+
+Rama: la compra se cae (el vendedor se echa atrás, la notaría observa el título, aparece una carga). ⚠️ **H15**: no hay estado para cancelar la propiedad, y el dinero comprometido queda bloqueado para siempre.
+
+### 29.9 Renta mensual
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Inquilino | Su banco | Paga a la cuenta de PROPIA | Fuera de la app |
+| 2 | Operaciones | `/admin/rentas` | Crea el período: renta bruta y gastos. Ve el reparto antes de confirmar | `draft` |
+| 3 | Operaciones | `/admin/rentas` | Distribuye | `distributed`. `bank` −neta / `available` +parte de cada copropietario; los céntimos que sobran, a PROPIA. Aviso a cada uno |
+
+Ramas:
+
+- Los gastos superan la renta del mes. ⚠️ **H16**: la neta sale negativa y el asiento no se puede escribir.
+- Una venta del secundario se completa a mitad de mes. ⚠️ **H17**: no está dicho quién cobra ese mes.
+- PROPIA no cobra nada por administrar. ⚠️ **H18**: el único ingreso escrito es el 3 % del secundario.
+
+### 29.10 Venta en el mercado secundario
+
+| # | Actor | Pantalla | Qué pasa | Resultado |
+|---|---|---|---|---|
+| 1 | Vendedor | `/cartera/[id]` → Vender mi cuota | Unidades y precio (`POST /api/secondary/offers`) | `internal_window`. Bloquea `locked_units`. Aviso a los copropietarios |
+| 2 | Sistema | Job diario | Vencen los 7 días | `open` |
+| 3 | Comprador | `/secundario/[id]` | Compra la oferta entera | `buyer_found`. `available` −precio / `committed` +precio. Aviso al vendedor |
+| 4 | Operaciones | `/admin/secundario` | Verifica y abre el retracto | `retracto` durante 30 días. ⚠️ **H19**: los copropietarios no reciben aviso, y sin aviso no pueden ejercer el retracto |
+| 4b | Copropietario | `/secundario/[id]` | Ejerce el retracto al mismo precio | Bloquea sus fondos y libera los del comprador original |
+| 5 | Operaciones | `/admin/secundario` | Notaría y partida | `notary` → `completed`. Unidades al comprador. `committed` del comprador −precio / `available` del vendedor +(precio − comisión) / `commissions` +comisión |
+
+Ramas:
+
+- La oferta no tiene fecha de fin. ⚠️ **H20**: puede quedar publicada para siempre, y el vendedor no puede cambiar el precio.
+- Los 30 días de retracto alargan cada venta a más de un mes. ⚠️ **H21**: falta saber si los copropietarios pueden renunciar al retracto por adelantado (consulta legal).
+- PROPIA tiene unidades propias tras un plazo vencido. ⚠️ **H22**: nadie puede publicarlas, porque la cuenta institucional no tiene login.
+- Cada venta es una escritura y una inscripción. Los costos de notaría y registro pesan mucho en una cuota de S/ 16,000. También entran en **H14**.
+
+### 29.11 Equipo interno y administración
+
+- El Admin edita las cuentas bancarias de PROPIA y `settings`. Todo queda en auditoría. La comisión de una oferta ya publicada no cambia, porque se copia al publicarla.
+- No hay forma de bloquear a un inversionista por fraude, orden judicial o sospecha de lavado. ⚠️ **H23**.
+- No hay libro de reclamaciones. ⚠️ **H24**: es obligatorio para quien atiende consumidores en Perú (confirmar con legal).
+- Las comisiones y el `available` de PROPIA solo suben. ⚠️ **H25**: no hay forma de sacar ese dinero, que son los ingresos de PROPIA.
+- Una misma persona puede tener `Tesoreria` y `Operaciones`, y así aprobar lo que ella misma inició.
+
+### 29.12 Fin de la relación
+
+- Cierre de cuenta pedido por el inversionista. ⚠️ **H26**: no hay flujo.
+- Fallecimiento del inversionista. ⚠️ **H27**: no hay flujo para congelar la cuenta ni para pasar saldo y cuotas a los herederos.
+
+### 29.13 De dónde sale cada sol
+
+Un flujo está cerrado cuando cada cuenta del libro mayor tiene una salida. Hoy:
+
+| Cuenta | Entra por | Sale por | ¿Cierra? |
+|---|---|---|---|
+| `available` | Depósito aprobado, renta, venta en el secundario, retracto ejercido por otro, retiro rechazado o cancelado | Compromiso, compra en el secundario, retiro | ✅ |
+| `committed` | Compromiso, compra en el secundario | Registro de la propiedad, venta completada, retracto que libera al comprador | ⚠️ **H15**: no sale si la compra se cae |
+| `withdrawing` | Retiro pedido | Pagado, rechazado o cancelado | ✅ |
+| `bank` | Contrapartida de todo lo que entra o sale del banco | — | ✅ |
+| `property_settlement` | Registro de la propiedad | — | ⚠️ **H13**: falta el pago al vendedor |
+| `commissions` | Venta completada | — | ⚠️ **H25** |
+| `available` de PROPIA | Céntimos de renta, renta de sus unidades, ventas de sus unidades | — | ⚠️ **H25** |
+
+### 29.14 Huecos y propuestas
+
+| # | Hueco | Propuesta | Peso |
+|---|---|---|---|
+| H1 | MFA perdido | Admin reinicia el MFA después de una videollamada con documento. Queda en auditoría y se avisa por email | Bloquea salida a prod |
+| H2 | Alta de internos | El Admin invita por email (`AdminCreateUser`) con un grupo interno y sin `<ROL_A>`. Un interno no puede registrarse por `/signup` | Bloquea |
+| H3 | Cónyuge que no firma | Reenviar el email, corregir el email del cónyuge (anula el sobre y crea otro) y vencimiento a los 30 días con aviso | Bloquea |
+| H4 | Qué datos obligan a refirmar | Nombre, documento, estado civil, régimen y cónyuge. Teléfono y dirección no | Bloquea |
+| H5 | Debida diligencia | Paso 3 con declaración PEP. PEP, origen "Otro" o primer depósito por encima de un umbral configurable pasan a `review`, y Operaciones aprueba antes de `enabled` | Bloquea (legal) |
+| H6 | Convivientes | Unión de hecho inscrita en SUNARP = igual que casado con gananciales | Bloquea (legal) |
+| H7 | Constancia duplicada | Pedir el número de operación. Único por banco y número. Tesorería ve los posibles duplicados resaltados | Recomendado |
+| H8 | Cuenta de origen de terceros | El inversionista elige de cuál de sus cuentas transfirió. Tesorería rechaza si el extracto muestra otro titular | Recomendado |
+| H9 | Una sola persona aprueba | Doble aprobación por encima de un umbral en `settings`, para depósitos, retiros, publicación de propiedades y reparto de renta. Quien inicia no puede aprobar | Recomendado |
+| H10 | Cuenta de retiro nueva | MFA otra vez al añadirla y 24 h de espera antes del primer retiro. Tesorería confirma que el titular sea el inversionista | Recomendado |
+| H11 | PROPIA compra sola | El job no compromete. Crea una tarea para el Admin, que confirma o amplía el plazo una vez | Recomendado |
+| H12 | Unidad perdida mientras se valida el depósito | Reserva de 48 h ligada a un depósito `submitted`. Si se aprueba, se convierte en compromiso; si no, se libera | Opcional |
+| H13 | Pago al vendedor | Tesorería registra el pago con constancia: `property_settlement` −precio / `bank` +precio. Al registrar, la cuenta queda en cero por propiedad, y eso se comprueba | Bloquea |
+| H14 | Gastos de cierre | Van incluidos en el precio de la unidad, que Operaciones calcula al crear la propiedad. En el secundario los paga el comprador, aparte del precio | Bloquea (negocio) |
+| H15 | Compra que se cae | Estado `cancelled` desde `funding`, `funded` o `notary`, con doble aprobación. Devuelve cada compromiso a `available` y el de PROPIA a `bank`. Aviso a todos | Bloquea |
+| H16 | Renta neta negativa | No se reparte. El saldo negativo pasa al período siguiente | Bloquea |
+| H17 | Renta y venta a mitad de mes | Cobra quien tiene las unidades el día del reparto. Mientras la oferta está viva, la renta sigue siendo del vendedor | Bloquea |
+| H18 | Ingreso de PROPIA por administrar | Comisión de administración configurable, en % de la renta bruta, descontada antes del reparto y llevada a `commissions` | Bloquea (negocio) |
+| H19 | Aviso de retracto | Aviso a todos los copropietarios al abrirse el retracto, con el precio y la fecha límite | Bloquea |
+| H20 | Oferta sin fin | Vence a los 90 días (configurable). El vendedor puede bajar el precio, pero no subirlo; al bajarlo vuelve la ventana interna | Recomendado |
+| H21 | 30 días de retracto en cada venta | Consultar con legal si el poder o un pacto de copropietarios puede recoger la renuncia previa. Si se puede, se quita el paso | Optimización (legal) |
+| H22 | Unidades de PROPIA | Operaciones publica y gestiona ofertas a nombre de la cuenta institucional desde `/admin/secundario` | Bloquea |
+| H23 | Bloquear a un inversionista | `userStatus = 'suspended'` desde `/admin/inversionistas` por Admin, con motivo. No entra ni mueve dinero. Su renta sigue llegando a la wallet | Bloquea |
+| H24 | Libro de reclamaciones | Página pública con formulario, número correlativo, copia por email y bandeja para el Admin. Respuesta en el plazo legal | Bloquea (legal) |
+| H25 | Ingresos de PROPIA | Tesorería registra el retiro de ingresos de PROPIA: `commissions` o `available` de PROPIA −monto / `bank` +monto, con constancia y doble aprobación | Bloquea |
+| H26 | Cierre de cuenta | Solo con saldo cero y sin cuotas, compromisos ni ofertas. Cognito se desactiva y los datos se guardan el plazo legal de conservación | Recomendado |
+| H27 | Fallecimiento | Operaciones congela la cuenta y, con la sucesión inscrita, pasa saldo y cuotas a los herederos, que hacen su propio onboarding. Es manual y queda en auditoría | Recomendado |
+
+Optimizaciones que no tapan un hueco, pero ahorran trabajo o riesgo:
+
+| # | Qué | Por qué |
+|---|---|---|
+| O1 | Tesorería sube el extracto del banco (CSV) y la app empareja depósitos por número de operación y monto | Valida en lote, no uno por uno. También sirve para conciliar contra el banco real, que hoy no se hace |
+| O2 | Las ventas del secundario de una misma propiedad se firman en una sola escritura al mes | Una notaría y una inscripción por lote, no por venta |
+| O3 | Avisos que faltan: propiedad nueva publicada (a habilitados), comprador encontrado (a Operaciones), sobre por vencer y cola de Tesorería con más de 24 h | Nadie se entera hoy de esos eventos |
+| O4 | `Tesoreria` y `Operaciones` no pueden estar en el mismo usuario | Separación de funciones sin código extra en cada flujo |
+| O5 | Se guarda la versión de los términos y del texto del poder que aceptó cada persona | Si el texto cambia, se sabe quién firmó cuál y a quién pedirle la nueva versión |
+| O6 | Tablero de pendientes en el backoffice: depósitos, retiros, cierres por vencer y retractos por terminar, con antigüedad | Una sola pantalla para el día a día de los tres roles |
 
 ---
 ## Anexo A — Puntos abiertos y cómo resolverlos
