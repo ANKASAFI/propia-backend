@@ -870,7 +870,8 @@ export class DomainService implements OnModuleInit {
     const net = Math.round((gross - expenses) * 100) / 100;
     if (net < 0) throw new BadRequestException('Los gastos no pueden superar la renta.');
     const owners = await this.db.getRepository(Commitment).find({ where: { propertyId: prop.id, status: 'owned' } });
-    const units = owners.reduce((s, o) => s + o.units, 0) || prop.unitsTotal;
+    const ownedUnits = owners.reduce((s, o) => s + o.units, 0);
+    const units = Number(prop.unitsTotal) || ownedUnits;
     await this.db.transaction(async (m) => {
       await m.save(RentRun, m.create(RentRun, { propertyId: prop.id, period: body.period, gross, expenses, net, status: 'paid' }));
       for (const o of owners) {
